@@ -4,8 +4,18 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 ## Current state — hand-off (read this first in a new session)
 
+**v12 procurement M1 — built (2026-11-14, branch `feat/v12-procurement-m1`, ADR-038, migration
+`0023_procurement`):** `app/suppliers/` (protocol, ZovoCard read-only client with the status/error-code
+table, mock + manual suppliers), `app/procurement/` (health loop, internal probe API on :8004, CLI
+`python -m app.procurement probe --supplier zovocard --env sandbox`), compose profile `procurement` with its
+own env file / egress network / DB role / Redis user, admin **Suppliers** page with "Test connection",
+`app/devtools/mock_zovocard.py`. No order reaches a supplier yet. Next: sandbox key -> run the probe (spec
+§12), then M2. Existing hosts: add `APP_DB_PROCUREMENT_PASSWORD` to `env/migrate.env` (or `ALTER ROLE
+app_procurement LOGIN PASSWORD ...`), generate `env/procurement.env` and the API's `APP_PROCUREMENT_URL` /
+`APP_PROCUREMENT_TOKEN` before enabling the profile (bootstrap does this for new hosts).
+
 **v12 procurement — in progress (2026-11-14, branch `feat/v12-procurement`, spec
-`docs/review-v12-procurement.md`, ADR-038 pending):** multi-supplier procurement and upstream fulfilment
+`docs/review-v12-procurement.md`, ADR-038):** multi-supplier procurement and upstream fulfilment
 (`upstream_cdk` / `upstream_vcc` / `upstream_direct`), first supplier ZovoCard. New process
 `backend/app/procurement/` (egress, vault public key only) and adapter layer `backend/app/suppliers/`;
 delivery keeps its boundary. Production key verified read-only (allowlist set, balance/plans/products OK);

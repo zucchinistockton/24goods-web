@@ -1,0 +1,75 @@
+"""Internal procurement API (backend network only, never routed by Caddy).
+
+``POST /internal/probe {"tenant_id", "supplier_id"}`` with ``X-Internal-Token`` (constant-time
+compare against ``APP_PROCUREMENT_TOKEN``, distinct from the delivery token). The API process
+calls it for the admin "Test connection" button, so the API never holds supplier secrets
+(same shape as the delivery reveal call, docs/architecture.md §5).
+"""
+
+from __future__ import annotations
+
+import hmac
+import json
+import logging
+import uuid
+
+from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+from starlette.routing import Route
+
+from app.core.errors import error_body
+from app.core.ratelimit import hit
+from app.procurement import service
+from app.procurement.context import ProcurementContext
+
+log = logging.getLogger("app.procurement.internal")
+
+MAX_BODY = 4096
+NO_STORE = {"Cache-Control": "no-store"}
+
+
+def _err(status: int, code: str, message: str, headers: dict[str, str] | None = None):
+    return JSONResponse(error_body(code, message), status_code=status, headers=headers)
+
+
+def create_procurement_app(ctx: ProcurementContext) -> Starlette:
+    async def healthz(_: Request) -> JSONResponse:
+        return JSONResponse({"status": "ok"})
+
+    async def probe(request: Request) -> JSONResponse:
+        expected = ctx.settings.procurement_token
+        given = request.headers.get("x-internal-token", "")
+        if len(expected) < 32 or not hmac.compare_digest(given.encode(), expected.encode()):
+            log.warning("probe: bad internal token")
+            return _err(401, "unauthorized", "Bad internal token")
+        body = await request.body()
+        if len(body) > MAX_BODY:
+            return _err(422, "validation", "body too large")
+        try:
+            data = json.loads(body)
+            tenant_id = uuid.UUID(str(data["tenant_id"]))
+            supplier_id = uuid.UUID(str(data["supplier_id"]))
+        except (ValueError, KeyError, TypeError):
+            return _err(422, "validation", "tenant_id and supplier_id (UUID) are required")
+        allowed, reset = await hit(
+            ctx.redis,
+            "proc:probe",
+            str(supplier_id),
+            ctx.settings.probes_per_supplier_10min,
+            600,
+        )
+        if not allowed:
+            return _err(429, "rate_limited", "Too many probes", {"Retry-After": str(reset)})
+        try:
+            report = await service.probe(ctx, tenant_id, supplier_id)
+        except service.SupplierNotFound:
+            return _err(404, "not_found", "Supplier not found")
+        return JSONResponse({"report": report.as_dict()}, headers=NO_STORE)
+
+    return Starlette(
+        routes=[
+            Route("/healthz", healthz),
+            Route("/internal/probe", probe, methods=["POST"]),
+        ]
+    )

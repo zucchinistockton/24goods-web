@@ -73,8 +73,9 @@ chmod 0444 secrets/vault_public_keys.json
 
 # ---- passwords ------------------------------------------------------------------
 PG_SUPERUSER_PASSWORD=$(rnd); APP_OWNER_PASSWORD=$(rnd)
-DB_API_PW=$(rnd); DB_DELIVERY_PW=$(rnd)
-R_API=$(rnd); R_DELIVERY=$(rnd); R_MOCK=$(rnd); R_HEALTH=$(rnd)
+DB_API_PW=$(rnd); DB_DELIVERY_PW=$(rnd); DB_PROCUREMENT_PW=$(rnd)
+R_API=$(rnd); R_DELIVERY=$(rnd); R_MOCK=$(rnd); R_HEALTH=$(rnd); R_PROCUREMENT=$(rnd)
+PROCUREMENT_TOKEN=$(rnd 32)   # api -> procurement internal API (distinct from the delivery token)
 ZPAY_KEY=$(rnd 16)
 BEPUSDT_TOKEN=$(rnd 16)   # demo: shared with the simulator; prod: copy the real token from the BEpusdt console
 # proof-of-work signing key + order access-code HMAC key (base64, 32 random bytes each)
@@ -91,6 +92,7 @@ user default off
 user health on #$(sha "$R_HEALTH") resetkeys resetchannels -@all +@connection
 user api on #$(sha "$R_API") ~* &* +@all -@dangerous
 user delivery on #$(sha "$R_DELIVERY") ~rl:* ~reveal:* resetchannels &rt:* -@all +@connection +get +set +incr +incrby +decrby +expire +ttl +multi +exec +discard +publish +eval +evalsha
+user procurement on #$(sha "$R_PROCUREMENT") ~rl:proc:* resetchannels -@all +@connection +get +incr +expire +ttl +multi +exec +discard
 EOF
 if [[ "$MODE" == "demo" ]]; then
   echo "user mockpay on #$(sha "$R_MOCK") ~mockpay:* resetchannels -@all +@connection +get +set +del +expire +exists +ttl" >> secrets/users.acl
@@ -119,6 +121,7 @@ APP_ENV=$APP_ENV_NAME
 APP_MIGRATE_DATABASE_URL=postgresql+asyncpg://app_owner:$APP_OWNER_PASSWORD@$PG
 APP_DB_API_PASSWORD=$DB_API_PW
 APP_DB_DELIVERY_PASSWORD=$DB_DELIVERY_PW
+APP_DB_PROCUREMENT_PASSWORD=$DB_PROCUREMENT_PW
 EOF
 
 cat > env/seed.env <<EOF
@@ -156,6 +159,8 @@ APP_POW_KEY=$APP_POW_KEY
 APP_LOOKUP_KEY=$APP_LOOKUP_KEY
 APP_SETTINGS_KEY=$APP_SETTINGS_KEY
 APP_DELIVERY_URL=http://delivery:8001
+APP_PROCUREMENT_URL=http://procurement:8004
+APP_PROCUREMENT_TOKEN=$PROCUREMENT_TOKEN
 EOF
 if [[ "$MODE" == "prod" ]]; then
   {
@@ -198,6 +203,23 @@ APP_DELIVERY_HOST=0.0.0.0
 APP_DELIVERY_PORT=8001
 APP_HEALTH_PORT=8001
 APP_REVEAL_MAX_PER_MIN=60
+EOF
+
+# Procurement (profile "procurement", review-v12): supplier secrets are added by hand, e.g.
+#   ZOVOCARD_SANDBOX_APP_SECRET=sk_...   (key from the vendor's sandbox portal)
+# Production supplier keys stay out until the security review (AGENTS.md §1.11), and
+# APP_PROCUREMENT_ALLOW_PRODUCTION_WRITES is never set here.
+cat > env/procurement.env <<EOF
+APP_ENV=$APP_ENV_NAME
+APP_PROCUREMENT_DATABASE_URL=postgresql+asyncpg://app_procurement:$DB_PROCUREMENT_PW@$PG
+APP_REDIS_URL=$(redis_url procurement "$R_PROCUREMENT")
+APP_PROCUREMENT_TOKEN=$PROCUREMENT_TOKEN
+APP_PROCUREMENT_HOST=0.0.0.0
+APP_PROCUREMENT_PORT=8004
+APP_HEALTH_PORT=8004
+APP_VAULT_PUBLIC_KEYS_FILE=/run/secrets/vault_public_keys
+ZOVOCARD_SANDBOX_APP_ID=
+ZOVOCARD_SANDBOX_APP_SECRET=
 EOF
 
 if [[ "$MODE" == "prod" ]]; then

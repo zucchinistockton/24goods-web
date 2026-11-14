@@ -85,6 +85,12 @@ class Settings(BaseSettings):
     # --- internal services ---
     internal_token: str = ""  # shared secret API -> delivery, >= 32 chars
     delivery_url: str = "http://127.0.0.1:8001"
+    # review-v12: API -> procurement internal API (supplier "Test connection"). Distinct token;
+    # the API never holds supplier secrets.
+    procurement_token: str = ""
+    procurement_url: str = "http://127.0.0.1:8004"
+    # owner rule (review-v12 §0): production suppliers stay disabled until the security review
+    procurement_allow_production: bool = False
 
     # --- orders ---
     order_ttl_minutes: int = 30

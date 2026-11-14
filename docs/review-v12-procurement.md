@@ -1,6 +1,6 @@
 # review-v12 — multi-supplier procurement and upstream fulfilment
 
-Status: **spec, not built**. Branch `feat/v12-procurement`. ADR-038 (to add). Migration `0023_procurement`.
+Status: **M1 built** (branch `feat/v12-procurement-m1`), M2/M3 not started. ADR-038. Migration `0023_procurement`.
 First supplier: ZovoCard. Vendor docs (git-ignored, the repo is public):
 `docs/research/zovocard/zovocard-{openapi,cards,cdk}.md` — section numbers below (`§`) refer to
 `zovocard-openapi.md` unless marked `cdk§`.
@@ -104,7 +104,9 @@ Outcome semantics (the only thing the engine understands; supplier quirks stay i
 | `UNAVAILABLE` (503 `channel_unavailable`, not purchasable, breaker open) | definite "no charge": try next offer |
 | `FATAL` (deterministic business error) | stop; `needs_manual` + staff alert + buyer message |
 
-Failover happens **only** on `UNAVAILABLE` (same rule as ADR-034 for payment gateways). A job that ever
+Failover happens **only** on `UNAVAILABLE` (same rule as ADR-034 for payment gateways). Once M2 implements
+`query()`, failover additionally requires a `query()` by the job's idempotency key that finds nothing upstream;
+until then no job is ever submitted, so the question does not arise. A job that ever
 reached `submitting` against supplier A moves to supplier B only by an explicit staff action after A's job
 is confirmed not charged or voided.
 
@@ -166,6 +168,15 @@ Availability = registry entry exists **and** `purchasable === true` **and** `pla
 401, 403 (allowlist, `RECHARGE_REQUIRED`, `GPT_DIRECT_ACCESS_DENIED`, `FORBIDDEN`), `insufficient_balance`,
 "API key spend cap exhausted" (arrives as `request_failed` → treated as supplier stop **[I]**).
 
+Writes vs reads (security review of M1): on a **write**, HTTP 500 without a code, `internal_error` (also when it
+arrives as HTTP 200 with `code != 0`) and the catch-all `request_failed` are `AMBIGUOUS` (the request may have
+run; `query()` first, resubmit only under the same key); on a read they stay `RETRYABLE` (`request_failed`:
+`UNAVAILABLE` + supplier stop). `request_failed` keeps its supplier-stop flag in both cases. `channel_unavailable`
+(vendor §3: the channel breaker fires before any charge) and `product_unavailable` (A.2: product paused) stay
+`UNAVAILABLE`. `GPT_PRICE_UNCONFIRMED` and `GPT_PREFLIGHT_RATE_LIMITED` stay `RETRYABLE`: the engine (M2/M3)
+re-preflights and resubmits under the **same** idempotency key for that step. Vendor `error_code` values are
+reduced to `[A-Za-z0-9_.:-]{1,64}` before they reach logs, `health_detail` or audit rows.
+
 Buyer credential for `upstream_direct` (account session): sealed at checkout with a **separate procurement
 keypair** (API holds the public key, procurement the private key; the delivery keyring is untouched), never
 logged, deleted when the job reaches a terminal state. This also covers part of open item S7.
@@ -194,7 +205,10 @@ logged, deleted when the job reaches a terminal state. This also covers part of 
 ## 7. Admin console (PC) and manual operation
 
 - **Suppliers**: list, enable/disable, env badge, "Test connection" (runs `probe()`: auth, IP allowlist,
-  permissions, `spendable_balance`, plans/products), breaker threshold, health.
+  permissions, `spendable_balance`, plans/products), breaker threshold, health. Platform tenant only (the
+  env-file secrets belong to the platform deployment). "Test connection" is allowed for a production-env
+  supplier even while the production lock keeps it disabled: it is GET-only, and the owner wants to check
+  the real key. Supplier codes: the adapter name or `<adapter>_<suffix>`, never ending in `_sandbox`.
 - **Sources per variant**: add/sort/enable offers, routing mode, "check availability".
 - **Procurement jobs**: filter by state; detail with timeline; actions — re-query, retry (same key, shown
   read-only), switch to next source (only when not charged), **fulfil manually** (paste code → sealed like a
@@ -225,6 +239,12 @@ redeem on the supplier's own page.
 
 - **M1** — `suppliers/` (base, mock, zovocard client + error table), migration, procurement process + compose
   service + role/grants, admin Suppliers page with probe. Exit: probe green against sandbox; cross-tenant test.
+  **Status (2026-11-14): built; green against `app/devtools/mock_zovocard.py`; the sandbox probe waits for the
+  sandbox key (§12).** Deferred to M2: per-variant `routing` (priority / round robin) storage, sealing in
+  procurement (vault public key is mounted, not loaded yet), webhook secret (goes to the API env).
+- **M2** — also: require the current admin password to create a production supplier or switch one to
+  production; add procurement + `mock_zovocard` to `scripts/dev.sh` and to the e2e smoke; the migration that
+  first writes them grants `app_procurement` INSERT on `card_stock` and `outbox` (M1 grants neither).
 - **M2** — `upstream_cdk` end to end (delivery branch, job engine, seal, fulfil), webhook + dedup, ledger +
   breaker, manual fulfil/void/switch, cost report, redemption site. Exit: e2e smoke with the mock supplier
   covering timeout-after-send, 409, 202, 503 failover, duplicate webhook, forged signature.
@@ -289,5 +309,7 @@ disabled under `prefers-reduced-motion`). Frontend design is done by the orchest
 3. **[I]** to confirm in sandbox: exact body of the recharge-pending 400; whether `GET /gpt-direct/cdks`
    exposes the idempotency key or only replay recovers an ambiguous issue; `card_3ds_otp` field names (§7.4);
    USD redemption cost per plan for the breaker reserve.
-4. Supplier balance is 6.27 USD: below any useful breaker threshold, which is the intended state until the
+4. **Egress allowlist before go-live:** the `procurement_egress` network has general internet egress. Restrict
+   procurement's outbound traffic to the supplier hosts (firewall / egress proxy) before real funds.
+5. Supplier balance is 6.27 USD: below any useful breaker threshold, which is the intended state until the
    security review.

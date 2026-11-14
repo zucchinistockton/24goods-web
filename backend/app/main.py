@@ -35,6 +35,7 @@ from app.modules.admin.payment_gateways import router as payment_gateways_router
 from app.modules.admin.payment_ops import router as payment_ops_router
 from app.modules.admin.router import router as admin_router
 from app.modules.admin.settings import router as admin_settings_router
+from app.modules.admin.suppliers import router as admin_suppliers_router
 from app.modules.admin.tokens import router as admin_tokens_router
 from app.modules.admin.v3 import router as admin_v3_router
 from app.modules.aftersales.router import router as aftersales_router
@@ -200,6 +201,7 @@ def api_router() -> APIRouter:
         admin_settings_router,
         admin_blocking_router,
         admin_tokens_router,
+        admin_suppliers_router,
         challenges_router,
     ):
         r.include_router(sub)
