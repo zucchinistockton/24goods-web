@@ -4,6 +4,19 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 ## Current state — hand-off (read this first in a new session)
 
+**v12 procurement — in progress (2026-11-14, branch `feat/v12-procurement`, spec
+`docs/review-v12-procurement.md`, ADR-038 pending):** multi-supplier procurement and upstream fulfilment
+(`upstream_cdk` / `upstream_vcc` / `upstream_direct`), first supplier ZovoCard. New process
+`backend/app/procurement/` (egress, vault public key only) and adapter layer `backend/app/suppliers/`;
+delivery keeps its boundary. Production key verified read-only (allowlist set, balance/plans/products OK);
+sandbox waits for a support ticket, so development runs on the mock supplier. Vendor docs and response
+samples are local only: `docs/research/zovocard/` (git-ignored, public repo). Secrets:
+`~/.secrets/zovocard.env`. **No production write calls and no real funds before the security review.**
+Order of work: M1 (adapter + probe + process + admin Suppliers page) -> M2 (CDK, webhook, ledger, manual
+ops, redemption site) -> M3 (VCC, 3DS, direct top-up). Side PRs: `fix/pay-ux-reco` (USDT/Alipay pay UX,
+exclude-from-recommendations flag), `feat/totp-2fa` (optional TOTP, spec §13). Status of each: see the
+spec's §10 and the open PRs.
+
 **v11 features (2026-11-10, branch `feat/v11-features`, PR #82, spec `docs/review-v11-features.md`,
 ADR-037, migrations `0020_product_variants`, `0021_chat_v11`, `0022_v11_content_ops`):** product
 variants (own price / floor / stock / terms, disjoint stock pools, variant quotes, move pre-variant
