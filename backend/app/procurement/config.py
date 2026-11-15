@@ -46,6 +46,9 @@ class ProcurementSettings:
     # replay could execute a SECOND purchase, so the job goes to needs_manual (maybe charged)
     # instead. Default 6 h (review-v12 §6: the engine gives up on unresolved sends in ~30 min).
     replay_max_age_s: float = 21600.0
+    # No NEW purchase is leased while a supplier's last good balance reading is older than this
+    # (default 3 balance intervals): without a fresh balance the breaker is blind (fail closed).
+    balance_stale_s: float = 900.0
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> ProcurementSettings:

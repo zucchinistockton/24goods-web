@@ -197,6 +197,19 @@ async def refresh_balance(ctx: ProcurementContext, ref: SupplierRef) -> Balance 
         await supplier.aclose()
 
 
+async def _cost_known(supplier: Supplier, spec: OfferSpec, currency: str) -> bool:
+    """The supplier itself names a redemption cost (in the balance currency) for this offer:
+    the breaker can then reserve it without a configured ``cost_estimate``."""
+    fn = getattr(supplier, "redemption_cost", None)
+    if fn is None:
+        return False
+    try:
+        money = await asyncio.wait_for(fn(spec), 10)
+    except Exception:
+        return False
+    return money is not None and money.currency == currency
+
+
 async def refresh_offers(ctx: ProcurementContext, ref: SupplierRef) -> int:
     """Availability check of every enabled offer of one supplier (GET only). The storefront shows
     an upstream variant in stock only while its last check passed (review-v12 §4)."""
@@ -216,15 +229,22 @@ async def refresh_offers(ctx: ProcurementContext, ref: SupplierRef) -> int:
         supplier = make_supplier(ctx, ref)
     except SupplierConfigError:
         return 0
+    async with tenant_session(ctx.maker, ref.tenant_id) as db:
+        currency = await db.scalar(
+            select(SupplierAccount.currency).where(SupplierAccount.id == ref.id)
+        )
     results: dict[uuid.UUID, bool] = {}
+    known: dict[uuid.UUID, bool] = {}
     try:
         for oid, kind, params in offers:
+            spec = OfferSpec(kind=kind, params=dict(params or {}))
             try:
                 av = await asyncio.wait_for(
-                    supplier.availability(OfferSpec(kind=kind, params=dict(params or {}))),
+                    supplier.availability(spec),
                     ctx.settings.probe_timeout_s,
                 )
                 results[oid] = av.available is True
+                known[oid] = await _cost_known(supplier, spec, currency or "USD")
             except Exception:  # an unknown answer is "not available"
                 results[oid] = False
     finally:
@@ -235,7 +255,11 @@ async def refresh_offers(ctx: ProcurementContext, ref: SupplierRef) -> int:
             await db.execute(
                 update(SupplierOffer)
                 .where(SupplierOffer.tenant_id == ref.tenant_id, SupplierOffer.id == oid)
-                .values(last_check_ok=ok, last_check_at=now)
+                .values(
+                    last_check_ok=ok,
+                    last_check_at=now,
+                    **({"cost_known": known[oid]} if oid in known else {}),
+                )
             )
         await db.commit()
     return len(results)
@@ -260,6 +284,7 @@ async def check_offer(
                     SupplierAccount.adapter,
                     SupplierAccount.env,
                     SupplierAccount.health,
+                    SupplierAccount.currency,
                 )
                 .join(SupplierAccount, SupplierAccount.id == SupplierOffer.supplier_id)
                 .where(SupplierOffer.tenant_id == tenant_id, SupplierOffer.id == offer_id)
@@ -269,6 +294,7 @@ async def check_offer(
         raise SupplierNotFound
     ref = SupplierRef(row.id, tenant_id, row.code, row.adapter, row.env, row.health)
     ok, reason = False, "not_configured"
+    cost_known: bool | None = None
     try:
         supplier = make_supplier(ctx, ref)
     except SupplierConfigError:
@@ -280,6 +306,11 @@ async def check_offer(
                 ctx.settings.probe_timeout_s,
             )
             ok, reason = av.available is True, (None if av.available is True else av.reason)
+            cost_known = await _cost_known(
+                supplier,
+                OfferSpec(kind=row.kind, params=dict(row.params or {})),
+                row.currency or "USD",
+            )
         except asyncio.TimeoutError:
             reason = "timeout"
         except SupplierError as exc:
@@ -293,7 +324,11 @@ async def check_offer(
         await db.execute(
             update(SupplierOffer)
             .where(SupplierOffer.tenant_id == tenant_id, SupplierOffer.id == offer_id)
-            .values(last_check_ok=ok, last_check_at=now)
+            .values(
+                last_check_ok=ok,
+                last_check_at=now,
+                **({"cost_known": cost_known} if cost_known is not None else {}),
+            )
         )
         await db.commit()
     return {

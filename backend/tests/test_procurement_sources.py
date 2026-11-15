@@ -40,6 +40,7 @@ def _body(product, supplier_id, **over) -> dict:
         "product_id": str(product.id),
         "supplier_id": supplier_id,
         "params": {"plan": "plus"},
+        "cost_estimate": "2.00",  # an offer needs a usable cost to be enabled (M3)
     }
     body.update(over)
     return body
@@ -100,8 +101,8 @@ async def test_sources_lifecycle_sort_routing_and_audit(env):
     r = await admin.patch(f"{SRC}/{o2['id']}", json={"enabled": True, "priority": 5})
     assert r.status_code == 200 and r.json()["enabled"] is True and r.json()["priority"] == 5
     assert r.json()["last_check_ok"] is True
-    r = await admin.patch(
-        f"{SRC}/{o2['id']}", json={"params": {"plan": "plus"}, "clear_cost": True}
+    r = await admin.patch(  # an enabled source never loses its cost: disabled in the same call
+        f"{SRC}/{o2['id']}", json={"params": {"plan": "plus"}, "clear_cost": True, "enabled": False}
     )
     assert r.json()["last_check_ok"] is None and r.json()["cost_estimate"] is None
     r = await admin.patch(f"{SRC}/{o2['id']}", json={"enabled": False})

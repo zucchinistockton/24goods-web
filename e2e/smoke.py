@@ -564,7 +564,7 @@ def v12_procurement(base: str, admin: Client, category: str, env: dict) -> None:
     def source(prod: dict, plan: str, priority: int = 10) -> dict:
         src = admin.j("POST", "admin/procurement/sources", expect=201, json={
             "product_id": prod["id"], "supplier_id": sup["id"], "params": {"plan": plan},
-            "priority": priority, "enabled": True})
+            "cost_estimate": "0.15", "priority": priority, "enabled": True})
         chk = admin.j("POST", f"admin/procurement/sources/{src['id']}/check")
         check(chk["available"], f"source {plan} not available: {chk}")
         return src

@@ -10,6 +10,9 @@
   the code. It never seals anything.
 - ``lease_until``: set while the engine talks to the supplier about the job; staff "fulfil" and
   "fail" are refused until it passes.
+- ``supplier_offers.cost_known``: the supplier itself named a redemption cost for the offer
+  (set by the procurement process on an availability check). Together with ``cost_estimate`` it
+  decides whether an offer may be enabled: the balance breaker fails closed on an unknown cost.
 - ``app_api`` may UPDATE ``recover`` (refund / staff fail schedule the recovery); the other new
   columns are engine-owned (``app_procurement`` has full rights on the table already).
 - ``app_delivery`` may read the job state columns it needs to ignore a stale ``procure.failed``.
@@ -33,6 +36,7 @@ UP = [
         ADD COLUMN recover boolean NOT NULL DEFAULT false,
         ADD COLUMN lease_until timestamptz,
         ADD COLUMN first_sent_at timestamptz""",
+    "ALTER TABLE supplier_offers ADD COLUMN cost_known boolean NOT NULL DEFAULT false",
     # existing rows: anything that may have reached a supplier is flagged (conservative)
     """UPDATE procurement_jobs SET maybe_sent = true, first_sent_at = created_at
         WHERE offer_id IS NOT NULL
@@ -47,6 +51,7 @@ DOWN = [
     "REVOKE SELECT (id, tenant_id, order_id, unit_no, state) ON procurement_jobs FROM app_delivery",
     "REVOKE UPDATE (recover) ON procurement_jobs FROM app_api",
     "DROP INDEX IF EXISTS ix_procurement_jobs_recover",
+    "ALTER TABLE supplier_offers DROP COLUMN cost_known",
     """ALTER TABLE procurement_jobs DROP COLUMN first_sent_at, DROP COLUMN lease_until,
         DROP COLUMN recover, DROP COLUMN maybe_sent""",
 ]

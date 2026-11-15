@@ -53,7 +53,7 @@ async def test_migration_0027_up_and_down(services):
             else:
                 os.environ["APP_MIGRATE_DATABASE_URL"] = prev
 
-    cols = ("maybe_sent", "recover", "lease_until", "first_sent_at")
+    cols = ("maybe_sent", "recover", "lease_until", "first_sent_at", "cost_known")
 
     async def state() -> tuple[set[str], bool]:
         conn = await asyncpg.connect(owner_url.replace("+asyncpg", ""), timeout=5)
@@ -62,7 +62,7 @@ async def test_migration_0027_up_and_down(services):
                 r["column_name"]
                 for r in await conn.fetch(
                     "SELECT column_name FROM information_schema.columns "
-                    "WHERE table_name = 'procurement_jobs'"
+                    "WHERE table_name IN ('procurement_jobs', 'supplier_offers')"
                 )
             }
             force = await conn.fetchval(
@@ -655,3 +655,145 @@ async def test_order_held_for_another_reason_is_not_released_by_procurement(env,
     )
     await env.drain()
     assert await _order_status(env, order) == "manual_review"
+
+
+# ------------------------------------------------------------------ M3
+async def test_offer_cannot_be_enabled_without_a_usable_cost(env):
+    from tests.test_procurement_sources import SRC, _body, _create
+
+    admin, _ = await env.login("admin")
+    product = await env.product(mode="upstream_cdk")
+    sup = (await _create(admin))["id"]
+    r = await admin.post(SRC, json=_body(product, sup, cost_estimate=None, enabled=True))
+    assert r.status_code == 422 and r.json()["error"]["code"] == "cost_required"
+    r = await admin.post(SRC, json=_body(product, sup, cost_estimate=None))  # disabled is fine
+    assert r.status_code == 201, r.text
+    oid = r.json()["id"]
+    r = await admin.patch(f"{SRC}/{oid}", json={"enabled": True})
+    assert r.status_code == 422 and r.json()["error"]["code"] == "cost_required"
+    r = await admin.patch(f"{SRC}/{oid}", json={"enabled": True, "cost_estimate": "2.5"})
+    assert r.status_code == 200 and r.json()["enabled"] is True
+    # an enabled source never loses its cost, nor keeps one in the wrong currency
+    for patch in ({"clear_cost": True}, {"currency": "PHP"}):
+        r = await admin.patch(f"{SRC}/{oid}", json=patch)
+        assert r.status_code == 422 and r.json()["error"]["code"] == "cost_required"
+    # a cost the supplier named itself (set by the availability check) is enough
+    await _sql(env, "UPDATE supplier_offers SET cost_estimate = NULL, enabled = false")
+    await _sql(env, "UPDATE supplier_offers SET cost_known = true")
+    r = await admin.patch(f"{SRC}/{oid}", json={"enabled": True})
+    assert r.status_code == 200, r.text
+    # editing the plan drops that knowledge again
+    await _sql(env, "UPDATE supplier_offers SET enabled = false")
+    r = await admin.patch(f"{SRC}/{oid}", json={"params": {"plan": "go"}})
+    assert r.status_code == 200
+    r = await admin.patch(f"{SRC}/{oid}", json={"enabled": True})
+    assert r.status_code == 422
+
+
+async def test_availability_check_records_a_supplier_named_cost(env, up):
+    from decimal import Decimal
+
+    from app.procurement import service
+    from app.suppliers.base import Money
+
+    named = MockSupplier("mock_a", redemption=Money(Decimal("2.00"), "USD"))
+    _, offer_a = await up.supplier(named, code="mock_a", priority=10)
+    silent = MockSupplier("mock_b")
+    _, offer_b = await up.supplier(silent, code="mock_b", priority=20)
+    await _sql(env, "UPDATE supplier_offers SET cost_estimate = NULL")
+    for oid in (offer_a, offer_b):
+        await service.check_offer(up.ctx, env.tenant_id, oid)
+    known = {
+        r[0]: r[1] for r in (await _sql(env, "SELECT id, cost_known FROM supplier_offers")).all()
+    }
+    assert known == {offer_a: True, offer_b: False}
+
+
+async def test_no_new_purchase_while_the_balance_reading_is_stale(env, up):
+    from tests.test_procurement_breaker import _refresh
+
+    mock = MockSupplier("mock_a")
+    sid, _ = await up.supplier(mock)
+    await _sql(env, "UPDATE suppliers SET last_balance_at = now() - interval '1 hour'")
+    _buyer, order = await up.paid_order()
+    for _ in range(2):
+        await up.run()
+        await up.make_due()
+    job = await _job(up, order)
+    assert job.state == "queued" and job.error_code == "balance_stale" and not job.maybe_sent
+    assert mock.calls == []  # nothing leased, nothing sent
+    await _refresh(up, sid)  # a fresh, good reading
+    await up.make_due()
+    await up.run()
+    assert (await _job(up, order)).state == "fulfilled"
+    # a missing reading (never read, or the last read failed long ago) blocks the same way
+    await _sql(env, "UPDATE suppliers SET last_balance_at = NULL")
+    _b2, order2 = await up.paid_order()
+    await up.run()
+    job2 = await _job(up, order2)
+    assert job2.state == "queued" and job2.error_code == "balance_stale"
+
+
+async def test_balance_breaker_parks_queued_jobs_and_they_resume_by_themselves(env, up):
+    mock = MockSupplier("mock_a")
+    await up.supplier(mock)
+    _buyer, order = await up.paid_order()  # bought while the supplier was fine
+    await _create_jobs_only(up)
+    await _sql(
+        env,
+        "UPDATE suppliers SET breaker_open = true, breaker_kind = 'balance', "
+        "breaker_reason = 'balance_low'",
+    )
+    for _ in range(2):
+        await up.run()
+        await up.make_due()
+    job = await _job(up, order)
+    assert job.state == "queued" and job.error_code == "balance_breaker"  # not needs_manual
+    assert not job.maybe_sent and mock.calls == []
+    assert await env.scalar("SELECT count(*) FROM outbox WHERE topic = 'procure.failed'") == 0
+    await _sql(env, "UPDATE suppliers SET breaker_open = false, breaker_kind = NULL")  # recovered
+    await up.make_due()
+    await up.run()
+    assert (await _job(up, order)).state == "fulfilled"
+    # the same wait applies to a job created while the supplier is already paused
+    _b2, order2 = await up.paid_order()
+    await _sql(
+        env,
+        "UPDATE suppliers SET breaker_open = true, breaker_kind = 'balance', "
+        "breaker_reason = 'balance_low'",
+    )
+    await up.run()
+    job2 = await _job(up, order2)
+    assert job2.state == "queued" and job2.error_code == "balance_breaker"
+
+
+async def test_hard_breaker_still_fails_a_never_sent_job_over(env, up):
+    a = MockSupplier("mock_a")
+    b = MockSupplier("mock_b")
+    await up.supplier(a, code="mock_a", priority=10)
+    await up.supplier(b, code="mock_b", priority=20)
+    await _sql(
+        env,
+        "UPDATE suppliers SET breaker_open = true, breaker_kind = 'hard', breaker_reason = 'x' "
+        "WHERE code = 'mock_a'",
+    )
+    _buyer, order = await up.paid_order()
+    for _ in range(3):
+        await up.run()
+    assert (await _job(up, order)).state == "fulfilled" and a.calls == [] and len(b.charged) == 1
+
+
+async def test_healthy_source_is_preferred_over_one_paused_by_balance(env, up):
+    a = MockSupplier("mock_a")
+    b = MockSupplier("mock_b")
+    await up.supplier(a, code="mock_a", priority=10)
+    await up.supplier(b, code="mock_b", priority=20)
+    await _sql(
+        env,
+        "UPDATE suppliers SET breaker_open = true, breaker_kind = 'balance', "
+        "breaker_reason = 'balance_low' WHERE code = 'mock_a'",
+    )
+    _buyer, order = await up.paid_order()
+    for _ in range(3):
+        await up.run()
+    assert (await _job(up, order)).state == "fulfilled" and a.calls == [] and len(b.charged) == 1

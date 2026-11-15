@@ -66,6 +66,8 @@ class SupplierOffer(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     last_check_ok: Mapped[bool | None] = mapped_column(Boolean)
     last_check_at: Mapped[datetime | None]
+    # 0027: the supplier named a redemption cost for this offer (the breaker may reserve it)
+    cost_known: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     created_at: Mapped[datetime] = created_at()
     updated_at: Mapped[datetime] = updated_at()
 

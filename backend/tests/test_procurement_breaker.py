@@ -108,22 +108,26 @@ async def test_refusal_upgrades_a_balance_breaker_to_hard(env, up):
     assert await _breaker(env, sid) == "true:hard:request_failed"
 
 
-async def test_unknown_cost_reserves_nothing_and_configured_cost_is_used(env, up):
+async def test_unknown_cost_opens_the_breaker_and_a_configured_cost_closes_it(env, up):
     mock = MockSupplier("mock_a", spendable=Decimal("10"))  # supplier cannot price a redemption
     sid, oid = await up.supplier(mock)
-    await _sql(env, "UPDATE suppliers SET min_spendable = 9 WHERE id = :s", s=sid)
+    await _sql(env, "UPDATE supplier_offers SET cost_estimate = NULL WHERE id = :o", o=oid)
+    await _sql(env, "UPDATE suppliers SET min_spendable = 5 WHERE id = :s", s=sid)
     await up.paid_order()
-    await up.run()  # balance 9, nothing priced: 9 >= 9
-    assert await _breaker(env, sid) == "false:-:-"
+    await up.run()  # balance 9, plenty left, but the issued CDK has no known cost: fail closed
+    assert await _breaker(env, sid) == "true:balance:unknown_cost"
     await _sql(
         env,
         "UPDATE supplier_offers SET cost_estimate = 3, currency = 'PHP' WHERE id = :o",
         o=oid,
     )
-    await _refresh(up, sid)  # configured cost in another currency than the balance: ignored
-    assert await _breaker(env, sid) == "false:-:-"
+    await _refresh(up, sid)  # configured cost in another currency than the balance: unusable
+    assert await _breaker(env, sid) == "true:balance:unknown_cost"
     await _sql(env, "UPDATE supplier_offers SET currency = 'USD' WHERE id = :o", o=oid)
-    await _refresh(up, sid)  # 9 - 3 = 6 < 9
+    await _refresh(up, sid)  # 9 - 3 = 6 >= 5: the self-closing breaker recovers
+    assert await _breaker(env, sid) == "false:-:-"
+    await _sql(env, "UPDATE suppliers SET min_spendable = 9 WHERE id = :s", s=sid)
+    await _refresh(up, sid)  # 6 < 9
     assert await _breaker(env, sid) == "true:balance:balance_low"
 
 

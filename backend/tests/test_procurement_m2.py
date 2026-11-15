@@ -101,6 +101,7 @@ class Up:
                 SupplierAccount(
                     id=sid, tenant_id=tid, code=code, adapter=adapter, label=code,
                     env="sandbox", enabled=True, priority=priority, settings={},
+                    last_balance=Decimal("100"), last_balance_at=datetime.now(timezone.utc),
                 )
             )  # fmt: skip
             await db.flush()
@@ -109,7 +110,7 @@ class Up:
                     id=oid, tenant_id=tid, supplier_id=sid,
                     product_id=(product or self.product).id, variant_id=None, kind="cdk",
                     params=params or {"plan": "plus"}, priority=priority, enabled=True,
-                    last_check_ok=True,
+                    last_check_ok=True, cost_estimate=Decimal("1.00"), currency="USD",
                 )
             )  # fmt: skip
             await db.commit()

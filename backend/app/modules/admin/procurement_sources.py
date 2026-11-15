@@ -75,6 +75,20 @@ class RoutingIn(BaseModel):
     mode: Literal["priority", "round_robin"]
 
 
+def _require_cost(offer: SupplierOffer, supplier: SupplierAccount) -> None:
+    """An offer is enabled only with a usable cost: the balance breaker reserves it per issued
+    code and fails closed on an unknown one. Usable = a ``cost_estimate`` in the supplier's
+    balance currency, or a cost the supplier itself named on the last availability check."""
+    if offer.cost_estimate is not None and offer.currency == supplier.currency:
+        return
+    if offer.cost_known:
+        return
+    raise Validation(
+        "Set a cost estimate in the supplier's balance currency before enabling this source",
+        code="cost_required",
+    )
+
+
 def _params(p: OfferParams) -> dict[str, Any]:
     return p.model_dump(exclude_none=True)
 
@@ -231,6 +245,8 @@ async def add_source(
         priority=body.priority,
         enabled=body.enabled,
     )
+    if offer.enabled:
+        _require_cost(offer, supplier)
     db.add(offer)
     try:
         await db.flush()
@@ -361,6 +377,7 @@ async def update_source(
         if params != offer.params:
             offer.params = params
             offer.last_check_ok, offer.last_check_at = None, None  # an untested request
+            offer.cost_known = False  # the supplier's cost belonged to the old plan
     if body.clear_cost:
         offer.cost_estimate = None
     elif body.cost_estimate is not None:
@@ -371,6 +388,8 @@ async def update_source(
         offer.priority = body.priority
     if body.enabled is not None:
         offer.enabled = body.enabled
+    if offer.enabled and (body.enabled or body.clear_cost or body.currency or body.params):
+        _require_cost(offer, supplier)  # an enabled source never loses its cost
     try:
         await db.flush()
     except IntegrityError:

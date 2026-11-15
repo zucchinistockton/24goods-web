@@ -106,6 +106,8 @@ class OfferRow:
     kind: str
     params: dict[str, Any]
     ref: SupplierRef
+    breaker_kind: str | None = None  # 'hard' | 'balance' while the supplier's breaker is open
+    balance_at: datetime | None = None  # last good balance reading of the supplier
 
 
 def request_hash(kind: str, params: dict[str, Any]) -> str:
@@ -152,9 +154,13 @@ async def candidates(
     db: AsyncSession,
     order: OrderRow,
     exclude: list[uuid.UUID] | tuple[uuid.UUID, ...] = (),
+    *,
+    balance_open: bool = False,
 ) -> list[OfferRow]:
     """Enabled ``cdk`` offers of enabled suppliers with a closed breaker for this exact target
-    (variant offers for variant orders, variant-less offers otherwise), in failover order."""
+    (variant offers for variant orders, variant-less offers otherwise), in failover order.
+    ``balance_open`` also lists suppliers held by the self-closing balance breaker (never a hard
+    one): their queued jobs wait for the balance instead of failing."""
     variant_match = (
         SupplierOffer.variant_id == order.variant_id
         if order.variant_id is not None
@@ -179,7 +185,12 @@ async def candidates(
             SupplierOffer.enabled.is_(True),
             SupplierOffer.kind == "cdk",
             SupplierAccount.enabled.is_(True),
-            SupplierAccount.breaker_open.is_(False),
+            SupplierAccount.breaker_open.is_(False)
+            if not balance_open
+            else (
+                SupplierAccount.breaker_open.is_(False)
+                | (SupplierAccount.breaker_kind == "balance")
+            ),
         )
         .order_by(SupplierOffer.priority, SupplierAccount.priority, SupplierOffer.created_at)
     )
@@ -205,6 +216,19 @@ async def candidates(
         k = n % len(rows)
         rows = rows[k:] + rows[:k]
     return rows
+
+
+async def pick_candidates(
+    ctx: HasRedis,
+    db: AsyncSession,
+    order: OrderRow,
+    exclude: list[uuid.UUID] | tuple[uuid.UUID, ...] = (),
+) -> list[OfferRow]:
+    """Healthy sources first; only when none is left, sources paused by a low balance (their
+    jobs back off until the balance recovers)."""
+    return await candidates(ctx, db, order, exclude) or await candidates(
+        ctx, db, order, exclude, balance_open=True
+    )
 
 
 async def _transition(
@@ -386,7 +410,7 @@ async def handle_requested(ctx: ProcurementContext, db: AsyncSession, payload: d
         if unit in taken:
             continue
         jid = uuid.uuid4()
-        cands = await candidates(ctx, db, order)
+        cands = await pick_candidates(ctx, db, order)
         offer = cands[0] if cands else None
         job = ProcurementJob(
             id=jid,
@@ -572,6 +596,8 @@ async def _offer(db: AsyncSession, job: ProcurementJob) -> OfferRow | None:
                 SupplierAccount.health,
                 SupplierAccount.enabled.label("supplier_enabled"),
                 SupplierAccount.breaker_open,
+                SupplierAccount.breaker_kind,
+                SupplierAccount.last_balance_at,
             )
             .join(SupplierAccount, SupplierAccount.id == SupplierOffer.supplier_id)
             .where(SupplierOffer.id == job.offer_id)
@@ -580,8 +606,10 @@ async def _offer(db: AsyncSession, job: ProcurementJob) -> OfferRow | None:
     if r is None:
         return None
     ref = SupplierRef(r.supplier_id, job.tenant_id, r.code, r.adapter, r.env, r.health)
-    usable = r.enabled and r.supplier_enabled and not r.breaker_open
-    return OfferRow(r.id, r.supplier_id, r.kind, dict(r.params or {}), ref) if usable else None
+    if not (r.enabled and r.supplier_enabled):
+        return None
+    kind = (r.breaker_kind or "hard") if r.breaker_open else None
+    return OfferRow(r.id, r.supplier_id, r.kind, dict(r.params or {}), ref, kind, r.last_balance_at)
 
 
 async def _failover(
@@ -601,7 +629,7 @@ async def _failover(
         return
     tried = [*list(job.tried_offer_ids or []), *([job.offer_id] if job.offer_id else [])]
     job.tried_offer_ids = tried
-    cands = await candidates(ctx, db, order, exclude=tried)
+    cands = await pick_candidates(ctx, db, order, tried)
     if not cands:
         await _needs_manual(db, job, f"no_source:{reason}")
         return
@@ -618,6 +646,19 @@ async def _failover(
     await _transition(
         db, job, "queued", f"failover:{reason}", actor_id=actor_id, actor_role=actor_role, ip=ip
     )
+
+
+BALANCE_BACKOFF = timedelta(seconds=60)
+
+
+def _balance_gate(ctx: ProcurementContext, offer: OfferRow, now: datetime) -> str | None:
+    """Why no NEW purchase may start on this supplier right now (M3, fail closed)."""
+    if offer.breaker_kind == "balance":
+        return "balance_breaker"
+    stale = timedelta(seconds=ctx.settings.balance_stale_s)
+    if offer.balance_at is None or now - offer.balance_at > stale:
+        return "balance_stale"
+    return None
 
 
 def _unsent(job: ProcurementJob) -> None:
@@ -720,6 +761,8 @@ async def _lease(ctx: ProcurementContext, job_id: uuid.UUID, tenant_id: uuid.UUI
             await db.commit()
             return None
         offer = await _offer(db, job)
+        if offer is not None and offer.breaker_kind == "hard":
+            offer = None  # a refusal-stopped supplier is only asked about work it may hold
         if mode == "submit" and not job.maybe_sent:
             if offer is None:  # never sent with this offer: fail over without a query
                 await _failover(ctx, db, job, order, "offer_unusable")
@@ -727,6 +770,13 @@ async def _lease(ctx: ProcurementContext, job_id: uuid.UUID, tenant_id: uuid.UUI
                 return None
             if job.request_hash and job.request_hash != request_hash(offer.kind, offer.params):
                 await _needs_manual(db, job, "offer_changed")
+                await db.commit()
+                return None
+            if gate := _balance_gate(ctx, offer, now):
+                # a low (breaker) or unknown (stale reading) balance: wait, never fail over or
+                # give up; the job resumes by itself when the balance is known and sufficient
+                job.error_code = gate
+                job.next_poll_at = now + BALANCE_BACKOFF
                 await db.commit()
                 return None
             if job.step != "ready":

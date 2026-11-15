@@ -150,7 +150,10 @@ async def evaluate(
         return
     exp = await _exposure(ctx, ref.tenant_id, ref.id, balance.currency, supplier)
     available = balance.spendable - exp.reserve
-    low = available < row.min_spendable
+    # fail closed: a CDK / job whose cost nobody knows cannot be reserved, so the supplier stops
+    # taking new work until the offer gets a cost (or the CDK is redeemed)
+    reason = "unknown_cost" if exp.unknown_cost > 0 else REASON
+    low = available < row.min_spendable or exp.unknown_cost > 0
     detail = {
         "spendable": str(balance.spendable),
         "reserved": str(exp.reserve),
@@ -175,17 +178,18 @@ async def evaluate(
             return
         if low and not sup.breaker_open:
             sup.breaker_open, sup.breaker_kind = True, KIND_BALANCE
-            sup.breaker_reason, sup.breaker_at = REASON, datetime.now(timezone.utc)
+            sup.breaker_reason, sup.breaker_at = reason, datetime.now(timezone.utc)
             await audit(
                 db,
                 tenant_id=ref.tenant_id,
                 action="supplier.breaker_opened",
                 target=f"supplier:{sup.id}",
-                after={"breaker_open": True, "reason": REASON, "kind": KIND_BALANCE},
+                after={"breaker_open": True, "reason": reason, "kind": KIND_BALANCE},
                 detail=detail,
                 severity="critical",
             )
         elif not low and sup.breaker_open and sup.breaker_kind == KIND_BALANCE:
+            sup_reason = sup.breaker_reason
             sup.breaker_open, sup.breaker_kind = False, None
             sup.breaker_reason, sup.breaker_at = None, None
             await audit(
@@ -193,7 +197,7 @@ async def evaluate(
                 tenant_id=ref.tenant_id,
                 action="supplier.breaker_closed",
                 target=f"supplier:{sup.id}",
-                before={"breaker_open": True, "reason": REASON, "kind": KIND_BALANCE},
+                before={"breaker_open": True, "reason": sup_reason, "kind": KIND_BALANCE},
                 after={"breaker_open": False},
                 detail=detail,
                 severity="info",
