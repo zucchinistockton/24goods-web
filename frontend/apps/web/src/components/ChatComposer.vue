@@ -362,7 +362,7 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .composer {
-  background: #f7f7f7;
+  background: var(--c-fill);
   border-top: 1px solid var(--c-line);
   padding: 6px 6px calc(6px + var(--safe-bottom));
 }
@@ -421,10 +421,10 @@ onBeforeUnmount(() => {
   cursor: pointer;
 }
 .hold.active {
-  background: #dcdcdc;
+  background: var(--c-fill-strong);
 }
 .hold.cancel {
-  background: #ffe0e0;
+  background: var(--c-bad-soft);
   color: var(--c-danger);
 }
 .send-btn {

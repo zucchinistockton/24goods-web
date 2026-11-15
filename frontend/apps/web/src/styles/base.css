@@ -23,8 +23,8 @@ body {
   font-size: 14px;
   line-height: 1.5;
   /* subtle desktop backdrop so the centered column looks intentional */
-  background-image: radial-gradient(circle at 20% 0%, rgba(255, 214, 10, 0.14), transparent 40%),
-    radial-gradient(circle at 90% 100%, rgba(255, 80, 0, 0.06), transparent 45%);
+  background-image: radial-gradient(circle at 20% 0%, var(--c-backdrop-1), transparent 40%),
+    radial-gradient(circle at 90% 100%, var(--c-backdrop-2), transparent 45%);
   background-attachment: fixed;
 }
 img {
@@ -37,10 +37,10 @@ a {
   color: inherit;
 }
 :focus-visible {
-  /* dark ring + white halo: visible on white and on yellow primary buttons (WCAG 1.4.11) */
-  outline: 2px solid #1f1f1f;
+  /* ring + halo in opposite tones: visible on the surface and on yellow primary buttons (WCAG 1.4.11) */
+  outline: 2px solid var(--c-focus-ring);
   outline-offset: 2px;
-  box-shadow: 0 0 0 4px #fff;
+  box-shadow: 0 0 0 4px var(--c-focus-halo);
 }
 #app {
   min-height: 100vh;
@@ -126,11 +126,11 @@ a {
   color: var(--c-accent-ink);
 }
 .badge-manual {
-  background: #eef2ff;
-  color: #3b4fb8;
+  background: var(--c-info-soft);
+  color: var(--c-info-ink);
 }
 .skeleton {
-  background: linear-gradient(90deg, #ececec 25%, #f6f6f6 37%, #ececec 63%);
+  background: linear-gradient(90deg, var(--c-fill) 25%, var(--c-surface) 37%, var(--c-fill) 63%);
   background-size: 400% 100%;
   animation: shimmer 1.4s ease infinite;
   border-radius: 6px;

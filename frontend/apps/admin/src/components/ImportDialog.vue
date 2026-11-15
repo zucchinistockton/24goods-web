@@ -241,14 +241,14 @@ async function create() {
   height: 96px;
   object-fit: cover;
   border-radius: 6px;
-  background: #f3f4f6;
+  background: var(--a-fill);
 }
 .cb {
   position: absolute;
   left: 10px;
   top: 8px;
   z-index: 1;
-  background: rgba(255, 255, 255, 0.85);
+  background: var(--a-veil);
   border-radius: 4px;
   padding: 0 4px;
 }

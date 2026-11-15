@@ -174,8 +174,8 @@ function download() {
   margin: 0 0 8px;
 }
 .dv-warn {
-  background: #fff4e5;
-  color: #8a4b00;
+  background: var(--gc-warn-soft, #fff4e5);
+  color: var(--gc-warn-ink, #8a4b00);
   border-radius: 8px;
   padding: 8px 10px;
   font-size: 12px;

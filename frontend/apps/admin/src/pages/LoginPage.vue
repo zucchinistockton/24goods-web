@@ -90,7 +90,7 @@ async function submit() {
   display: grid;
   place-items: center;
   padding: 16px;
-  background: radial-gradient(circle at 10% 10%, #e0e7ff, transparent 40%), var(--a-bg);
+  background: radial-gradient(circle at 10% 10%, var(--a-glow), transparent 40%), var(--a-bg);
 }
 .login-card {
   width: min(400px, 100%);

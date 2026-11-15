@@ -1,4 +1,5 @@
-/* Design tokens — warm, Xianyu-like. Light theme. */
+/* Design tokens — warm, Xianyu-like. Light values here; the dark values follow the system theme
+   (`html.dark`, set by followSystemTheme() before the app mounts). */
 :root {
   --c-accent: #ffd60a; /* warm yellow: primary buttons, self bubbles */
   --c-accent-strong: #ffc300;
@@ -20,6 +21,30 @@
   --radius-m: 12px;
   --radius-l: 16px;
   --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.04), 0 2px 8px rgba(0, 0, 0, 0.04);
+  /* semantic fills and tints (each has a dark value below; components never hard-code these) */
+  --c-fill: #f1f0ec; /* neutral fill: image placeholders, inputs, chips */
+  --c-fill-strong: #dcdcdc;
+  --c-chip: #1f1f1f; /* dark pill on the hero / brand mark */
+  --c-chip-ink: #ffffff;
+  --c-glass: rgba(255, 255, 255, 0.7); /* translucent control on the hero */
+  --c-veil: rgba(255, 255, 255, 0.85); /* surface seen through, e.g. the floating support pill */
+  --c-tint: rgba(0, 0, 0, 0.06);
+  --c-hero-1: var(--c-accent);
+  --c-hero-2: #ffe680;
+  --c-note-bg: #faf8f2; /* delivered code / credentials box */
+  --c-note-line: #e7d9a8;
+  --c-warn-soft: #fff4e5;
+  --c-warn-ink: #8a4b00;
+  --c-ok-soft: #e8f6ee;
+  --c-ok-ink: #17744a;
+  --c-bad-soft: #fdecec;
+  --c-bad-ink: #b42318;
+  --c-info-soft: #eef2ff;
+  --c-info-ink: #3b4fb8;
+  --c-focus-ring: #1f1f1f;
+  --c-focus-halo: #ffffff;
+  --c-backdrop-1: rgba(255, 214, 10, 0.14);
+  --c-backdrop-2: rgba(255, 80, 0, 0.06);
   --shell-w: 520px;
   --shell-wide: 960px;
   --tabbar-h: 56px;
@@ -80,6 +105,68 @@
   --gc-accent-soft: var(--c-accent-soft);
   --gc-accent-ink: var(--c-accent-ink);
   --gc-danger: var(--c-danger);
+  --gc-fill: var(--c-fill);
+  --gc-tint: var(--c-tint);
+  --gc-line: var(--c-line);
+  --gc-ok-soft: var(--c-ok-soft);
+  --gc-ok-ink: var(--c-ok-ink);
+  --gc-warn-soft: var(--c-warn-soft);
+  --gc-warn-ink: var(--c-warn-ink);
   --gc-avatar-bg: #2b2b2b;
   --gc-avatar-fg: var(--c-accent);
+}
+
+/* ---------------------------------------------------------------- dark theme
+   Same tokens, dark values. Contrast: text 15:1, text-2 9:1, muted 5.6:1, price 6.3:1 on surface. */
+:root.dark {
+  color-scheme: dark;
+  --c-accent-soft: #3a3310;
+  --c-accent-ink: #ffe27a;
+  --c-price: #ff8552;
+  --c-text: #f2f0ea;
+  --c-text-2: #c9c6bd;
+  --c-muted: #a09d94;
+  --c-line: #33322e;
+  --c-bg: #161614;
+  --c-surface: #20201d;
+  --c-page: #0d0d0c;
+  --c-success: #4cc38a;
+  --c-danger: #ff6b6b;
+  --c-warning: #f5b040;
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.3), 0 2px 8px rgba(0, 0, 0, 0.3);
+  --c-fill: #2b2a27;
+  --c-fill-strong: #3a3935;
+  --c-chip: #34332f;
+  --c-chip-ink: #ffffff;
+  --c-glass: rgba(255, 255, 255, 0.1);
+  --c-veil: rgba(32, 32, 29, 0.85);
+  --c-tint: rgba(255, 255, 255, 0.08);
+  --c-hero-1: #3b3410;
+  --c-hero-2: #2a2612;
+  --c-note-bg: #262520;
+  --c-note-line: #5a5033;
+  --c-warn-soft: #3a2a10;
+  --c-warn-ink: #ffc266;
+  --c-ok-soft: #14301f;
+  --c-ok-ink: #7bdca6;
+  --c-bad-soft: #3a1717;
+  --c-bad-ink: #ff9a8f;
+  --c-info-soft: #1d2340;
+  --c-info-ink: #a9b8ff;
+  --c-focus-ring: #ffd60a;
+  --c-focus-halo: #161614;
+  --c-backdrop-1: rgba(255, 214, 10, 0.05);
+  --c-backdrop-2: rgba(255, 80, 0, 0.03);
+}
+/* Vant's own dark palette comes from `.van-theme-dark` (set together with `.dark`); these map its
+   surfaces onto ours so cells, popups and fields sit on the same greys. */
+:root:root.dark {
+  --van-background: var(--c-bg);
+  --van-background-2: var(--c-surface);
+  --van-background-3: var(--c-fill);
+  --van-text-color: var(--c-text);
+  --van-text-color-2: var(--c-muted);
+  --van-text-color-3: var(--c-muted);
+  --van-border-color: var(--c-line);
+  --van-active-color: var(--c-fill);
 }

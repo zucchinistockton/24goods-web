@@ -55,7 +55,7 @@ const dim = computed(() => (typeof props.size === 'number' ? `${props.size}px` :
   display: inline-block;
   flex: none;
   overflow: hidden;
-  background: #eef0f3;
+  background: var(--gc-fill, #eef0f3);
   vertical-align: middle;
 }
 .pt img,
