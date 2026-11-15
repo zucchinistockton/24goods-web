@@ -52,12 +52,16 @@ async def zovocard_webhook(
     s = res.settings
     env = None
     secret = ""
-    for name, sec in (
+    # one setting may hold several comma-separated keys: the vendor signs the general callback and
+    # each API-key subscription with different secrets. Every candidate is compared in constant
+    # time; the FIRST key of the environment stays the dedup key material, whichever one signed.
+    for name, value in (
         ("production", s.zovocard_webhook_secret),
         ("sandbox", s.zovocard_sandbox_webhook_secret),
     ):
-        if sec and verify_signature(raw, request.headers, sec):
-            env, secret = name, sec
+        secrets = [x.strip() for x in value.split(",") if x.strip()]
+        if any([verify_signature(raw, request.headers, sec) for sec in secrets]):
+            env, secret = name, secrets[0]
             break
     if env is None:
         log.warning("zovocard webhook: bad signature")

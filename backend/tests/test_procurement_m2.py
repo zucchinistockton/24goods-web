@@ -684,3 +684,26 @@ async def test_migration_0024_up_and_down(services):
             await admin.execute(f"DROP DATABASE IF EXISTS {db_name} WITH (FORCE)")
         finally:
             await admin.close()
+
+
+async def test_webhook_accepts_any_configured_key_of_the_environment(env, hook):
+    """The vendor signs the general callback and an API-key subscription with different keys."""
+    second = "whsec_second_" + "c" * 32
+    env.res.settings = env.res.settings.model_copy(
+        update={"zovocard_sandbox_webhook_secret": f"{WEBHOOK_SECRET}, {second}"}
+    )
+    c = env.client(csrf=False)
+    ev = {
+        "type": "cdk.disabled",
+        "event_id": "cdk.disabled:5",
+        "cdk_id": 5,
+        "cdk_status": "disabled",
+    }
+    for secret in (WEBHOOK_SECRET, second):  # the same event through both callbacks: stored once
+        raw, headers = _signed(ev, secret=secret)
+        r = await c.post("/api/v1/webhooks/zovocard", content=raw, headers=headers)
+        assert r.status_code == 200
+    assert await env.scalar("SELECT count(*) FROM supplier_events") == 1
+    raw, headers = _signed(ev, secret="whsec_other_" + "d" * 32)
+    r = await c.post("/api/v1/webhooks/zovocard", content=raw, headers=headers)
+    assert r.status_code == 401

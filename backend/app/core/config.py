@@ -93,6 +93,7 @@ class Settings(BaseSettings):
     procurement_allow_production: bool = False
     # review-v12 §6: supplier webhook signing secrets (API side; never the supplier API secret).
     # Read as ZOVOCARD_WEBHOOK_SECRET / ZOVOCARD_SANDBOX_WEBHOOK_SECRET (or with the APP_ prefix).
+    # Several keys per environment: comma-separated (general callback + API-key subscription).
     zovocard_webhook_secret: str = Field(
         default="",
         repr=False,
