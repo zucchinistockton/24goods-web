@@ -399,3 +399,32 @@ browser session injection (currently done by hand with a Chrome extension). Befo
    and acceptance of the account/terms-of-service risk on the upstream platform. This adapter moves real
    money, so invariant 11 applies: no production use before the independent security review.
 
+
+## 16. Payment-audit fixes on M2 (2026-11-15)
+
+Engine rules added after the payment-auditor pass (migration `0027`; tests `tests/test_procurement_audit.py`):
+
+- **Order state.** Nothing is bought, replayed or bound for an order that is not `paid`. A held order parks its
+  job in `needs_manual` (`order_not_paid`); a refunded / closed one fails it. A job that may have reached the
+  supplier (`maybe_sent` or `upstream_ref`) is never dropped: `failed` + `recover` makes the engine ask once under
+  the SAME key to learn the reference, then disable the code (`voided`), or end in `needs_manual`. An answer that
+  arrives after the order left `paid` is not sealed; the code is disabled (`void_pending`). Refund and "close held
+  order" close the order's open jobs with audit rows.
+- **Availability first.** `availability()` (read-only) runs before the first send of a job; an unavailable plan
+  fails over (nothing was sent) or goes to `needs_manual` and sets `last_check_ok = false`. An ambiguous
+  `request_failed` on a write stays AMBIGUOUS for money but no longer stops the supplier.
+- **`maybe_sent`** (set in the lease commit, before the first call) replaces the error-code guess: switch,
+  failover and "maybe charged" read it. It is cleared only when the supplier said "nothing happened". `request_hash`
+  is enforced in every mode; a same-key replay older than `APP_REPLAY_MAX_AGE_S` (default 21600 s) is refused
+  (`replay_expired`).
+- **Balance breaker fails closed.** An offer is enabled only with a `cost_estimate` in the supplier's currency or a
+  cost the supplier named itself (`cost_known`); `unknown_cost > 0` opens the (self-closing) balance breaker; no new
+  purchase is leased while the last balance reading is older than `APP_BALANCE_STALE_S` (default 900 s); queued jobs
+  of a supplier held by a balance breaker back off and resume by themselves.
+- **Staff actions.** `fulfil` / `fail` answer 409 `job_in_flight` while the engine's lease is live; for a possibly
+  sent job they schedule the same recovery. `void` also voids the sealed `card_stock` row.
+- **Locks.** One order: job set (one ordered statement), then order, then supplier. Refund / close take the job set
+  `NOWAIT` (409 `procurement_busy`).
+- **Left open.** L3 (release of late-payment upstream orders) and L6 (webhook pulling `next_poll_at` forward on a
+  leased job) are marked `TODO(v12-M3)` in the code. Note: a hand-fulfilled job with a possible supplier code has
+  that code disabled by the recovery; staff must not paste the supplier's own code in that case.

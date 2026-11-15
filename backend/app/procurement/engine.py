@@ -15,6 +15,12 @@ due jobs, calls the supplier outside any transaction, and applies the :class:`Ou
 * FATAL -> ``needs_manual`` + ``procure.failed`` (delivery moves the order to manual_review and
   posts the buyer message; the API reconciler alerts staff).
 
+Payment-audit rules (M2, 2026-11-15): nothing is bought or bound for an order that is not ``paid``
+(``failed`` + same-key recovery when a code may exist); availability is checked read-only before
+the FIRST send; ``maybe_sent`` (set in the lease commit) decides what may fail over; replays pin the
+request hash and a maximum age; a balance reading must be fresh and the balance breaker holds
+queued jobs instead of failing them. Lock order: the order's job set, then order, then supplier.
+
 Every job state change writes an audit row. Plaintext codes exist only between the supplier
 answer and ``seal()``: never logged, never in an exception, never in a job row.
 """
