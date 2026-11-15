@@ -334,7 +334,8 @@ plain `Authorization: Bearer` header and the session's own User-Agent; the entit
 `chatgptplusplan`. Both proxy geos tested (`-US_city_LosAngeles`, `-PH`) exit in the named country.
 Read-only calls only; no checkout or payment endpoint was called.
 
-**Backup supplier — to analyse, nothing built.** Owner direction: keep ZovoCard as the primary upstream
+**Backup supplier — future work, parked by the owner on 2026-11-15 (payment instrument and billing
+countries undecided); nothing built.** Owner direction: keep ZovoCard as the primary upstream
 (the protocol changes often, so the vendor absorbs that) and add a second adapter under `suppliers/` that
 performs the subscription itself, using the payment protocol of `gpt-subscribe-studio` and, alternatively,
 browser session injection (currently done by hand with a Chrome extension). Before any code:

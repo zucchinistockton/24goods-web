@@ -6,13 +6,20 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 **Hand-off 2026-11-15 (session ended early on quota; read this block first).**
 
-- **BLOCKER — the GitHub account `arifulcrypto` is suspended** (seen 2026-11-15: `git ls-remote`, `gh api user`
-  and GraphQL all return 403 "Your account was suspended"). No push, PR, CI, merge or GHCR pull is possible
-  until the owner resolves it at https://support.github.com. CI is the test gate (AGENTS.md §7) and
-  `prod.sh deploy` pulls from GHCR, so **nothing can be merged or deployed**; all work below is local
-  commits only. The cause is not known. *Inference only:* the public repo
-  `arifulcrypto/gpt-subscribe-studio-dev` was pushed shortly before. Keep off-host copies of this repo
-  (`git bundle create`) until access is back.
+- **Repository moved (2026-11-15):** the old account `arifulcrypto` is suspended (appeal filed, answer
+  expected in 3–5 business days). Development continues at **`zucchinistockton/24goods-web`** (private; remote
+  `origin`; the dead remote is kept as `old`). Pushed: `main` (`19c7625`), `feat/v12-procurement`,
+  `feat/v12-procurement-m2`. PR #1 moves the owner/image references (`ghcr.io/zucchinistockton/...`), PR #2
+  is the M2 draft. Old PR/issue numbers (#1–#89) refer to the old repository and are not migrated.
+  **Not done yet:** branch protection on `main` (needs a paid plan while the repo is private); Dependabot and
+  `ENABLE_CODEQL` settings; a GHCR token from the new account on c4 (`~/.secrets/ghcr_token` is the old,
+  dead PAT) — **production cannot pull new images until that exists**; the demo updater's token likewise.
+  PR events did not start CI on the first PRs; `gh workflow run CI --ref <branch>` does.
+- **ZovoCard sandbox (account valid until 2026-11-18 10:57):** console login saved in
+  `~/.secrets/zovocard-sandbox.txt`. Still needed from the console's Developers page before the probe can
+  run: a sandbox `app_id` / `app_secret`, the key's IP allowlist set to the dev box egress `107.173.10.79`,
+  and (for webhook tests) the key-level callback URL plus its signing secret. No scanning: scripted probe
+  and the named scenario tests only (spec §12).
 - **Branches (local):** `main` is 2 behind `origin/main` (`19c7625`, which already contains pay-ux #88;
   `fix/pay-ux` has no diff against it and can be deleted). v12 M1 is merged into **`feat/v12-procurement`**
   (#89, `a00b58e`), **not into `main`**. M2 lives on `feat/v12-procurement-m2` in the worktree
@@ -34,12 +41,12 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
   2. Optional TOTP 2FA (`feat/totp-2fa`, spec §13).
   3. Telegram notifications: English by default, language (en / zh-CN) selectable in the admin console,
      texts through i18n.
-  4. Email templates: proper layout and styling so the key information is easy to find. The owner's note
-     said "shutdown-related information" — **meaning unclear, ask before building** (order/delivery details?
-     service expiry?).
+  4. Email templates: redesign the outgoing emails (clearer subjects, formatted HTML body with a plain-text
+     part, key information first). Owner confirmed 2026-11-15: a design/content upgrade, no new behaviour.
   5. Second GPT supplier adapter built on the open-source payment protocol
      (`crhywun/gpt-subscribe-studio-1`; owner fork `arifulcrypto/gpt-subscribe-studio-dev`, local `/opt/gss/src`)
-     plus the browser-session-injection path, as a backup to ZovoCard. **Not analysed yet** (spec §15).
+     plus the browser-session-injection path, as a backup to ZovoCard. **Future work, parked** (owner,
+     2026-11-15: payment instrument and billing countries undecided; spec §15).
   6. ZovoCard sandbox probe: still waiting for the sandbox key.
 
 **v12 procurement M1 — built (2026-11-14, branch `feat/v12-procurement-m1`, ADR-038, migration
