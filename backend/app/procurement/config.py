@@ -41,6 +41,11 @@ class ProcurementSettings:
     # engine (review-v12 §3, §6)
     jobs_poll_s: float = 2.0
     job_lease_s: float = 120.0
+    # How long a same-key replay (reconcile / resubmit / poll) is still trusted after the first
+    # send. The vendor's idempotency cache is not documented to live forever: beyond this age a
+    # replay could execute a SECOND purchase, so the job goes to needs_manual (maybe charged)
+    # instead. Default 6 h (review-v12 §6: the engine gives up on unresolved sends in ~30 min).
+    replay_max_age_s: float = 21600.0
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> ProcurementSettings:

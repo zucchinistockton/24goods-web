@@ -370,3 +370,115 @@ async def test_ambiguous_request_failed_does_not_open_the_supplier_breaker(env, 
     assert await _offer_check(env, offer) is False  # per-offer stop: the storefront hides it
     keys = {k for _, k in mock.calls}
     assert keys == {job.idempotency_key}  # still the same key, still AMBIGUOUS for money
+
+
+# ------------------------------------------------------------------ M4 / M5
+async def _detail(env, job):
+    staff, _ = await env.login("agent")
+    return (await staff.get(f"/api/v1/admin/procurement/jobs/{job.id}")).json()
+
+
+async def test_edited_offer_is_never_replayed_under_the_old_key(env, up):
+    mock = LosingMock("mock_a", lose=1)
+    await up.supplier(mock)
+    _buyer, order = await up.paid_order()
+    await up.run()
+    assert [op for op, _ in mock.calls] == ["submit"]
+    await _sql(env, """UPDATE supplier_offers SET params = '{"plan": "plus", "region": "XX"}'""")
+    await up.make_due()
+    await up.run()
+    job = await _job(up, order)
+    assert job.state == "needs_manual" and job.error_code == "offer_changed" and job.maybe_sent
+    assert [op for op, _ in mock.calls] == ["submit"]  # no query / resubmit with another body
+    detail = await _detail(env, job)
+    assert detail["charged_possible"] is True and "switch" not in detail["actions"]
+
+
+async def test_edited_offer_stops_polling_of_an_accepted_job(env, up):
+    mock = LosingMock("mock_a", lose=0, pending=True)
+    await up.supplier(mock)
+    _buyer, order = await up.paid_order()
+    await up.run()
+    assert (await _job(up, order)).state == "accepted_pending"
+    await _sql(env, """UPDATE supplier_offers SET params = '{"plan": "plus", "region": "XX"}'""")
+    await up.make_due()
+    await up.run()
+    job = await _job(up, order)
+    assert job.state == "needs_manual" and job.error_code == "offer_changed"
+    assert [op for op, _ in mock.calls] == ["submit"]
+
+
+async def test_recovery_does_not_replay_an_edited_request(env, up):
+    mock = LosingMock("mock_a", lose=1)
+    await up.supplier(mock)
+    _buyer, order = await up.paid_order()
+    await up.run()
+    assert (await _refund(env, order)).status_code == 200
+    await _sql(env, """UPDATE supplier_offers SET params = '{"plan": "plus", "region": "XX"}'""")
+    await up.make_due()
+    await up.run()
+    job = await _job(up, order)
+    assert job.state == "needs_manual" and job.error_code == "offer_changed" and not job.recover
+    assert [op for op, _ in mock.calls] == ["submit"]
+
+
+async def test_replay_beyond_the_maximum_age_goes_to_manual(env, up):
+    mock = LosingMock("mock_a", lose=1)
+    await up.supplier(mock)
+    _buyer, order = await up.paid_order()
+    await up.run()
+    await _sql(env, "UPDATE procurement_jobs SET first_sent_at = now() - interval '7 hours'")
+    await up.make_due()
+    await up.run()
+    job = await _job(up, order)
+    assert job.state == "needs_manual" and job.error_code == "replay_expired" and job.maybe_sent
+    assert [op for op, _ in mock.calls] == ["submit"]
+    # a replay inside the window is still allowed (the setting is documented in config.py)
+    from app.procurement.config import ProcurementSettings
+
+    assert ProcurementSettings().replay_max_age_s == 21600.0
+    assert ProcurementSettings.from_env({"APP_REPLAY_MAX_AGE_S": "60"}).replay_max_age_s == 60.0
+
+
+async def test_offer_disabled_after_a_possible_send_is_not_failed_over(env, up):
+    a = MockSupplier("mock_a", outcomes=[Outcome.AMBIGUOUS])
+    b = MockSupplier("mock_b")
+    _, offer_a = await up.supplier(a, code="mock_a", priority=10)
+    await up.supplier(b, code="mock_b", priority=20)
+    _buyer, order = await up.paid_order()
+    await up.run()  # submit AMBIGUOUS -> reconcile is next
+    await _sql(env, "UPDATE supplier_offers SET enabled = false WHERE id = :o", o=offer_a)
+    await up.make_due()
+    await up.run()  # the query finds nothing, the same-key resubmit follows: no failover
+    job = await _job(up, order)
+    assert job.state == "fulfilled" and job.tried_offer_ids == []  # never moved to supplier b
+    assert not b.calls and len(a.charged) == 1
+    assert [op for op, _ in a.calls] == ["submit", "query", "submit"]
+    assert {k for _, k in a.calls} == {job.idempotency_key}
+
+
+async def test_failover_refuses_a_job_that_may_have_been_sent(env, up):
+    from types import SimpleNamespace
+
+    from app.core.db import tenant_session
+    from app.procurement import engine
+
+    await up.supplier(MockSupplier("mock_a"), code="mock_a", priority=10)
+    await up.supplier(MockSupplier("mock_b"), code="mock_b", priority=20)
+    await up.paid_order()
+    await _create_jobs_only(up)
+    await _sql(env, "UPDATE procurement_jobs SET maybe_sent = true")
+    async with tenant_session(up.ctx.maker, env.tenant_id) as db:
+        job = (await db.scalars(_all_jobs())).one()
+        row = await engine.load_order(db, job.order_id)
+        await engine._failover(SimpleNamespace(redis=env.res.redis), db, job, row, "x")
+        assert job.state == "needs_manual" and job.error_code == "maybe_sent:x"
+        await db.rollback()
+
+
+def _all_jobs():
+    from sqlalchemy import select
+
+    from app.models import ProcurementJob
+
+    return select(ProcurementJob)

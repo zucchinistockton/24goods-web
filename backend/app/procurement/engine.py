@@ -611,12 +611,35 @@ async def _failover(
     job.idempotency_key = job_idempotency_key(job.id.hex, f"s{len(tried) + 1}")
     job.request_hash = request_hash(nxt.kind, nxt.params)
     job.step = "submit"
+    job.first_sent_at = None
     job.upstream_ref = None
     job.attempts = 0
     job.next_poll_at = utcnow()
     await _transition(
         db, job, "queued", f"failover:{reason}", actor_id=actor_id, actor_role=actor_role, ip=ip
     )
+
+
+def _unsent(job: ProcurementJob) -> None:
+    """The supplier answered "nothing happened" for the current key (a refused or not-executed
+    write, a verified miss): the job is back to never-sent, so another source may be tried."""
+    if job.upstream_ref is None:
+        job.maybe_sent, job.first_sent_at = False, None
+
+
+def _replay_problem(
+    ctx: ProcurementContext, job: ProcurementJob, offer: OfferRow, now: datetime
+) -> str | None:
+    """A replay under the job's key is only safe for the SAME request and while the vendor still
+    remembers the key (M5): the pinned ``request_hash`` is enforced in every mode, and a replay
+    older than ``replay_max_age_s`` is refused."""
+    if job.request_hash and job.request_hash != request_hash(offer.kind, offer.params):
+        return "offer_changed"
+    if job.first_sent_at is not None and now - job.first_sent_at > timedelta(
+        seconds=ctx.settings.replay_max_age_s
+    ):
+        return "replay_expired"
+    return None
 
 
 async def _stop_recovery(db: AsyncSession, job: ProcurementJob, reason: str) -> None:
@@ -648,6 +671,10 @@ async def _lease_detached(
         await db.commit()
         return None
     mode = "dvoid" if job.upstream_ref else "recover"
+    if mode == "recover" and (problem := _replay_problem(ctx, job, offer, now)):
+        await _stop_recovery(db, job, problem)  # no replay of a changed / too old request
+        await db.commit()
+        return None
     job.attempts += 1
     job.next_poll_at = job.lease_until = now + timedelta(seconds=ctx.settings.job_lease_s)
     lease = Lease(
@@ -719,6 +746,10 @@ async def _lease(ctx: ProcurementContext, job_id: uuid.UUID, tenant_id: uuid.UUI
                     await _needs_manual(db, job, "offer_missing")
                     await db.commit()
                     return None
+            if mode != "void" and (problem := _replay_problem(ctx, job, offer, now)):
+                await _needs_manual(db, job, problem)  # maybe charged: never replayed
+                await db.commit()
+                return None
             if mode == "submit":
                 job.step = "sent"  # same-key resubmit after a reconcile found nothing
             elif mode == "query" and job.state == "submitting":
@@ -976,7 +1007,8 @@ async def _apply_detached(
                 severity="warning",
             )
         elif o in (Outcome.UNAVAILABLE, Outcome.FATAL):  # the supplier holds nothing for the key
-            job.recover, job.maybe_sent, job.next_poll_at = False, False, None
+            job.recover, job.next_poll_at = False, None
+            _unsent(job)
             await audit(
                 db,
                 tenant_id=job.tenant_id,
@@ -1045,7 +1077,7 @@ async def _apply(ctx: ProcurementContext, lease: Lease, res: Result) -> None:
             job.error_code = clean_detail(res.error_code or "retryable")
             if lease.mode == "submit":
                 job.step = "submit"  # a RETRYABLE write was not executed
-                job.maybe_sent = job.upstream_ref is not None
+                _unsent(job)
             if job.attempts > MAX_RETRIES:
                 await _needs_manual(db, job, "retry_exhausted")
             else:
@@ -1066,7 +1098,7 @@ async def _apply(ctx: ProcurementContext, lease: Lease, res: Result) -> None:
                 job.step = "verify"  # failover only after query() also finds nothing
                 job.next_poll_at = now
             elif lease.mode == "verify":
-                job.maybe_sent = False  # submit and the same-key query both found nothing
+                _unsent(job)  # submit and the same-key query both found nothing
                 await _failover(ctx, db, job, order, job.error_code)
             elif job.state == "accepted_pending":
                 await _needs_manual(db, job, "upstream_lost")
@@ -1074,8 +1106,7 @@ async def _apply(ctx: ProcurementContext, lease: Lease, res: Result) -> None:
                 job.step = "submit"
                 job.next_poll_at = now
         else:  # FATAL: a deterministic refusal, nothing was executed for this key
-            if job.upstream_ref is None:
-                job.maybe_sent = False
+            _unsent(job)
             await _needs_manual(db, job, res.error_code or "fatal")
         if (
             job.state in ACTIVE
