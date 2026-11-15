@@ -33,6 +33,7 @@ from app.modules.admin.importer import router as admin_import_router
 from app.modules.admin.ordering import router as admin_ordering_router
 from app.modules.admin.payment_gateways import router as payment_gateways_router
 from app.modules.admin.payment_ops import router as payment_ops_router
+from app.modules.admin.procurement_cost import router as admin_procurement_cost_router
 from app.modules.admin.procurement_jobs import router as admin_procurement_jobs_router
 from app.modules.admin.procurement_sources import router as admin_procurement_sources_router
 from app.modules.admin.router import router as admin_router
@@ -208,6 +209,7 @@ def api_router() -> APIRouter:
         admin_suppliers_router,
         admin_procurement_sources_router,
         admin_procurement_jobs_router,
+        admin_procurement_cost_router,
         webhooks_router,
         challenges_router,
     ):
