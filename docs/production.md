@@ -10,6 +10,11 @@ visitor --TLS--> Cloudflare (orange cloud, SSL Full strict)
 
 - c4: Ubuntu 22.04, Docker 29 + compose v2, deploy dir `/opt/kesiv/deploy` (only `deploy/` files, no source).
 - Images: `ghcr.io/zucchinistockton/goods24-api:main` and `goods24-web:main` (private, pulled with a transient login).
+- **Publishing (since 2026-11-15):** on the new repository `push` and `pull_request` events do not start
+  workflows (no check suite is created for any push; only `workflow_dispatch` runs — an account-level
+  restriction on the new GitHub account, not a repository setting). After merging to `main`, run
+  `gh workflow run CI --ref main`; the `publish` job pushes `:main` and `:<sha>` when all jobs are green.
+  For PRs run `gh workflow run CI --ref <branch>` (a manual run scans the whole history with gitleaks).
 - Same compose as dev/demo plus `docker-compose.prod.yml` (port 8088, certs, `Caddyfile.prod`, memory limits for 4 GB: api 384m, postgres 512m). mockpay is behind `--profile demo` and never starts.
 - Only `web` publishes a port. Source IPs at c4 are Cloudflare IPs; the real visitor comes from `CF-Connecting-IP` (trusted only from Cloudflare ranges, list dated in `Caddyfile.prod`).
 - Admin paths (`/admin`, `/admin/*`, `/api/v1/admin/*`) return 403 unless the visitor IP is in `ADMIN_ALLOW_IPS` (default `141.98.198.150 38.175.222.75`, space-separated IPs/CIDRs, in `deploy/.env`).
