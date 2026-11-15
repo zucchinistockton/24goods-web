@@ -28,7 +28,7 @@ import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Protocol
 
 from sqlalchemy import func, insert, select
 from sqlalchemy.exc import IntegrityError
@@ -71,6 +71,7 @@ CONSUMED = (TOPIC_REQUESTED, TOPIC_EVENT)
 _CDK_TERMINAL = frozenset({"consumed", "disabled"})  # ZovoCard CDK statuses that do not move on
 UPSTREAM_MODES = ("upstream_cdk",)
 ACTIVE = ("queued", "submitting", "accepted_pending")
+WORK = (*ACTIVE, "void_pending")  # states the poller leases (void_pending: disable upstream)
 POLL_STEPS = (15, 30, 60, 120, 300, 600, 900)  # seconds; capped at 15 min (spec §6)
 MAX_RETRIES = 10
 MAX_RECONCILE = 40
@@ -137,8 +138,12 @@ async def _routing(db: AsyncSession, order: OrderRow) -> str:
     return r or "priority"
 
 
+class HasRedis(Protocol):
+    redis: Any
+
+
 async def candidates(
-    ctx: ProcurementContext,
+    ctx: HasRedis,
     db: AsyncSession,
     order: OrderRow,
     exclude: list[uuid.UUID] | tuple[uuid.UUID, ...] = (),
@@ -206,6 +211,7 @@ async def _transition(
     severity: str = "info",
     actor_id: uuid.UUID | None = None,
     actor_role: str = "system",
+    ip: str | None = None,
 ) -> None:
     before = {"state": job.state, "step": job.step}
     job.state = to
@@ -226,6 +232,7 @@ async def _transition(
             "error_code": job.error_code,
         },
         severity=severity,
+        ip=ip,
     )
 
 
@@ -429,10 +436,12 @@ class Lease:
 
 
 def _spec(job: ProcurementJob, offer: OfferRow) -> JobSpec:
+    voiding = job.state == "void_pending"
     return JobSpec(
         job_id=job.id.hex,
-        step=job.step,
-        idempotency_key=job.idempotency_key,
+        step="void" if voiding else job.step,
+        # the vendor caches answers per key: a void never reuses the issue key
+        idempotency_key=job_idempotency_key(job.id.hex, "void") if voiding else job.idempotency_key,
         offer=OfferSpec(kind="cdk", params=offer.params),
         upstream_ref=job.upstream_ref,
     )
@@ -468,7 +477,7 @@ async def _offer(db: AsyncSession, job: ProcurementJob) -> OfferRow | None:
 
 
 async def _failover(
-    ctx: ProcurementContext, db: AsyncSession, job: ProcurementJob, order: OrderRow, reason: str
+    ctx: HasRedis, db: AsyncSession, job: ProcurementJob, order: OrderRow, reason: str
 ) -> None:
     tried = [*list(job.tried_offer_ids or []), *([job.offer_id] if job.offer_id else [])]
     job.tried_offer_ids = tried
@@ -498,7 +507,7 @@ async def _lease(ctx: ProcurementContext, job_id: uuid.UUID, tenant_id: uuid.UUI
         )
         if (
             job is None
-            or job.state not in ACTIVE
+            or job.state not in WORK
             or job.next_poll_at is None
             or job.next_poll_at > now
         ):
@@ -527,6 +536,8 @@ async def _lease(ctx: ProcurementContext, job_id: uuid.UUID, tenant_id: uuid.UUI
             else:
                 job.step = "sent"
             mode = "submit"
+        elif job.state == "void_pending":
+            mode = "void"
         elif job.state == "submitting" and job.step == "verify":
             mode = "verify"
         elif job.state == "submitting" and job.step == "sent":
@@ -586,10 +597,12 @@ async def _call(ctx: ProcurementContext, lease: Lease) -> Result:
         sup = engine_supplier(ctx, lease.ref)
         if lease.mode == "submit":
             return await sup.submit(lease.spec)
+        if lease.mode == "void":
+            return await sup.void(lease.spec)
         return await sup.query(lease.spec)
     except Exception as exc:  # unknown failure: if it may have been sent, reconcile
         log.error("supplier call failed job=%s error=%s", lease.job_id, type(exc).__name__)
-        if lease.mode == "submit":
+        if lease.mode in ("submit", "void"):
             return Result(Outcome.AMBIGUOUS, error_code="internal_error")
         return Result(Outcome.RETRYABLE, error_code="internal_error")
 
@@ -681,6 +694,24 @@ async def _fulfil(
         )
 
 
+async def _apply_void(db: AsyncSession, job: ProcurementJob, res: Result, now: datetime) -> None:
+    """``void_pending`` -> ``voided`` once the supplier disabled the code; a refusal ("already
+    redeemed", unknown code) puts the job back where it was and tells staff why."""
+    o = res.outcome
+    if o is Outcome.OK:
+        job.step, job.next_poll_at, job.error_code = "done", None, None
+        job.upstream_status = "disabled"
+        await _transition(db, job, "voided", "void_ok")
+    elif o is Outcome.FATAL or job.attempts > MAX_RETRIES:
+        job.error_code = clean_detail(f"void_rejected:{res.error_code or 'unresolved'}")
+        job.step, job.next_poll_at = "done", None
+        back = "fulfilled" if job.card_stock_ids else "needs_manual"
+        await _transition(db, job, back, "void_rejected", severity="warning")
+    else:  # RETRYABLE / AMBIGUOUS / UNAVAILABLE: the same void key is replayed later
+        job.error_code = clean_detail(res.error_code or "void_retry")
+        job.next_poll_at = now + _backoff(job.attempts, res.retry_after)
+
+
 async def _apply(ctx: ProcurementContext, lease: Lease, res: Result) -> None:
     now = utcnow()
     async with tenant_session(ctx.maker, lease.tenant_id) as db:
@@ -698,6 +729,10 @@ async def _apply(ctx: ProcurementContext, lease: Lease, res: Result) -> None:
         order = await load_order(db, job.order_id)
         assert order is not None
         o = res.outcome
+        if lease.mode == "void":
+            await _apply_void(db, job, res, now)
+            await db.commit()
+            return
         if res.supplier_stop:
             await _open_breaker(db, job, res.error_code or "supplier_stop")
         if o is Outcome.OK:
@@ -781,7 +816,7 @@ async def due_jobs(ctx: ProcurementContext, limit: int = 20) -> list[tuple[uuid.
             await db.execute(
                 select(ProcurementJob.id, ProcurementJob.tenant_id)
                 .where(
-                    ProcurementJob.state.in_(ACTIVE),
+                    ProcurementJob.state.in_(WORK),
                     ProcurementJob.next_poll_at <= func.now(),
                 )
                 .order_by(ProcurementJob.next_poll_at)

@@ -131,7 +131,7 @@ class Up:
             await db.execute(
                 text(
                     "UPDATE procurement_jobs SET next_poll_at = now() - interval '1 second' "
-                    "WHERE state IN ('queued', 'submitting', 'accepted_pending')"
+                    "WHERE state IN ('queued', 'submitting', 'accepted_pending', 'void_pending')"
                 )
             )
             await db.commit()
