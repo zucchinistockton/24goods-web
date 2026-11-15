@@ -118,6 +118,8 @@ export interface AdminResellerDomain {
 export interface NotificationsCfg {
   telegram_enabled: boolean
   telegram_chat_ids: string[]
+  /** language of the staff Telegram messages; English when absent */
+  telegram_language?: 'en' | 'zh-CN'
   event_order_paid: boolean
   event_chat_message: boolean
   event_after_sales: boolean

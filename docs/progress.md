@@ -4,6 +4,12 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 ## Current state — hand-off (read this first in a new session)
 
+**Telegram notification language (2026-11-15, PR `feat/tg-language`).** Staff alerts are English by
+default; `notifications.telegram_language` (`en` | `zh-CN`, Settings → Notifications) switches them. All
+sentences live in one catalog (`app/core/notify_tg.py` `TEXTS`; callers pass `T(key, …)` and plain strings
+only for data), rendered when the message goes out and HTML-escaped after rendering. The service-expiry
+reminder uses the same setting for Telegram (e-mail keeps the staff owner's locale). A test keeps the
+zh-CN catalog complete and its placeholders equal to English. No migration.
 **Dark mode (2026-11-15, PR `feat/dark-mode`).** Both apps follow the system theme
 (`prefers-color-scheme`, live; no manual switch, nothing stored). `followSystemTheme()` in
 `packages/shared/src/theme.ts` sets `html.dark` (+ `van-theme-dark` in the buyer app) before mount and keeps

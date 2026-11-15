@@ -655,7 +655,9 @@ async def test_every_distinct_duplicate_keeps_its_own_staff_alert(env, monkeypat
     sent: list[str] = []
     monkeypatch.setattr(notify_tg, "_outcome_events", lambda res, orders: None)
     monkeypatch.setattr(
-        notify_tg, "order_event", lambda res, o, kind, lines, **kw: sent.append(lines[0])
+        notify_tg,
+        "order_event",
+        lambda res, o, kind, lines, **kw: sent.append(notify_tg.render("en", lines[0])),
     )
     notify_tg.outcome_events(env.res, merged.orders, merged.dup_trade_nos)
     assert sorted(sent) == [

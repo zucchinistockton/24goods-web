@@ -6,6 +6,11 @@ read only here, sent only to api.telegram.org and never logged (failures log the
 class, not the message, because httpx messages can carry the URL). Messages carry an event
 label, order no, product title, amount and an admin link: never card secrets or buyer
 contact data. Dedupe/throttle keys are set only once a message is actually going out.
+
+Language: the tenant setting ``notifications.telegram_language`` (``en`` by default, ``zh-CN``
+selectable in the console). Callers never write prose: they pass :class:`T` keys from
+``TEXTS`` (rendered when the message goes out, in the tenant's language) and plain strings only
+for data (titles, order numbers, amounts).
 """
 
 from __future__ import annotations
@@ -14,7 +19,8 @@ import asyncio
 import html
 import logging
 import uuid
-from collections.abc import Coroutine, Sequence
+from collections.abc import Callable, Coroutine, Sequence
+from dataclasses import dataclass, field
 from typing import Any
 
 from app.core import secretbox
@@ -45,6 +51,109 @@ LABELS = {
     "reseller_application": "Reseller application",
     "low_stock": "Low card stock",
 }
+DEFAULT_LANG = "en"
+# every staff-facing sentence, per language; ``en`` is the source and must hold every key
+TEXTS: dict[str, dict[str, str]] = {
+    "en": {
+        **{f"label.{k}": v for k, v in LABELS.items()},
+        "label.urgent_manual_paid": "URGENT: manual order paid",
+        "label.urgent_reminder": "URGENT: buyer reminder",
+        "label.test": "Test",
+        "test.body": "Test message from your store settings.",
+        "order.no": "Order {no}",
+        "order.manual_ship_now": "manual delivery: ship now",
+        "order.manual": "manual delivery",
+        "order.auto": "auto delivery",
+        "order.second_payment": "SECOND payment, refund it: trade {trade}",
+        "order.expedite": "Buyer asks to ship this manual order now",
+        "stock.after_order": "Available after this order: {n}",
+        "aftersales.reason": "Reason: {reason}",
+        "chat.from": "From {who}",
+        "chat.type": "Type: {type}",
+        "reseller.store": "Store: {slug}",
+        "reseller.applicant": "Applicant: {who}",
+        "job.dead": "Delivery job {topic} #{id} failed {n} times and was dropped",
+        "job.maybe_undelivered": "Order {order} may be undelivered",
+        "pay.stale": "Payment attempt for {no} has been unresolved for 24 h",
+        "pay.check_gateway": "Check the gateway console",
+        "reminder.title": "Service expiry reminder",
+        "reminder.id": "Notification",
+        "reminder.service": "Service",
+        "reminder.buyer": "Buyer reference",
+        "reminder.due": "Due",
+        "reminder.unknown": "unknown",
+    },
+    "zh-CN": {
+        "label.order_paid": "订单已付款",
+        "label.chat_message": "买家新消息",
+        "label.after_sales": "售后申请",
+        "label.payment_review": "付款需人工核对",
+        "label.reseller_application": "分销商申请",
+        "label.low_stock": "卡密库存不足",
+        "label.urgent_manual_paid": "紧急：人工发货订单已付款",
+        "label.urgent_reminder": "紧急：买家催单",
+        "label.test": "测试",
+        "test.body": "这是一条来自店铺设置的测试消息。",
+        "order.no": "订单 {no}",
+        "order.manual_ship_now": "人工发货：请立即发货",
+        "order.manual": "人工发货",
+        "order.auto": "自动发货",
+        "order.second_payment": "重复付款，请退款：交易号 {trade}",
+        "order.expedite": "买家请求立即发货（人工发货订单）",
+        "stock.after_order": "本单之后可用库存：{n}",
+        "aftersales.reason": "原因：{reason}",
+        "chat.from": "来自 {who}",
+        "chat.type": "类型：{type}",
+        "reseller.store": "店铺：{slug}",
+        "reseller.applicant": "申请人：{who}",
+        "job.dead": "发货任务 {topic} #{id} 失败 {n} 次，已被丢弃",
+        "job.maybe_undelivered": "订单 {order} 可能未发货",
+        "pay.stale": "订单 {no} 的付款已超过 24 小时未确认",
+        "pay.check_gateway": "请在支付网关后台核对",
+        "reminder.title": "服务到期提醒",
+        "reminder.id": "通知编号",
+        "reminder.service": "服务",
+        "reminder.buyer": "买家编号",
+        "reminder.due": "到期时间",
+        "reminder.unknown": "未知",
+    },
+}
+
+
+@dataclass(frozen=True)
+class T:
+    """A catalog sentence with its values; rendered in the tenant's language when sent."""
+
+    key: str
+    params: dict[str, Any] = field(default_factory=dict)
+
+    def __init__(self, key: str, **params: Any) -> None:
+        object.__setattr__(self, "key", key)
+        object.__setattr__(self, "params", params)
+
+
+Line = str | T
+
+
+def tr(lang: str, key: str, **params: Any) -> str:
+    """Catalog text in ``lang`` (English when the language or the key is missing)."""
+    table = TEXTS.get(lang, TEXTS[DEFAULT_LANG])
+    template = table.get(key) or TEXTS[DEFAULT_LANG].get(key, key)
+    try:
+        return template.format(**params)
+    except (KeyError, IndexError):
+        return template
+
+
+def render(lang: str, line: Line) -> str:
+    return tr(lang, line.key, **line.params) if isinstance(line, T) else line
+
+
+def language(cfg: dict[str, Any]) -> str:
+    lang = cfg.get("telegram_language", DEFAULT_LANG)
+    return lang if lang in TEXTS else DEFAULT_LANG
+
+
 _tasks: set[asyncio.Task[Any]] = set()
 
 
@@ -76,12 +185,18 @@ def admin_link(res: Resources, path: str) -> str:
 
 
 def build_text(
-    event: str, lines: list[str], link: str | None = None, label: str | None = None
+    event: str,
+    lines: Sequence[Line],
+    link: str | None = None,
+    label: Line | None = None,
+    lang: str = DEFAULT_LANG,
 ) -> str:
-    """HTML message: bold label, escaped body lines, optional link."""
+    """HTML message: bold label, escaped body lines, optional link. Catalog entries are rendered
+    in ``lang`` first and escaped afterwards, values included."""
+    head = render(lang, label) if label is not None else tr(lang, f"label.{event}")
     parts = [
-        f"<b>{html.escape(label or LABELS.get(event, event))}</b>",
-        *(html.escape(x) for x in lines),
+        f"<b>{html.escape(head)}</b>",
+        *(html.escape(render(lang, x)) for x in lines),
     ]
     if link:
         parts.append(html.escape(link))
@@ -113,11 +228,12 @@ async def notify(
     res: Resources,
     tenant_id: uuid.UUID,
     event: str,
-    text: str,
+    text: str | Callable[[str], str],
     *,
     once: tuple[str, int] | None = None,
 ) -> bool:
     """Send ``text`` to every configured chat when enabled for ``event``. Never raises.
+    A callable ``text`` receives the tenant's notification language and returns the message.
 
     ``once=(key, ttl_s)``: Redis SET NX EX dedupe/throttle (only claimed when a send follows).
     """
@@ -127,9 +243,12 @@ async def notify(
             if not cfg["telegram_enabled"] or not cfg.get(f"event_{event}", False):
                 return False
             chats = cfg["telegram_chat_ids"]
+            lang = language(cfg)
             token = await secretbox.get_secret(db, res.settings, tenant_id, "telegram_bot_token")
         if not token or not chats:
             return False
+        if callable(text):
+            text = text(lang)
         if once is not None:
             key, ttl = once
             if not await res.redis.set(f"tg:{tenant_id}:{key}", "1", nx=True, ex=ttl):
@@ -145,13 +264,22 @@ def notify_bg(
     res: Resources,
     tenant_id: uuid.UUID,
     event: str,
-    lines: list[str],
+    lines: Sequence[Line],
     *,
     link: str | None = None,
     once: tuple[str, int] | None = None,
-    label: str | None = None,
+    label: Line | None = None,
 ) -> None:
-    spawn(notify(res, tenant_id, event, build_text(event, lines, link, label), once=once))
+    body = list(lines)
+    spawn(
+        notify(
+            res,
+            tenant_id,
+            event,
+            lambda lang: build_text(event, body, link, label, lang),
+            once=once,
+        )
+    )
 
 
 async def send_test(res: Resources, tenant_id: uuid.UUID) -> tuple[bool, str | None]:
@@ -167,15 +295,15 @@ async def send_test(res: Resources, tenant_id: uuid.UUID) -> tuple[bool, str | N
         return False, "no_token"
     if not cfg["telegram_chat_ids"]:
         return False, "no_chat"
-    text = "<b>Test</b>\nTest message from your store settings."
+    text = build_text("test", [T("test.body")], lang=language(cfg))
     ok = [await _post(res, token, c, text) for c in cfg["telegram_chat_ids"]]
     return (True, None) if all(ok) else (False, "send_failed")
 
 
 # ------------------------------------------------------------------ event helpers
-def order_lines(order: Any) -> list[str]:
+def order_lines(order: Any) -> list[Line]:
     return [
-        f"Order {order.order_no}",
+        T("order.no", no=order.order_no),
         f"{order.title}",
         f"{fmt(order.amount_minor)} {order.currency}",
     ]
@@ -185,9 +313,9 @@ def order_event(
     res: Resources,
     order: Any,
     event: str,
-    extra: list[str] | None = None,
+    extra: Sequence[Line] | None = None,
     once_suffix: str = "",
-    label: str | None = None,
+    label: Line | None = None,
 ) -> None:
     """Notify about one order (plain attributes only: safe to call after commit)."""
     notify_bg(
@@ -219,7 +347,7 @@ def outcome_events(
                     res,
                     o,
                     "payment_review",
-                    [f"SECOND payment, refund it: trade {dup[:32]}"],
+                    [T("order.second_payment", trade=dup[:32])],
                     once_suffix=f":{dup[:64]}",
                 )
     except Exception as exc:  # a notification bug must not fail a notify reply
@@ -235,11 +363,11 @@ def _outcome_events(res: Resources, orders: list[Any]) -> None:
                     res,
                     o,
                     "order_paid",
-                    ["manual delivery: ship now"],
-                    label="URGENT: manual order paid",
+                    [T("order.manual_ship_now")],
+                    label=T("label.urgent_manual_paid"),
                 )
             else:
-                mode = "manual delivery" if o.delivery_mode == "manual" else "auto delivery"
+                mode = T("order.manual" if o.delivery_mode == "manual" else "order.auto")
                 order_event(res, o, "order_paid", [mode] if o.kind == "goods" else [o.kind])
             if o.delivery_mode != "manual" and o.product_id is not None:
                 spawn(low_stock_check(res, o.tenant_id, o.product_id, o.qty, o.title))
@@ -273,10 +401,11 @@ async def low_stock_check(
             res,
             tenant_id,
             "low_stock",
-            build_text(
+            lambda lang: build_text(
                 "low_stock",
-                [title, f"Available after this order: {max(left, 0)}"],
+                [title, T("stock.after_order", n=max(left, 0))],
                 admin_link(res, "inventory"),
+                lang=lang,
             ),
             once=(f"low_stock:{product_id}", 3600),
         )

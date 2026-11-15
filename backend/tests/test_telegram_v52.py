@@ -188,3 +188,47 @@ async def test_test_endpoint_admin_only_and_sends(env, tg):
     assert r.json() == {"ok": True} and tg.calls[0][1]["chat_id"] == "-100123"
     tg.status = 403
     assert (await admin.post(f"{API}/admin/site/telegram/test")).json()["ok"] is False
+
+
+# ------------------------------------------------------------------ message language
+def test_catalog_is_complete_and_formats_in_both_languages() -> None:
+    from app.core import notify_tg as n
+
+    assert set(n.TEXTS["zh-CN"]) == set(n.TEXTS["en"])  # zh-CN updated with every en key
+    for lang, table in n.TEXTS.items():
+        for key, template in table.items():
+            import string
+
+            names = {f for _, f, _, _ in string.Formatter().parse(template) if f}
+            en_names = {f for _, f, _, _ in string.Formatter().parse(n.TEXTS["en"][key]) if f}
+            assert names == en_names, (lang, key)
+
+
+def test_build_text_renders_in_the_given_language_and_escapes_values() -> None:
+    from app.core import notify_tg as n
+
+    lines = [n.T("order.no", no="G<1>"), "Title & <b>", n.T("aftersales.reason", reason="<i>x</i>")]
+    en = n.build_text("after_sales", lines, "https://x/admin/after-sales")
+    zh = n.build_text("after_sales", lines, "https://x/admin/after-sales", lang="zh-CN")
+    assert en.startswith("<b>After-sales request</b>\nOrder G&lt;1&gt;\nTitle &amp; &lt;b&gt;")
+    assert "Reason: &lt;i&gt;x&lt;/i&gt;" in en
+    assert zh.startswith("<b>售后申请</b>\n订单 G&lt;1&gt;\nTitle &amp; &lt;b&gt;")
+    assert "原因：&lt;i&gt;x&lt;/i&gt;" in zh
+    # an unknown language or key falls back to English / the key, never raises
+    assert (
+        n.build_text("order_paid", [n.T("order.auto")], lang="fr")
+        == "<b>Order paid</b>\nauto delivery"
+    )
+    assert n.tr("zh-CN", "no.such.key") == "no.such.key"
+    assert n.language({"telegram_language": "zh-CN"}) == "zh-CN"
+    assert n.language({"telegram_language": "xx"}) == "en" and n.language({}) == "en"
+
+
+def test_language_setting_is_an_enum_with_english_default() -> None:
+    from app.core.settings_v5 import section
+
+    assert section(None, "notifications")["telegram_language"] == "en"
+    ts = {"notifications": {"telegram_language": "zh-CN"}}
+    assert section(ts, "notifications")["telegram_language"] == "zh-CN"
+    ts = {"notifications": {"telegram_language": "<script>"}}
+    assert section(ts, "notifications")["telegram_language"] == "en"
