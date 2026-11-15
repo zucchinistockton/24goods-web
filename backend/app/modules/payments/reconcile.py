@@ -297,6 +297,7 @@ async def run(res: Resources) -> int:
             total += await recheck_failed(res, db, tid, now)
             await close_abandoned(res, db, tid, now)
             await alert_dead_jobs(res, db, tid, now)
+            await alert_procurement_jobs(res, db, tid, now)
             refs = list(
                 await db.scalars(
                     select(PaymentAttempt.local_ref)
@@ -514,6 +515,49 @@ async def alert_dead_jobs(res: Resources, db: AsyncSession, tid: uuid.UUID, now:
             ],
             link=notify_tg.admin_link(res, "orders"),
             once=(f"dead_job:{oid}", 30 * 86400),
+        )
+    return len(rows)
+
+
+async def alert_procurement_jobs(
+    res: Resources, db: AsyncSession, tid: uuid.UUID, now: datetime
+) -> int:
+    """review-v12 §3/§6: a procurement job that needs staff (FATAL, no source left, unresolved)
+    or is stuck past 30 min raises the staff alert once (procurement has no Telegram token)."""
+    from app.core import notify_tg
+    from app.models import ProcurementJob
+
+    rows = list(
+        (
+            await db.execute(
+                select(ProcurementJob.id, ProcurementJob.order_id, ProcurementJob.state,
+                       ProcurementJob.error_code)
+                .where(
+                    ProcurementJob.tenant_id == tid,
+                    or_(
+                        ProcurementJob.state == "needs_manual",
+                        ProcurementJob.alerted_at.is_not(None)
+                        & ProcurementJob.state.in_(("queued", "submitting", "accepted_pending")),
+                    ),
+                    ProcurementJob.updated_at > now - DEAD_JOB_WINDOW,
+                )
+                .order_by(ProcurementJob.updated_at.desc())
+                .limit(10)
+            )
+        ).all()
+    )  # fmt: skip
+    await db.rollback()
+    for jid, oid, state, code in rows:
+        notify_tg.notify_bg(
+            res,
+            tid,
+            "payment_review",
+            [
+                f"Procurement job {str(jid)[:8]} is {state} ({code or 'stuck'})",
+                f"Order {str(oid)[:36]} waits for a supplier code",
+            ],
+            link=notify_tg.admin_link(res, "orders"),
+            once=(f"procurement_job:{jid}:{state}", 30 * 86400),
         )
     return len(rows)
 

@@ -16,9 +16,16 @@ from sqlalchemy import select, update
 
 from app.core.audit import audit
 from app.core.db import tenant_session
-from app.models import SupplierAccount, Tenant
+from app.models import SupplierAccount, SupplierOffer, Tenant
 from app.procurement.context import ProcurementContext
-from app.suppliers.base import Balance, ProbeReport, Supplier, SupplierError, clean_detail
+from app.suppliers.base import (
+    Balance,
+    OfferSpec,
+    ProbeReport,
+    Supplier,
+    SupplierError,
+    clean_detail,
+)
 from app.suppliers.registry import SupplierConfigError, build_supplier
 
 log = logging.getLogger("app.procurement")
@@ -41,6 +48,8 @@ class SupplierRef:
 
 
 def make_supplier(ctx: ProcurementContext, ref: SupplierRef) -> Supplier:
+    if ctx.supplier_factory is not None:
+        return ctx.supplier_factory(ref)
     return build_supplier(
         code=ref.code,
         adapter=ref.adapter,
@@ -180,11 +189,56 @@ async def refresh_balance(ctx: ProcurementContext, ref: SupplierRef) -> Balance 
     return bal
 
 
+async def refresh_offers(ctx: ProcurementContext, ref: SupplierRef) -> int:
+    """Availability check of every enabled offer of one supplier (GET only). The storefront shows
+    an upstream variant in stock only while its last check passed (review-v12 §4)."""
+    async with tenant_session(ctx.maker, ref.tenant_id) as db:
+        offers = (
+            await db.execute(
+                select(SupplierOffer.id, SupplierOffer.kind, SupplierOffer.params).where(
+                    SupplierOffer.tenant_id == ref.tenant_id,
+                    SupplierOffer.supplier_id == ref.id,
+                    SupplierOffer.enabled.is_(True),
+                )
+            )
+        ).all()
+    if not offers:
+        return 0
+    try:
+        supplier = make_supplier(ctx, ref)
+    except SupplierConfigError:
+        return 0
+    results: dict[uuid.UUID, bool] = {}
+    try:
+        for oid, kind, params in offers:
+            try:
+                av = await asyncio.wait_for(
+                    supplier.availability(OfferSpec(kind=kind, params=dict(params or {}))),
+                    ctx.settings.probe_timeout_s,
+                )
+                results[oid] = av.available is True
+            except Exception:  # an unknown answer is "not available"
+                results[oid] = False
+    finally:
+        await supplier.aclose()
+    now = datetime.now(timezone.utc)
+    async with tenant_session(ctx.maker, ref.tenant_id) as db:
+        for oid, ok in results.items():
+            await db.execute(
+                update(SupplierOffer)
+                .where(SupplierOffer.tenant_id == ref.tenant_id, SupplierOffer.id == oid)
+                .values(last_check_ok=ok, last_check_at=now)
+            )
+        await db.commit()
+    return len(results)
+
+
 async def refresh_all(ctx: ProcurementContext) -> int:
     refs = await enabled_suppliers(ctx)
     for ref in refs:
         try:
-            await refresh_balance(ctx, ref)
+            if await refresh_balance(ctx, ref) is not None:
+                await refresh_offers(ctx, ref)
         except Exception:  # one broken supplier must not stop the others
             log.exception("balance refresh failed for supplier %s", ref.id)
     return len(refs)

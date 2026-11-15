@@ -30,6 +30,7 @@ from app.models import (
 )
 from app.modules.aftersales.schemas import ActionIn, OpenIn
 from app.modules.chat.messages import post_system
+from app.modules.common.modes import UPSTREAM_MODES
 from app.modules.common.orderviews import REFUND_PREFIX
 from app.modules.common.sitedefaults import AFTER_SALES_REOPEN_EXTENSION
 from app.modules.common.views import after_sales_view, iso
@@ -313,6 +314,13 @@ async def act(
             t.status = "replaced"
             detail["delivery_text_chars"] = len(text)
             event = "after_sales_replaced"
+        elif order.delivery_mode in UPSTREAM_MODES:
+            # a supplier code cannot be swapped from the local pool (review-v12): staff refund
+            # or deliver by hand; procurement-side replacement is not built
+            raise InvalidState(
+                "Supplier-sourced codes cannot be replaced automatically; refund instead",
+                code="replace_not_supported",
+            )
         else:
             live = set(
                 await db.scalars(

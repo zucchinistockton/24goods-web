@@ -33,10 +33,11 @@ from app.core.resources import Resources
 from app.core.storefront import Storefront
 from app.models import Checkout, Order, Payment, Product, User
 from app.modules.catalog import variants as variants_svc
-from app.modules.catalog.service import stock_counts
+from app.modules.catalog.service import product_stock
 from app.modules.chat import service as chat
 from app.modules.chat.messages import post_system
 from app.modules.common.buyerinput import is_enabled, normalize_value
+from app.modules.common.modes import STOCKED_MODES
 from app.modules.common.orderviews import channel_totals_view, order_views
 from app.modules.common.views import iso
 from app.modules.content.site import tenant_settings
@@ -99,19 +100,10 @@ async def quote_cart(
         )
         if pricer is None or not pricer.is_hidden(p.id)  # hidden on this storefront
     }
-    stock = await stock_counts(
-        db, [p.id for p in products.values() if p.delivery_mode == "auto_card"]
-    )
+    stock = await product_stock(db, products.values())
     vrows = await variants_svc.variants_for(db, tenant_id, products.keys(), include_archived=True)
-    vcards = await variants_svc.card_counts(
-        db,
-        tenant_id,
-        [
-            v.id
-            for p in products.values()
-            if p.delivery_mode == "auto_card"
-            for v in vrows.get(p.id, [])
-        ],
+    vcards = await variants_svc.stocked_counts(
+        db, tenant_id, [(p, vrows.get(p.id, [])) for p in products.values()]
     )
     lines: list[dict[str, Any]] = []
     avail: list[tuple[int, Product, int]] = []  # (line index, product, line subtotal)
@@ -154,7 +146,7 @@ async def quote_cart(
             s = (
                 p.manual_stock
                 if p.delivery_mode == "manual"
-                else (stock.get(p.id) if p.delivery_mode == "auto_card" else None)
+                else (stock.get(p.id) if p.delivery_mode in STOCKED_MODES else None)
             )
         max_qty = MAX_QTY if s is None else min(MAX_QTY, s)
         if p.status != "active" or variant_reason:

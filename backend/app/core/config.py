@@ -14,7 +14,7 @@ import hmac
 import ipaddress
 from functools import cached_property, lru_cache
 
-from pydantic import field_validator, model_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Network = ipaddress.IPv4Network | ipaddress.IPv6Network
@@ -91,6 +91,20 @@ class Settings(BaseSettings):
     procurement_url: str = "http://127.0.0.1:8004"
     # owner rule (review-v12 §0): production suppliers stay disabled until the security review
     procurement_allow_production: bool = False
+    # review-v12 §6: supplier webhook signing secrets (API side; never the supplier API secret).
+    # Read as ZOVOCARD_WEBHOOK_SECRET / ZOVOCARD_SANDBOX_WEBHOOK_SECRET (or with the APP_ prefix).
+    zovocard_webhook_secret: str = Field(
+        default="",
+        repr=False,
+        validation_alias=AliasChoices("APP_ZOVOCARD_WEBHOOK_SECRET", "ZOVOCARD_WEBHOOK_SECRET"),
+    )
+    zovocard_sandbox_webhook_secret: str = Field(
+        default="",
+        repr=False,
+        validation_alias=AliasChoices(
+            "APP_ZOVOCARD_SANDBOX_WEBHOOK_SECRET", "ZOVOCARD_SANDBOX_WEBHOOK_SECRET"
+        ),
+    )
 
     # --- orders ---
     order_ttl_minutes: int = 30

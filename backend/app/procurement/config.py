@@ -33,8 +33,13 @@ class ProcurementSettings:
     # review-v12 §11: writes to a production supplier need this explicit opt-in (no dev/demo
     # env file sets it). M1 makes no write calls at all.
     procurement_allow_production_writes: bool = False
-    # vault PUBLIC keys (seal only, used from M2 on); a private key file is never configured here
+    # vault PUBLIC keys + fingerprint key (seal only); a private key file is never configured here
     vault_public_keys_file: str = ""
+    vault_active_kid: str = ""
+    vault_fingerprint_key: str = ""
+    # engine (review-v12 §3, §6)
+    jobs_poll_s: float = 2.0
+    job_lease_s: float = 120.0
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> ProcurementSettings:

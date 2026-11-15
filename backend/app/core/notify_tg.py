@@ -241,7 +241,7 @@ def _outcome_events(res: Resources, orders: list[Any]) -> None:
             else:
                 mode = "manual delivery" if o.delivery_mode == "manual" else "auto delivery"
                 order_event(res, o, "order_paid", [mode] if o.kind == "goods" else [o.kind])
-            if o.delivery_mode != "manual" and o.product_id is not None:
+            if o.delivery_mode == "auto_card" and o.product_id is not None:  # pool only
                 spawn(low_stock_check(res, o.tenant_id, o.product_id, o.qty, o.title))
         elif o.status == "manual_review":
             order_event(res, o, "payment_review")

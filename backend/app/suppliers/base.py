@@ -139,6 +139,16 @@ class Result:
     secrets: tuple[str, ...] = field(default=(), repr=False)
     cost: Money | None = None
     retry_after: timedelta | None = None
+    supplier_stop: bool = False  # account-level refusal: open the supplier breaker
+
+    @classmethod
+    def from_error(cls, exc: SupplierError) -> Result:
+        return cls(
+            outcome=exc.outcome,
+            error_code=exc.reason,
+            retry_after=exc.retry_after,
+            supplier_stop=exc.supplier_stop,
+        )
 
 
 @dataclass(frozen=True)

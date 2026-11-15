@@ -48,7 +48,7 @@ from app.models import (
     Tenant,
     User,
 )
-from app.modules.catalog import variants
+from app.modules.catalog import upstream, variants
 from app.modules.catalog.service import claimable, get_active_product
 from app.modules.chat import service as chat
 from app.modules.chat.messages import (
@@ -58,6 +58,7 @@ from app.modules.chat.messages import (
     post_system,
 )
 from app.modules.common.buyerinput import normalize_value
+from app.modules.common.modes import CODE_MODES, UPSTREAM_MODES
 from app.modules.common.orderviews import latest_tickets, one_view, order_views  # noqa: F401
 from app.modules.common.views import REVEALABLE, order_card_payload
 from app.modules.content.site import tenant_settings
@@ -313,6 +314,10 @@ async def create_order(
             )
         else:
             stock_reserved = await reserve_manual_stock(db, buyer.tenant_id, product_id, qty)
+    elif product_id is not None and delivery_mode in UPSTREAM_MODES and kind == "goods":
+        # bought per unit from a supplier: no local stock to lock or reserve (review-v12);
+        # only the cached availability and the per-order cap are checked
+        await upstream.require_upstream_stock(db, product_id, variant.id if variant else None, qty)
     elif product_id is not None and delivery_mode == "auto_card" and kind == "goods":
         # lock order: buyer row (above) -> product row -> promo; same-row relock is a no-op
         await lock_manual_products(db, buyer.tenant_id, [product_id])
@@ -806,7 +811,7 @@ async def reveal_for(res: Resources, order: Order, buyer_id: uuid.UUID) -> list[
     user = SimpleNamespace(id=buyer_id)
     if not (
         order.buyer_id == buyer_id
-        and order.delivery_mode == "auto_card"
+        and order.delivery_mode in CODE_MODES
         and order.status in REVEALABLE
     ):
         raise InvalidState("Nothing to reveal for this order")

@@ -434,6 +434,12 @@ async def _accept_held(
         raise InvalidState("Only an order held for review can be released")
     if order.kind == "reseller_signup":
         raise InvalidState("A held sign-up order cannot be released here; refund it instead")
+    if order.delivery_mode in ("upstream_cdk",):
+        # its procurement jobs decide (retry / switch source / fulfil manually, review-v12)
+        raise InvalidState(
+            "Release supplier-sourced orders through their procurement jobs",
+            code="use_procurement_actions",
+        )
     pay = await _verified_payment(db, order)
     # #72 audit M3: count the sale from state (never entered ``paid`` before), for every mode
     count_sale = order.product_id is not None and not await _sale_counted(db, order)

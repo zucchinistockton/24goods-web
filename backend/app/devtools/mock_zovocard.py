@@ -54,6 +54,8 @@ QUIRKS: dict[str, tuple[int, dict[str, Any]]] = {
         {"code": 503, "error_code": "channel_unavailable", "msg": "channel temporarily down"},
     ),
     "200_code_404": (200, {"code": 404, "msg": "card not found"}),
+    # the request is EXECUTED (and its 2xx cached) but the answer is lost: timeout after send
+    "lost_response": (504, {}),
     "403_access_denied": (
         403,
         {"code": 403, "error_code": "GPT_DIRECT_ACCESS_DENIED", "msg": "direct not enabled"},
@@ -200,6 +202,11 @@ class MockZovo:
     forced: dict[str, deque[str]] = field(default_factory=lambda: defaultdict(deque))
     hits: dict[str, deque[float]] = field(default_factory=lambda: defaultdict(deque))
     requests: list[tuple[str, str, dict[str, str]]] = field(default_factory=list)
+    # writes (M2): idempotency cache of 2xx answers only (vendor §4), issued CDKs by id
+    idem: dict[str, tuple[str, dict[str, Any]]] = field(default_factory=dict)
+    cdks: dict[int, dict[str, Any]] = field(default_factory=dict)
+    next_cdk: int = 1000
+    executions: int = 0  # how many issue requests really ran (tests: never twice per key)
 
     def force(self, path: str, quirk: str, times: int = 1) -> None:
         if quirk not in QUIRKS:
@@ -244,10 +251,55 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
             return JSONResponse(QUIRKS["429"][1], status_code=429, headers={"Retry-After": "30"})
         window.append(now)
         queue = mock.forced.get(path)
-        if queue:
+        if queue and queue[0] != "lost_response":
             status, body = QUIRKS[queue.popleft()]
             return JSONResponse(body, status_code=status)
         return None
+
+    def _issue(request_body: dict[str, Any]) -> JSONResponse:
+        plan = request_body.get("plan")
+        count = request_body.get("count", 1)
+        if request_body.get("funding_confirmed") is not True:
+            return JSONResponse({"code": 400, "msg": "funding must be confirmed"}, status_code=400)
+        if not isinstance(count, int) or not 1 <= count <= 50:
+            return JSONResponse({"code": 400, "msg": "at most 50 per request"}, status_code=400)
+        gpt = plans_fixture("gpt")
+        reg = {r["key"]: r for r in gpt["registry"]}
+        row = reg.get(plan) if isinstance(plan, str) else None
+        if row is None or row.get("purchasable") is not True:
+            return JSONResponse({"code": 400, "msg": "unknown plan"}, status_code=400)
+        mock.executions += 1
+        issued = []
+        for _ in range(count):
+            mock.next_cdk += 1
+            cid = mock.next_cdk
+            code = f"MOCKPLUS-{cid:010X}-{(cid * 7919) & 0xFFFFFFFFFF:010X}"
+            mock.cdks[cid] = {"id": cid, "code": code, "plan": plan, "status": "unused"}
+            issued.append(
+                {
+                    "id": cid,
+                    "code": code,
+                    "code_prefix": code[:12],
+                    "plan": plan,
+                    "fee_amount_minor": 15,
+                }
+            )
+        return JSONResponse(_env(0, {"requested": count, "issued": issued}))
+
+    def _write(request: Request, path: str, body: dict[str, Any]) -> JSONResponse:
+        if path == "/gpt-direct/cdks":
+            return _issue(body)
+        m = re.fullmatch(r"/gpt-direct/cdks/([0-9]{1,12})/disable", path)
+        if m:
+            cdk = mock.cdks.get(int(m.group(1)))
+            if cdk is None or cdk["status"] != "unused":
+                return JSONResponse(
+                    {"code": 409, "error_code": "CDK_DISABLE_REJECTED", "msg": "not unused"},
+                    status_code=409,
+                )
+            cdk["status"] = "disabled"
+            return JSONResponse(_env(0, {"id": cdk["id"], "status": "disabled"}))
+        return JSONResponse({"code": 404, "msg": "not implemented in mock"}, status_code=404)
 
     async def dispatch(request: Request) -> JSONResponse:
         path = "/" + request.path_params["path"]
@@ -261,7 +313,32 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
         if blocked is not None:
             return blocked
         if request.method != "GET":
-            return JSONResponse({"code": 404, "msg": "not implemented in mock"}, status_code=404)
+            idem = request.headers.get("idempotency-key")
+            if not idem:
+                return JSONResponse({"code": 400, "msg": "Idempotency-Key required"}, 400)
+            try:
+                body = json.loads(await request.body() or b"{}")
+            except ValueError:
+                body = None
+            if not isinstance(body, dict):
+                return JSONResponse({"code": 400, "error_code": "invalid_argument"}, 400)
+            fingerprint = json.dumps(body, sort_keys=True)
+            cached = mock.idem.get(idem)
+            if cached is not None:
+                if cached[0] != fingerprint:
+                    return JSONResponse({"code": 409, "msg": "key reused with another body"}, 409)
+                return JSONResponse(cached[1], headers={"Idempotent-Replayed": "true"})
+            resp = _write(request, path, body)
+            if 200 <= resp.status_code < 300:  # only 2xx is cached (vendor A.1)
+                mock.idem[idem] = (fingerprint, json.loads(resp.body))
+            queue = mock.forced.get(path)
+            if queue and queue[0] == "lost_response":
+                queue.popleft()
+                return JSONResponse({}, status_code=504)
+            return resp
+        if path == "/gpt-direct/cdks":
+            items = sorted(mock.cdks.values(), key=lambda c: -c["id"])
+            return JSONResponse(_env(0, {"total": len(items), "list": items}))
         if path == "/balance":
             return JSONResponse(_env(0, BALANCE_FIXTURE))
         if path == "/products":

@@ -29,6 +29,7 @@ from app.suppliers.zovocard import (
 
 ADAPTERS: tuple[str, ...] = ("zovocard", "mock", "manual")
 DEV_ENVS = ("dev", "test")
+_MOCKS: dict[tuple[str, str], MockSupplier] = {}
 
 
 class SupplierConfigError(RuntimeError):
@@ -83,7 +84,12 @@ def build_supplier(
     if adapter == "mock":
         if app_env not in DEV_ENVS:
             raise SupplierConfigError("the mock supplier only runs with APP_ENV=dev|test")
-        return MockSupplier(code, env=env)
+        # one instance per process and (code, env): the mock keeps its "upstream" state, so a
+        # replay/query sees what an earlier submit did (dev stack, tests)
+        key = (code, env)
+        if key not in _MOCKS:
+            _MOCKS[key] = MockSupplier(code, env=env)
+        return _MOCKS[key]
     default = PRODUCTION_BASE_URL if env == "production" else SANDBOX_BASE_URL
     sec = load_secrets(code, env, environ, default_base=default)
     if not sec.base_url.startswith("https://") and app_env not in DEV_ENVS:

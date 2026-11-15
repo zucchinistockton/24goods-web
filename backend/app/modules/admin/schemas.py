@@ -124,7 +124,7 @@ class ProductIn(BaseModel):
     price: str = Field(max_length=20)
     floor_price: str = Field("0", max_length=20)
     currency: Literal["CNY"] = "CNY"
-    delivery_mode: Literal["auto_card", "manual"]
+    delivery_mode: Literal["auto_card", "manual", "upstream_cdk"]
     category: str
     status: Literal["active", "draft"] = "active"
     delivery_format: str | None = None
@@ -233,7 +233,7 @@ class ProductPatch(BaseModel):
     images: list[str] | None = None
     price: str | None = Field(None, max_length=20)
     floor_price: str | None = Field(None, max_length=20)
-    delivery_mode: Literal["auto_card", "manual"] | None = None
+    delivery_mode: Literal["auto_card", "manual", "upstream_cdk"] | None = None
     category: str | None = None
     status: Literal["active", "draft"] | None = None
     delivery_format: str | None = None

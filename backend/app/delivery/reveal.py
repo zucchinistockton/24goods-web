@@ -24,6 +24,8 @@ from app.models import CardStock, Delivery, Order
 log = logging.getLogger("app.delivery.reveal")
 
 REVEALABLE = frozenset({"delivered", "completed"})
+# modes whose deliveries are sealed codes (local pool or bought upstream, review-v12)
+CODE_MODES = frozenset({"auto_card", "upstream_cdk"})
 
 
 MAX_BODY = 4096
@@ -102,7 +104,7 @@ def create_delivery_app(ctx: DeliveryContext) -> Starlette:
                 return _err(404, "not_found", "Order not found")
             tenant_id = order.tenant_id
             await set_tenant(db, tenant_id)
-            if order.delivery_mode != "auto_card" or order.status not in REVEALABLE:
+            if order.delivery_mode not in CODE_MODES or order.status not in REVEALABLE:
                 log.warning("reveal refused: order %s in state %s", order.id, order.status)
                 await audit(
                     db,
