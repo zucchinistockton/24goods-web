@@ -1,2 +1,9 @@
 # Character set for generated passwords (not a secret), flagged after a ruff reformat
 cc21b6ce6e5e93b93dc62389ea97de55f1b3a9c0:backend/app/modules/auth/service.py:generic-api-key:38
+# Historic false positives that a full-history scan (workflow_dispatch) reports: password alphabet,
+# i18n/route keys, and a test fixture (already rewritten in cd90d33).
+530137abb125780b250206bf5bf8c85209e9d2fc:backend/app/modules/auth/service.py:generic-api-key:37
+8ab90aea$(git rev-parse 8ab90aea | cut -c9-):frontend/apps/admin/src/layouts/AdminLayout.vue:generic-api-key:52
+8ab90aea$(git rev-parse 8ab90aea | cut -c9-):frontend/apps/admin/src/layouts/AdminLayout.vue:generic-api-key:66
+8ab90aea$(git rev-parse 8ab90aea | cut -c9-):frontend/apps/admin/src/router.ts:generic-api-key:31
+$(git rev-parse b43c602a):backend/tests/test_v11_w3.py:generic-api-key:390
