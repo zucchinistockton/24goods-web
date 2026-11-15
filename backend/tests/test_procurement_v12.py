@@ -306,7 +306,8 @@ async def test_app_procurement_grants_are_narrow(env, proc):
             "UPDATE orders SET status = status",
             "SELECT 1 FROM deliveries",
             "SELECT blob FROM card_stock",
-            # M1 writes neither card_stock nor outbox (M2's migration grants INSERT)
+            # M2 (0024) grants INSERT on both, fenced by RESTRICTIVE policies: only already-sold
+            # card rows and only the two procurement topics
             "INSERT INTO card_stock (tenant_id) VALUES (gen_random_uuid())",
             "INSERT INTO outbox (tenant_id, topic, key) VALUES (gen_random_uuid(), 'x', 'y')",
             "SELECT action FROM audit_log",
@@ -314,7 +315,7 @@ async def test_app_procurement_grants_are_narrow(env, proc):
             "SELECT email FROM users",
             "UPDATE card_stock SET status = status",
         ):
-            with pytest.raises(Exception, match="permission denied"):
+            with pytest.raises(Exception, match="permission denied|row-level security"):
                 await db.execute(text(sql))
             await db.rollback()
         assert (await db.execute(text("SELECT count(*) FROM procurement_jobs"))).scalar() == 0

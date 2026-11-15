@@ -8,6 +8,7 @@ import hmac
 import json
 import os
 import uuid
+from datetime import datetime, timezone
 from decimal import Decimal
 
 import asyncpg
@@ -210,7 +211,9 @@ async def test_upstream_order_never_claims_local_pool(env, up):
             {"p": up.product.id},
         )
         await db.commit()
+    up.product.delivery_mode = "auto_card"  # the helper checks the object it is given
     await env.import_codes(up.product, ["POOL-1", "POOL-2", "POOL-3"])
+    up.product.delivery_mode = "upstream_cdk"
     async with env.owner_session() as db:
         await db.execute(
             text("UPDATE products SET delivery_mode = 'upstream_cdk' WHERE id = :p"),
@@ -536,7 +539,8 @@ async def test_webhook_from_other_tenant_host_is_not_stored(env, hook):
 
     async with env.owner_session(env.other_tenant_id) as db:
         db.add(CustomDomain(tenant_id=env.other_tenant_id, hostname="shop.other.test",
-                            verify_token="x", status="active"))  # fmt: skip
+                            verify_token="x", status="active",
+                            verified_at=datetime.now(timezone.utc)))  # fmt: skip
         await db.commit()
     c = env.client(host="shop.other.test", csrf=False)
     raw, h = _signed({"type": "cdk.consumed", "event_id": "x:1", "cdk_id": 1})

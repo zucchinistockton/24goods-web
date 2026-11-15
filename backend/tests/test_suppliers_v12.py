@@ -581,16 +581,6 @@ async def test_availability_via_adapter():
     assert not (await s.availability(OfferSpec("cdk", {"product": "x", "plan": "a"}))).available
 
 
-async def test_writes_not_implemented_in_m1():
-    s = _supplier()
-    job = JobSpec("j", "submit", "pj:j:submit", OfferSpec("cdk", {"plan": "plus"}))
-    for op in (s.submit, s.query, s.void):
-        with pytest.raises(NotImplementedError):
-            await op(job)
-    with pytest.raises(NotImplementedError):
-        s.verify_webhook(b"{}", {})
-
-
 # ---------------------------------------------------------------- mock / manual suppliers
 
 

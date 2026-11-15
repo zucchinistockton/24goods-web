@@ -63,6 +63,9 @@ UP = [
     "GRANT USAGE ON SEQUENCE outbox_id_seq TO app_procurement",
     f"CREATE POLICY procurement_drain ON outbox FOR SELECT TO app_procurement "
     f"USING (topic IN {PROC_CONSUMES})",
+    # SELECT ... FOR UPDATE SKIP LOCKED also has to pass an UPDATE policy
+    f"CREATE POLICY procurement_claim ON outbox FOR UPDATE TO app_procurement "
+    f"USING (topic IN {PROC_CONSUMES}) WITH CHECK (topic IN {PROC_CONSUMES})",
     f"CREATE POLICY procurement_topics ON outbox AS RESTRICTIVE FOR ALL TO app_procurement "
     f"USING (topic IN {PROC_TOPICS}) WITH CHECK (topic IN {PROC_TOPICS})",
     f"CREATE POLICY procurement_emits ON outbox AS RESTRICTIVE FOR INSERT TO app_procurement "
@@ -87,6 +90,7 @@ DOWN = [
     "DROP POLICY IF EXISTS procurement_scan ON procurement_jobs",
     "DROP POLICY IF EXISTS procurement_emits ON outbox",
     "DROP POLICY IF EXISTS procurement_topics ON outbox",
+    "DROP POLICY IF EXISTS procurement_claim ON outbox",
     "DROP POLICY IF EXISTS procurement_drain ON outbox",
     "REVOKE ALL ON outbox FROM app_procurement",
     "REVOKE ALL ON SEQUENCE outbox_id_seq FROM app_procurement",

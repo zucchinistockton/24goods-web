@@ -67,6 +67,7 @@ TOPIC_EVENT = "supplier.event"
 TOPIC_FULFILLED = "procure.fulfilled"
 TOPIC_FAILED = "procure.failed"
 CONSUMED = (TOPIC_REQUESTED, TOPIC_EVENT)
+_CDK_TERMINAL = frozenset({"consumed", "disabled"})  # ZovoCard CDK statuses that do not move on
 UPSTREAM_MODES = ("upstream_cdk",)
 ACTIVE = ("queued", "submitting", "accepted_pending")
 POLL_STEPS = (15, 30, 60, 120, 300, 600, 900)  # seconds; capped at 15 min (spec §6)
@@ -340,7 +341,9 @@ async def handle_event(ctx: ProcurementContext, db: AsyncSession, payload: dict)
         )
         status = (ev.payload or {}).get("cdk_status") or (ev.payload or {}).get("to_status")
         for job in jobs:
-            if isinstance(status, str):
+            # webhooks arrive out of order: a late non-terminal status never replaces a
+            # terminal one (the re-query below stays the truth either way)
+            if isinstance(status, str) and job.upstream_status not in _CDK_TERMINAL:
                 job.upstream_status = clean_detail(status, 32)
             if job.state in ACTIVE:
                 job.next_poll_at = utcnow()
