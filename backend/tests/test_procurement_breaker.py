@@ -198,7 +198,13 @@ async def test_open_breaker_raises_one_staff_alert(env, up, monkeypatch):
     sent: list[dict] = []
 
     def fake(res, tid, kind, lines, **kw):
-        sent.append({"tid": tid, "lines": lines, "once": kw.get("once")})
+        sent.append(
+            {
+                "tid": tid,
+                "lines": [notify_tg.render("en", x) for x in lines],
+                "once": kw.get("once"),
+            }
+        )
 
     monkeypatch.setattr(notify_tg, "notify_bg", fake)
     async with tenant_session(env.res.maker, env.tenant_id) as db:
