@@ -28,10 +28,17 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
   signed -> 200 and stored once, duplicate -> 200 and not stored again, forged -> 401. That was a self-signed
   test event (`selftest:20261115-1`); a vendor-sent event has not been observed yet. To return the demo to
   `main`: restore `.env`, check out `main`, load or pull the `main` images.
-- **Production pulls:** `gh auth token | docker login ghcr.io -u zucchinistockton --password-stdin` on c4 works
-  only if that token has `read:packages` (`gh auth refresh -h github.com -s read:packages` on c4). Still no
-  image under the new owner until a push-triggered run on `main` publishes one.
-
+- **CI triggers and publishing (settled 2026-11-15):** on the new repo no check suite is created for any
+  push or PR, so `push` / `pull_request` never start workflows; only `workflow_dispatch` runs. Repository
+  settings are normal (Actions enabled, workflows active, account publicly visible), so this is an
+  account-level restriction on the new GitHub account (inference; nothing to configure). **Procedure:** for a
+  PR `gh workflow run CI --ref <branch>`; after merging to `main`, `gh workflow run CI --ref main`, which now
+  also publishes the images (#4). First publish done: `ghcr.io/zucchinistockton/goods24-{api,web}:main` and
+  `:75163f3` (run 43678521886, all green). c4 has a persistent `docker login ghcr.io` with a `read:packages`
+  token and can read both images (checked with `docker manifest inspect`). Production itself still runs
+  the old `arifulcrypto` `:main` images; nothing was deployed. There is no `rollback-*` image on c4: tag the
+  running images before the next deploy. `~/.secrets/ghcr_token` on the dev box is still the dead token;
+  `prod.sh`'s transient login will fail until it is replaced (or skip it, c4 is already logged in).
 - **Repository moved (2026-11-15):** the old account `arifulcrypto` is suspended (appeal filed, answer
   expected in 3–5 business days). Development continues at **`zucchinistockton/24goods-web`** (private; remote
   `origin`; the dead remote is kept as `old`). Pushed: `main` (`19c7625`), `feat/v12-procurement`,
