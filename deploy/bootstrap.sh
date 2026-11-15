@@ -93,7 +93,7 @@ user default off
 user health on #$(sha "$R_HEALTH") resetkeys resetchannels -@all +@connection
 user api on #$(sha "$R_API") ~* &* +@all -@dangerous
 user delivery on #$(sha "$R_DELIVERY") ~rl:* ~reveal:* resetchannels &rt:* -@all +@connection +get +set +incr +incrby +decrby +expire +ttl +multi +exec +discard +publish +eval +evalsha
-user procurement on #$(sha "$R_PROCUREMENT") ~rl:proc:* resetchannels -@all +@connection +get +incr +expire +ttl +multi +exec +discard
+user procurement on #$(sha "$R_PROCUREMENT") ~rl:proc:* resetchannels -@all +@connection +get +incr +incrby +expire +ttl +multi +exec +discard
 EOF
 if [[ "$MODE" == "demo" ]]; then
   echo "user mockpay on #$(sha "$R_MOCK") ~mockpay:* resetchannels -@all +@connection +get +set +del +expire +exists +ttl" >> secrets/users.acl

@@ -22,15 +22,13 @@ branch_labels = None
 depends_on = None
 
 UP = [
-    "ALTER TABLE supplier_ledger ADD COLUMN ref_id varchar(64), "
-    "ADD COLUMN card_mask varchar(24)",
+    "ALTER TABLE supplier_ledger ADD COLUMN ref_id varchar(64), ADD COLUMN card_mask varchar(24)",
     "CREATE INDEX ix_supplier_ledger_ref ON supplier_ledger (supplier_id, ref_id) "
     "WHERE ref_id IS NOT NULL",
     "ALTER TABLE suppliers ADD COLUMN breaker_kind varchar(8) "
     "CHECK (breaker_kind IN ('hard', 'balance'))",
     "UPDATE suppliers SET breaker_kind = 'hard' WHERE breaker_open",
-    "GRANT UPDATE (breaker_open, breaker_reason, breaker_at, breaker_kind) "
-    "ON suppliers TO app_api",
+    "GRANT UPDATE (breaker_open, breaker_reason, breaker_at, breaker_kind) ON suppliers TO app_api",
 ]
 
 DOWN = [
