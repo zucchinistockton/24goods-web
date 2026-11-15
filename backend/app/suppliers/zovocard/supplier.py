@@ -283,6 +283,30 @@ class ZovoCardSupplier:
         self._plans[product] = (now, catalog)
         return catalog
 
+    async def redemption_cost(self, offer: OfferSpec) -> Money | None:
+        """Reserve the breaker holds back per issued CDK (review-v12 §6, §12 second pass): the
+        plan's ``expectedAmountMinor`` plus the balance buffer (``balanceBufferBps``, at least
+        ``minBalanceBufferUsdMinor``) plus ``serviceFeeUsdMinor`` from the cached plans, only when
+        the plan currency is USD. Otherwise ``None``: the per-offer configured cost applies."""
+        product = offer.params.get("product", "gpt")
+        key = offer.params.get("plan")
+        if product not in DIRECT_PRODUCTS or not isinstance(key, str):
+            return None
+        catalog = await self.plans(product)
+        entry = catalog.registry.get(key)
+        plan = catalog.plans.get(entry.acc_plan_key if entry and entry.acc_plan_key else key)
+        if not isinstance(plan, Mapping) or str(plan.get("currency", "")).upper() != "USD":
+            return None
+        expected = _int_or_none(plan.get("expectedAmountMinor"))
+        if expected is None or expected < 0:
+            return None
+        bps = _int_or_none(plan.get("balanceBufferBps")) or 0
+        floor = _int_or_none(plan.get("minBalanceBufferUsdMinor")) or 0
+        fee = _int_or_none(plan.get("serviceFeeUsdMinor")) or 0
+        buffer = max((Decimal(expected) * bps / 10000).to_integral_value(), Decimal(floor))
+        minor = Decimal(expected) + buffer + Decimal(fee)
+        return Money((minor / 100).quantize(Decimal("0.01")), "USD")
+
     async def card_products(self) -> list[CardProduct]:
         resp = await self.client.get("/products")
         return parse_card_products(resp.data)

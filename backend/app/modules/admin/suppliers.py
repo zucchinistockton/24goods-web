@@ -86,6 +86,10 @@ def _view(r: SupplierAccount) -> dict[str, Any]:
         "priority": r.priority,
         "min_spendable": _dec(r.min_spendable),
         "currency": r.currency,
+        "breaker_open": r.breaker_open,
+        "breaker_kind": r.breaker_kind,
+        "breaker_reason": r.breaker_reason,
+        "breaker_at": _iso(r.breaker_at),
         "health": r.health,
         "health_detail": r.health_detail,
         "last_probe_at": _iso(r.last_probe_at),
@@ -332,3 +336,37 @@ async def probe_supplier(
         .execution_options(populate_existing=True)
     )
     return {"report": report, "supplier": _view(fresh) if fresh is not None else None}
+
+
+@router.post("/{supplier_id}/reset-breaker")
+async def reset_breaker(
+    supplier_id: uuid.UUID,
+    request: Request,
+    admin: User = Depends(platform_admin),
+    db: AsyncSession = Depends(get_db),
+    res: Resources = Depends(get_res),
+) -> dict:
+    """Close a breaker by hand. A hard one (a supplier refusal) only closes this way; a balance
+    one would close by itself and opens again at the next refresh if the balance is still low."""
+    await enforce(res.redis, "supplier:config", str(admin.id), 30, 3600)
+    row = await _get(db, admin.tenant_id, supplier_id)
+    if not row.breaker_open:
+        raise InvalidState("The breaker is not open", code="breaker_closed")
+    before = {"breaker_open": True, "kind": row.breaker_kind, "reason": row.breaker_reason}
+    row.breaker_open, row.breaker_kind = False, None
+    row.breaker_reason, row.breaker_at = None, None
+    await audit(
+        db,
+        tenant_id=admin.tenant_id,
+        action="supplier.breaker_reset",
+        actor_id=admin.id,
+        actor_role=admin.role,
+        target=f"supplier:{row.id}",
+        before=before,
+        after={"breaker_open": False},
+        ip=client_ip(request),
+        severity="warning",
+    )
+    await db.commit()
+    await db.refresh(row)
+    return _view(row)

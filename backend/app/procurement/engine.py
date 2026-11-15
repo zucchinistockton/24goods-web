@@ -50,7 +50,7 @@ from app.models import (
 )
 from app.procurement import ledger
 from app.procurement.context import ProcurementContext
-from app.procurement.service import SupplierRef, make_supplier
+from app.procurement.service import SupplierRef, make_supplier, refresh_balance
 from app.suppliers.base import (
     JobSpec,
     OfferSpec,
@@ -603,9 +603,13 @@ async def _open_breaker(db: AsyncSession, job: ProcurementJob, reason: str) -> N
     sup = await db.scalar(
         select(SupplierAccount).where(SupplierAccount.id == job.supplier_id).with_for_update()
     )
-    if sup is None or sup.breaker_open:
+    if sup is None:
         return
-    sup.breaker_open, sup.breaker_reason, sup.breaker_at = True, clean_detail(reason), utcnow()
+    if sup.breaker_open and sup.breaker_kind == "hard":
+        return
+    # a refusal outranks a low-balance breaker: from here on only staff can close it
+    sup.breaker_open, sup.breaker_kind = True, "hard"
+    sup.breaker_reason, sup.breaker_at = clean_detail(reason), utcnow()
     await audit(
         db,
         tenant_id=job.tenant_id,
@@ -758,10 +762,16 @@ async def process_job(ctx: ProcurementContext, job_id: uuid.UUID, tenant_id: uui
     if lease is None:
         return False
     res = await _call(ctx, lease)
+    charged = res.outcome is Outcome.OK or lease.mode == "submit"
     try:
         await _apply(ctx, lease, res)
     finally:
         del res  # drop the plaintext reference as early as possible
+    if charged:  # review-v12 §6: the balance (and the breaker) is refreshed after every job
+        try:
+            await refresh_balance(ctx, lease.ref)
+        except Exception as exc:
+            log.error("post-job balance refresh failed error=%s", type(exc).__name__)
     return True
 
 

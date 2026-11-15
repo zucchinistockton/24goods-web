@@ -298,6 +298,7 @@ async def run(res: Resources) -> int:
             await close_abandoned(res, db, tid, now)
             await alert_dead_jobs(res, db, tid, now)
             await alert_procurement_jobs(res, db, tid, now)
+            await alert_supplier_breakers(res, db, tid)
             refs = list(
                 await db.scalars(
                     select(PaymentAttempt.local_ref)
@@ -558,6 +559,43 @@ async def alert_procurement_jobs(
             ],
             link=notify_tg.admin_link(res, "orders"),
             once=(f"procurement_job:{jid}:{state}", 30 * 86400),
+        )
+    return len(rows)
+
+
+async def alert_supplier_breakers(res: Resources, db: AsyncSession, tid: uuid.UUID) -> int:
+    """review-v12 §6: an open supplier breaker (a refusal, or a balance below the threshold)
+    raises one staff alert per opening (procurement has no Telegram token)."""
+    from app.core import notify_tg
+    from app.models import SupplierAccount
+
+    rows = list(
+        (
+            await db.execute(
+                select(SupplierAccount.id, SupplierAccount.code, SupplierAccount.env,
+                       SupplierAccount.breaker_reason, SupplierAccount.breaker_kind,
+                       SupplierAccount.breaker_at)
+                .where(
+                    SupplierAccount.tenant_id == tid,
+                    SupplierAccount.breaker_open.is_(True),
+                    SupplierAccount.breaker_at.is_not(None),
+                )
+                .limit(10)
+            )
+        ).all()
+    )  # fmt: skip
+    await db.rollback()
+    for sid, code, env, reason, kind, at in rows:
+        notify_tg.notify_bg(
+            res,
+            tid,
+            "payment_review",
+            [
+                f"Supplier {code} ({env}) is paused for new orders",
+                f"Reason: {reason or 'unknown'} ({kind or 'hard'})",
+            ],
+            link=notify_tg.admin_link(res, "orders"),
+            once=(f"supplier_breaker:{sid}:{int(at.timestamp())}", 30 * 86400),
         )
     return len(rows)
 

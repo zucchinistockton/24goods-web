@@ -176,18 +176,25 @@ async def refresh_balance(ctx: ProcurementContext, ref: SupplierRef) -> Balance 
         await record_health(ctx, ref, "down", "not_configured", balance=None, probed=False)
         return None
     try:
-        bal = await asyncio.wait_for(supplier.balance(), ctx.settings.probe_timeout_s)
-    except asyncio.TimeoutError:
-        await record_health(ctx, ref, "down", "timeout", balance=None, probed=False)
-        return None
-    except SupplierError as exc:
-        health = "down" if exc.supplier_stop else "degraded"
-        await record_health(ctx, ref, health, exc.reason, balance=None, probed=False)
-        return None
+        try:
+            bal = await asyncio.wait_for(supplier.balance(), ctx.settings.probe_timeout_s)
+        except asyncio.TimeoutError:
+            await record_health(ctx, ref, "down", "timeout", balance=None, probed=False)
+            return None
+        except SupplierError as exc:
+            health = "down" if exc.supplier_stop else "degraded"
+            await record_health(ctx, ref, health, exc.reason, balance=None, probed=False)
+            return None
+        await record_health(ctx, ref, "ok", None, balance=bal, probed=False)
+        from app.procurement.breaker import evaluate  # lazy: breaker -> service import cycle
+
+        try:
+            await evaluate(ctx, ref, bal, supplier)
+        except Exception as exc:  # the breaker never turns a good balance read into an error
+            log.error("breaker evaluation failed supplier=%s error=%s", ref.id, type(exc).__name__)
+        return bal
     finally:
         await supplier.aclose()
-    await record_health(ctx, ref, "ok", None, balance=bal, probed=False)
-    return bal
 
 
 async def refresh_offers(ctx: ProcurementContext, ref: SupplierRef) -> int:

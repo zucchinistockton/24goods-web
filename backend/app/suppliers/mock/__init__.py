@@ -41,7 +41,9 @@ class MockSupplier:
         purchasable: Iterable[str] = ("plus",),
         outcomes: Iterable[Outcome] = (),
         unit_cost: Decimal = Decimal("1.00"),
+        redemption: Money | None = None,
     ) -> None:
+        self.redemption = redemption
         self.code = code
         self.env = env
         self.spendable = spendable
@@ -71,6 +73,9 @@ class MockSupplier:
 
     async def balance(self) -> Balance:
         return Balance(spendable=self.spendable, currency="USD", total=self.spendable)
+
+    async def redemption_cost(self, offer: OfferSpec) -> Money | None:
+        return self.redemption  # tests: None = "use the offer's configured cost"
 
     async def availability(self, offer: OfferSpec) -> Availability:
         plan = offer.params.get("plan")
