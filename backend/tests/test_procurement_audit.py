@@ -482,3 +482,99 @@ def _all_jobs():
     from app.models import ProcurementJob
 
     return select(ProcurementJob)
+
+
+# ------------------------------------------------------------------ M1
+JOBS = "/api/v1/admin/procurement/jobs"
+
+
+async def test_staff_action_racing_an_in_flight_call_is_refused(env, up):
+    staff, _ = await env.login("agent")
+    seen: dict[str, tuple[int, str]] = {}
+
+    class Racing(MockSupplier):
+        async def submit(self, job):
+            async with env.owner_session() as db:
+                jid = await db.scalar(text("SELECT id FROM procurement_jobs"))
+            res = await super().submit(job)  # the supplier has charged; the answer is on its way
+            f = await staff.post(f"{JOBS}/{jid}/fulfil", json={"code": "HAND-PASTED-1234"})
+            n = await staff.post(f"{JOBS}/{jid}/fail", json={"reason": "gave up waiting"})
+            seen["fulfil"] = (f.status_code, f.json()["error"]["code"])
+            seen["fail"] = (n.status_code, n.json()["error"]["code"])
+            return res
+
+    mock = Racing("mock_a")
+    await up.supplier(mock)
+    _buyer, order = await up.paid_order()
+    await up.run()
+    assert seen == {"fulfil": (409, "job_in_flight"), "fail": (409, "job_in_flight")}
+    job = await _job(up, order)
+    assert job.state == "fulfilled" and job.upstream_ref and job.manual_by is None
+    assert await _cards(env, order) == 1  # the engine's code, not a second one
+    assert await env.drain() >= 1
+    assert await _order_status(env, order) == "delivered"
+
+
+async def test_live_lease_blocks_fulfil_and_fail_until_it_passes(env, up):
+    staff, _ = await env.login("agent")
+    await up.supplier(MockSupplier("mock_a", outcomes=[Outcome.FATAL]))
+    _buyer, order = await up.paid_order()
+    await up.run()
+    job = await _job(up, order)
+    await _sql(env, "UPDATE procurement_jobs SET lease_until = now() + interval '1 minute'")
+    for path, body in (("fulfil", {"code": "HAND-PASTED-1234"}), ("fail", {"reason": "no luck"})):
+        r = await staff.post(f"{JOBS}/{job.id}/{path}", json=body)
+        assert r.status_code == 409 and r.json()["error"]["code"] == "job_in_flight"
+    await _sql(env, "UPDATE procurement_jobs SET lease_until = now() - interval '1 second'")
+    r = await staff.post(f"{JOBS}/{job.id}/fail", json={"reason": "no luck"})
+    assert r.status_code == 200 and r.json()["state"] == "failed"
+    assert (await _job(up, order)).recover is False  # FATAL: nothing was sent, nothing to recover
+
+
+async def test_fail_of_a_possibly_sent_job_recovers_and_voids_the_code(env, up):
+    staff, _ = await env.login("agent")
+    mock = LosingMock("mock_a", lose=1)
+    await up.supplier(mock)
+    _buyer, order = await up.paid_order()
+    await up.run()  # charged at the supplier, the answer was lost
+    job = await _job(up, order)
+    r = await staff.post(f"{JOBS}/{job.id}/fail", json={"reason": "buyer gave up"})
+    assert r.status_code == 200, r.text
+    assert r.json()["state"] == "failed" and r.json()["recovering"] is True
+    r = await staff.post(f"{JOBS}/{job.id}/fail", json={"reason": "again"})
+    assert r.status_code == 409  # no longer open
+    await up.make_due()
+    for _ in range(3):
+        await up.run()
+    job = await _job(up, order)
+    assert job.state == "voided" and job.upstream_ref and not job.recover
+    assert [op for op, _ in mock.calls] == ["submit", "query", "void"]
+    assert not mock.charged and await _cards(env, order) == 0  # exactly one reconcile, no code kept
+
+
+async def test_hand_fulfil_of_a_possibly_sent_job_disables_the_supplier_code(env, up):
+    staff, _ = await env.login("agent")
+    mock = LosingMock("mock_a", lose=1)
+    await up.supplier(mock)
+    buyer, order = await up.paid_order()
+    await up.run()
+    job = await _job(up, order)
+    r = await staff.post(f"{JOBS}/{job.id}/fulfil", json={"code": "HAND-PASTED-1234"})
+    assert r.status_code == 200, r.text
+    assert r.json()["state"] == "fulfilled" and r.json()["recovering"] is True
+    await up.make_due()
+    for _ in range(3):
+        await up.run()
+    job = await _job(up, order)
+    assert job.state == "fulfilled" and job.upstream_status == "disabled" and not job.recover
+    assert job.upstream_ref and len(job.card_stock_ids) == 1  # still the staff member's code
+    assert [op for op, _ in mock.calls] == ["submit", "query", "void"] and not mock.charged
+    assert await env.drain() >= 1
+    assert await _order_status(env, order) == "delivered"
+    cards = (await buyer.post(f"/api/v1/orders/{order['id']}/reveal")).json()["cards"]
+    assert [c["code"] for c in cards] == ["HAND-PASTED-1234"]
+    # the closed job cannot be voided by hand while the recovery is pending
+    admin, _ = await env.login("admin")
+    await _sql(env, "UPDATE procurement_jobs SET recover = true")  # as if it were still pending
+    voided = await admin.post(f"{JOBS}/{job.id}/void", json={"reason": "check"})
+    assert voided.status_code == 409 and voided.json()["error"]["code"] == "recover_pending"

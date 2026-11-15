@@ -331,6 +331,10 @@ async def test_engine_result_after_staff_fulfil_cannot_double_fulfil(env, up):
     lease = await engine._lease(up.ctx, job.id, job.tenant_id)  # the engine is mid-call
     assert lease is not None
     r = await staff.post(f"{JOBS}/{job.id}/fulfil", json={"code": CODE})
+    assert r.status_code == 409 and r.json()["error"]["code"] == "job_in_flight"
+    # the engine call stalled past its lease: staff may act, the late answer is then dropped
+    await _sql(env, "UPDATE procurement_jobs SET lease_until = now() - interval '1 second'")
+    r = await staff.post(f"{JOBS}/{job.id}/fulfil", json={"code": CODE})
     assert r.status_code == 200, r.text
     late = Result(Outcome.OK, upstream_ref="late", secrets=("LATE-VENDOR-CODE-1",))
     await engine._apply(up.ctx, lease, late)

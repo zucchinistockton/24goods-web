@@ -369,6 +369,25 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _refuse_in_flight(job: ProcurementJob) -> None:
+    """The engine is talking to the supplier about this job (its lease is live): the answer it
+    brings could be a code nobody would record, so staff wait for it (M1)."""
+    if job.lease_until is not None and job.lease_until > _now():
+        raise Conflict(
+            "The engine is talking to the supplier about this job right now; try again in a minute",
+            code="job_in_flight",
+        )
+
+
+def _schedule_recovery(job: ProcurementJob) -> bool:
+    """A job closed by hand while the supplier may hold a code for it: the engine asks once under
+    the SAME key, records the reference and disables the code (it never seals or delivers it)."""
+    if job.maybe_sent or job.upstream_ref:
+        job.recover, job.attempts, job.next_poll_at = True, 0, _now()
+        return True
+    return False
+
+
 @router.post("/{job_id}/requery")
 async def requery(
     job_id: uuid.UUID,
@@ -483,6 +502,7 @@ async def fulfil_manually(
     if job.state == "fulfilled" or job.card_stock_ids:
         raise Conflict("This job is already fulfilled", code="already_fulfilled")
     _need(job, OPEN, "fulfilled by hand")
+    _refuse_in_flight(job)
     await _resume_order(db, job, staff, ip)
     order = await engine.load_order(db, job.order_id)
     if order is None or order.product_id is None or order.status != "paid":
@@ -514,10 +534,13 @@ async def fulfil_manually(
     job.card_stock_ids = [card_id]
     job.manual_by = staff.id
     job.error_code, job.step, job.next_poll_at = None, "done", None
+    recovering = _schedule_recovery(job)  # the supplier's own code, if any, is disabled
     reason = clean_detail(body.reason or "manual_fulfil", 120)
     await engine._transition(
         db, job, "fulfilled", f"manual:{reason}", actor_id=staff.id, actor_role=staff.role, ip=ip
     )
+    if recovering:
+        await _note(db, job, staff, ip, "recover_scheduled")
     await engine.emit_if_complete(db, order)
     view = await _view_of(db, job)
     await db.commit()
@@ -577,13 +600,17 @@ async def mark_failed(
     ip = client_ip(request)
     job = await _lock(db, staff.tenant_id, job_id)
     _need(job, OPEN, "marked as failed")
+    _refuse_in_flight(job)
     reason = clean_detail(body.reason, 120)
     job.error_code = "marked_failed"
     job.step, job.next_poll_at = "done", None
+    recovering = _schedule_recovery(job)
     await engine._transition(
         db, job, "failed", f"manual:{reason}", actor_id=staff.id, actor_role=staff.role, ip=ip,
         severity="warning",
     )  # fmt: skip
+    if recovering:
+        await _note(db, job, staff, ip, "recover_scheduled")
     engine._emit(
         db,
         job.tenant_id,
