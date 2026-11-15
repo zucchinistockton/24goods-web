@@ -9,7 +9,7 @@ visitor --TLS--> Cloudflare (orange cloud, SSL Full strict)
 ```
 
 - c4: Ubuntu 22.04, Docker 29 + compose v2, deploy dir `/opt/kesiv/deploy` (only `deploy/` files, no source).
-- Images: `ghcr.io/arifulcrypto/goods24-api:main` and `goods24-web:main` (private, pulled with a transient login).
+- Images: `ghcr.io/zucchinistockton/goods24-api:main` and `goods24-web:main` (private, pulled with a transient login).
 - Same compose as dev/demo plus `docker-compose.prod.yml` (port 8088, certs, `Caddyfile.prod`, memory limits for 4 GB: api 384m, postgres 512m). mockpay is behind `--profile demo` and never starts.
 - Only `web` publishes a port. Source IPs at c4 are Cloudflare IPs; the real visitor comes from `CF-Connecting-IP` (trusted only from Cloudflare ranges, list dated in `Caddyfile.prod`).
 - Admin paths (`/admin`, `/admin/*`, `/api/v1/admin/*`) return 403 unless the visitor IP is in `ADMIN_ALLOW_IPS` (default `141.98.198.150 38.175.222.75`, space-separated IPs/CIDRs, in `deploy/.env`).
@@ -44,9 +44,9 @@ Changing the admin allowlist: edit `ADMIN_ALLOW_IPS` in `/opt/kesiv/deploy/.env`
 
 Migrations are forward-only; roll back only to an image whose schema is compatible (restore a backup otherwise).
 
-1. Find the previous digest: `docker image ls --digests ghcr.io/arifulcrypto/goods24-api` on c4, or the GitHub Actions run of the previous good commit.
+1. Find the previous digest: `docker image ls --digests ghcr.io/zucchinistockton/goods24-api` on c4, or the GitHub Actions run of the previous good commit.
 2. Pin it in `/opt/kesiv/deploy/.env` (login to GHCR first if the image is not local):
-   `API_IMAGE=ghcr.io/arifulcrypto/goods24-api@sha256:<digest>` and `WEB_IMAGE=ghcr.io/arifulcrypto/goods24-web@sha256:<digest>`.
+   `API_IMAGE=ghcr.io/zucchinistockton/goods24-api@sha256:<digest>` and `WEB_IMAGE=ghcr.io/zucchinistockton/goods24-web@sha256:<digest>`.
 3. `docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env up -d --wait` (do NOT use `scripts/prod.sh deploy` while pinned: it pulls `api web`, which is fine for digests but remember to unpin).
 4. Unpin (set back to `:main`) after the fix is merged and deployed.
 

@@ -21,7 +21,7 @@ REMOTE="/opt/kesiv"
 RDEPLOY="$REMOTE/deploy"
 DOMAIN="${PROD_DOMAIN:-shop.kesiv.com}"
 ORIGIN_PORT=8088
-GHCR_USER="${GHCR_USER:-arifulcrypto}"
+GHCR_USER="${GHCR_USER:-zucchinistockton}"
 LOCAL_BACKUPS="${PROD_LOCAL_BACKUPS:-/root/kesiv-backups}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 

@@ -1,11 +1,11 @@
 # #72 S4: security-sensitive paths. Changes here need a cold-started security-reviewer /
 # payment-auditor pass (AGENTS.md §5.3, §6) and the owner's review.
-/backend/app/core/            @arifulcrypto
-/backend/app/payments/        @arifulcrypto
-/backend/app/modules/payments/ @arifulcrypto
-/backend/app/modules/auth/    @arifulcrypto
-/backend/app/delivery/        @arifulcrypto
-/backend/migrations/          @arifulcrypto
-/deploy/                      @arifulcrypto
-/.github/                     @arifulcrypto
-/.semgrep/                    @arifulcrypto
+/backend/app/core/            @zucchinistockton
+/backend/app/payments/        @zucchinistockton
+/backend/app/modules/payments/ @zucchinistockton
+/backend/app/modules/auth/    @zucchinistockton
+/backend/app/delivery/        @zucchinistockton
+/backend/migrations/          @zucchinistockton
+/deploy/                      @zucchinistockton
+/.github/                     @zucchinistockton
+/.semgrep/                    @zucchinistockton

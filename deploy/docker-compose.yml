@@ -17,7 +17,7 @@
 name: goods24
 
 x-app: &app
-  image: ${API_IMAGE:-ghcr.io/arifulcrypto/goods24-api:main}
+  image: ${API_IMAGE:-ghcr.io/zucchinistockton/goods24-api:main}
   restart: unless-stopped
   read_only: true
   tmpfs: [/tmp]
@@ -155,7 +155,7 @@ services:
       options: { max-size: "10m", max-file: "3" }
 
   web:
-    image: ${WEB_IMAGE:-ghcr.io/arifulcrypto/goods24-web:main}
+    image: ${WEB_IMAGE:-ghcr.io/zucchinistockton/goods24-web:main}
     restart: unless-stopped
     cap_drop: [ALL]
     cap_add: [NET_BIND_SERVICE]
