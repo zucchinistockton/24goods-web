@@ -4,6 +4,15 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 ## Current state — hand-off (read this first in a new session)
 
+**Production deploy 2026-11-15: `d881dfa` (pay-page fixes #88, email redesign #3; no migration).**
+Images `ghcr.io/zucchinistockton/goods24-{api,web}:main`; c4 `.env` now points at the new owner (backup
+`.env.bak-20261115`). Rollback images kept on c4: `goods24-api:rollback-222b03b`, `goods24-web:rollback-222b03b`
+(to roll back: set `API_IMAGE` / `WEB_IMAGE` to them, `compose up -d --wait`). Deployed by hand (sync, pull,
+migrate, up) because `prod.sh deploy` logs in with `~/.secrets/ghcr_token` (dead) and then logs c4 out of its
+working registry login: fix `prod.sh` or replace the token before using it again. `prod.sh smoke`: all pass.
+`push` and `pull_request` events start CI again on the new repository (seen on #3 and on `main`).
+PR #3 security review: pass, two low findings fixed (a code can no longer reach a subject; test send brand).
+
 **Email redesign (2026-11-15, branch `feat/email-design`):** every outgoing mail (verification code, password
 reset, order paid, order delivered, and the admin test send) is now a complete HTML document with a
 plain-text part: site-name header, the admin-editable body, one focal block (the code in a large box; for
