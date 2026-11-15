@@ -300,6 +300,39 @@ connection; nothing is deployed there (AGENTS.md §1.7).
   only; a vendor-sent event is still to be observed (redeem a sandbox CDK), and the procurement process is
   not running on the demo, so events are stored but not consumed there.
 
+**Sandbox scenarios, second pass (2026-11-15 12:07–12:20 UTC) [V].** Scripted, 30 calls, no enumeration.
+- **The sandbox exposes five CDK plans only** (`go`, `plus`, `pro_5x`, `pro_20x`, `pro_50x`; all USD, service
+  fee 0, `expectedAmountMinor` 500 / 2000 / 10000 / 20000 / 10000). Issuing a plan that is not listed
+  (`credit250`) answers **HTTP 400 `request_failed`** ("plan paused"), not `product_unavailable`. Our table maps
+  a write `request_failed` to `AMBIGUOUS` + supplier stop, so the availability check before `submit` is what
+  keeps a paused plan from opening the breaker; the engine must never submit a plan the catalog does not list.
+- **`GET /gpt-direct/cdks` does not expose the idempotency key.** Item fields: `id`, `created_at`, `code`,
+  `code_prefix`, `plan`, `status`, `fee_amount_minor`, `app_id`. An ambiguous issue is recovered only by the
+  same-key replay (verified earlier); the list can confirm a code afterwards, not find it.
+- **Redemption is a mock.** `preview` and `preflight` work (preflight ignores the real account and reports a
+  synthetic `sandbox+…@example.test`, plan `free`; it returns a `preflight_token`, `payment_country`,
+  `payment_currency`, `quotes: null`). `redeem` answers at once with `order.status = "succeeded"`,
+  `sandbox_mock: true`, order id `SBXORD-…`. Nothing else follows: `GET /api/v1/cdk/result` is 404
+  `not_found`, `cdk-orders` stays empty, the balance and `balance-logs` do not move, and the CDK stays
+  `unused` (it could still be disabled afterwards). **The USD redemption cost therefore cannot be measured in
+  the sandbox**; the breaker reserve uses the plan's `expectedAmountMinor` (+ `balanceBufferBps` /
+  `minBalanceBufferUsdMinor`, + `serviceFeeUsdMinor`) from `GET /gpt-direct/plans`, converted to USD only when
+  the plan currency is USD, otherwise the configured per-offer cost. Confirm against the first production
+  redemption.
+- **Cards.** `POST /cards/open` (USMAB01, 10 USD), two `POST /cards/recharge` one second apart, `refund`,
+  `DELETE`: all HTTP 200 `code 0` at once (`recharges[].status = "success"`, `data.pending = false`); a same-key
+  replay of the delete returns the same body. **The recharge-pending 400 does not occur in the sandbox**, so
+  its body stays as documented by the vendor ([I]). `balance-logs` rows carry `id`, `created_at`, `amount`
+  (signed), `before`, `after`, `type` (`open_card`, `card_recharge`, `recharge`, …), `remark`, `ref_id`,
+  `wallet`, and for card rows `card_id` / `card_number` (full PAN: mask before storing). The opening charge is
+  booked as `card_recharge`, the open fee as a separate `open_card` row (amount 0 here).
+- **No vendor-sent webhook arrived** for any of these (CDK issue, disable, mock redemption, card open,
+  recharge, refund, delete): the demo endpoint logged no request from the vendor and `supplier_events` still
+  holds only the self-signed test row. `card_3ds_otp` cannot be triggered from the API either. Either the
+  sandbox does not deliver webhooks, the key has no saved callback / `webhook_events` subscription, or the
+  delivery is stopped before the origin (Cloudflare). Owner to check the sandbox console (Developers → key →
+  Webhook: saved URL, subscribed events, delivery log) before the account expires on 2026-11-18.
+
 ## 13. Added scope (owner, 2026-11-14)
 
 **Optional two-factor authentication (TOTP), own PR `feat/totp-2fa`, after M1.** Buyers and staff may enable
@@ -322,9 +355,11 @@ disabled under `prefers-reduced-motion`). Frontend design is done by the orchest
 1. ~~Sandbox ticket approval → sandbox key~~ done 2026-11-15 (§12); webhook test still needs the sandbox
    signing secret and M2 on the demo.
 2. Rotate the production key and the webhook signing key before go-live (both were pasted into chat).
-3. **[I]** to confirm in sandbox: exact body of the recharge-pending 400; whether `GET /gpt-direct/cdks`
-   exposes the idempotency key or only replay recovers an ambiguous issue; `card_3ds_otp` field names (§7.4);
-   USD redemption cost per plan for the breaker reserve.
+3. Sandbox [I] items, state after the second pass (§12): `GET /gpt-direct/cdks` exposes no idempotency key
+   (**settled**: replay only); USD redemption cost per plan is **not measurable** in the sandbox (mock
+   redemption; use `expectedAmountMinor` + buffers, confirm in production); the recharge-pending 400 body and
+   the `card_3ds_otp` field names **stay [I]** (not reproducible; both are M3). A vendor-sent webhook was not
+   observed (owner to check the console).
 4. **Egress allowlist before go-live:** the `procurement_egress` network has general internet egress. Restrict
    procurement's outbound traffic to the supplier hosts (firewall / egress proxy) before real funds.
 5. Supplier balance is 6.27 USD: below any useful breaker threshold, which is the intended state until the
