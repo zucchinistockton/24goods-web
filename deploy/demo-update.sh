@@ -4,7 +4,7 @@
 # containers, health-checks through Caddy and reports a GitHub commit status.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-REPO="${REPO:-arifulcrypto/24goods-web}"
+REPO="${REPO:-zucchinistockton/24goods-web}"
 COMPOSE=(docker compose -f deploy/docker-compose.yml --env-file deploy/.env --profile demo)
 # shellcheck disable=SC1091
 source deploy/.env
@@ -16,7 +16,7 @@ before="$(img_id "$API_IMAGE")$(img_id "$WEB_IMAGE")"
 # Private GHCR: log in only for the pull, never leave the (broad-scope) gh token in
 # ~/.docker/config.json. Prefer a dedicated read:packages token via GHCR_TOKEN.
 gh_token="${GHCR_TOKEN:-$(gh auth token)}"
-printf '%s' "$gh_token" | docker login ghcr.io -u "${GHCR_USER:-arifulcrypto}" --password-stdin >/dev/null 2>&1
+printf '%s' "$gh_token" | docker login ghcr.io -u "${GHCR_USER:-zucchinistockton}" --password-stdin >/dev/null 2>&1
 trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
 "${COMPOSE[@]}" pull -q api web
 docker logout ghcr.io >/dev/null 2>&1 || true

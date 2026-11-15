@@ -528,7 +528,6 @@ const zhCN: WebMessages = {
     network: '网络',
     address: '收款地址',
     amount: '请精确转账',
-    copy: '复制',
     copied: '已复制',
     expiresIn: '剩余时间',
     expired: '本次支付已超时。',
@@ -542,6 +541,9 @@ const zhCN: WebMessages = {
     loadFail: '无法加载支付信息。',
     simulate: '模拟支付（仅演示）',
     qrAlt: '收款地址二维码',
+    copyAmount: '复制金额',
+    copyAddress: '复制地址',
+    verify: '转账前请核对地址首尾各 {n} 位字符是否与 {short} 一致。',
   },
   fee: {
     discount: '优惠',

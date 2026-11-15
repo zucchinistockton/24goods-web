@@ -26,9 +26,12 @@ void site.loadChannels()
       :aria-checked="site.channel?.id === c.id"
       @click="site.select(c.id)"
     >
-      <span class="lbl">{{ c.label }}</span>
-      <span v-if="isUsdtChannel(c.id)" class="muted small">{{ t('pay.networkHint') }}</span>
-      <span v-if="c.permille > 0" class="muted small">{{ t('pay.rate', { rate: c.fee_rate }) }}</span>
+      <span class="dot" aria-hidden="true" />
+      <span class="txt">
+        <span class="lbl">{{ c.label }}</span>
+        <span v-if="isUsdtChannel(c.id)" class="muted small">{{ t('pay.networkHint') }}</span>
+      </span>
+      <span v-if="c.permille > 0" class="fee muted small">{{ t('pay.rate', { rate: c.fee_rate }) }}</span>
     </button>
   </div>
 </template>
@@ -42,23 +45,49 @@ void site.loadChannels()
 }
 .opt {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 4px 10px;
-  min-height: 44px;
-  padding: 8px 12px;
+  gap: 12px;
+  min-height: 52px;
+  padding: 10px 14px;
   text-align: left;
-  background: var(--van-background-2, #fff);
-  border: 1px solid var(--van-border-color, #ebedf0);
-  border-radius: 8px;
+  background: var(--c-surface);
+  border: 1px solid var(--c-line);
+  border-radius: var(--radius-s);
   color: inherit;
   cursor: pointer;
+  transition: border-color 0.15s;
 }
 .opt.on {
-  border-color: var(--van-primary-color, #1989fa);
-  box-shadow: 0 0 0 1px var(--van-primary-color, #1989fa) inset;
+  border-color: var(--c-text);
+}
+.dot {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border: 1.5px solid var(--c-muted);
+  border-radius: 50%;
+}
+.opt.on .dot {
+  border: 5px solid var(--c-text);
+}
+.txt {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
 }
 .lbl {
   font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.fee {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+@media (prefers-reduced-motion: reduce) {
+  .opt {
+    transition: none;
+  }
 }
 </style>
