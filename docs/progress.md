@@ -24,14 +24,15 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
   `fix/pay-ux` has no diff against it and can be deleted). v12 M1 is merged into **`feat/v12-procurement`**
   (#89, `a00b58e`), **not into `main`**. M2 lives on `feat/v12-procurement-m2` in the worktree
   `.claude/worktrees/agent-af3aa371765135692`.
-- **v12 M2 state:** `68ca6df` is a **WIP snapshot** of the interrupted session (36 files: `procurement/engine.py`,
-  `procurement/keys.py`, `modules/webhooks.py`, `suppliers/zovocard/webhook.py`, `modules/catalog/upstream.py`,
-  migration `0024_procurement_cdk`, `tests/test_procurement_m2.py` with 17 tests). Lint-clean on those files;
-  **the tests were not run and nothing was reviewed.** Next: `scripts/dev.sh up`, run
-  `pytest -q tests/test_procurement_m2.py tests/test_procurement*.py` under `flock`, finish what the spec's
-  §10 M2 list still lacks (check: admin-password confirmation for production suppliers, dev.sh + e2e smoke
-  wiring, manual fulfil/void/switch, cost report, redemption site), then security-reviewer + payment-auditor,
-  then squash the WIP commit.
+- **v12 M2 state (updated 2026-11-15):** draft PR #2 on the new repo; **full CI green** (run 43674783330:
+  backend suite incl. `tests/test_procurement_m2.py`, frontend, Semgrep, gitleaks, images, E2E smoke). Fixed
+  on the way: 0024 lacked an UPDATE policy for the outbox claim (`procurement_claim`; `SELECT ... FOR UPDATE`
+  must pass one, so the engine saw no work), a late non-terminal webhook status no longer replaces
+  `consumed`/`disabled`, four test corrections. `68ca6df` is still a WIP snapshot: squash before merge.
+  **Still open for M2 (spec §10), verify each against the code before building:** admin-password confirmation
+  for production suppliers, procurement + `mock_zovocard` in `scripts/dev.sh` and the e2e smoke, manual
+  fulfil/void/switch, cost report, redemption site; then security-reviewer + payment-auditor. PR #3 (email
+  redesign, CI green) touches `app/core` and waits for the security-reviewer pass before merge.
 - **Done this session:** `app/suppliers/gpt_session.py` (`0bfcd4e`) — offline pre-check of a pasted ChatGPT
   session, 18 unit tests green, not wired to any endpoint yet. Live checks (spec §15): test session valid,
   ipcook SOCKS5 exits work. Credentials saved: `~/.secrets/gpt-test-session.json`, `~/.secrets/ipcook.env`.
