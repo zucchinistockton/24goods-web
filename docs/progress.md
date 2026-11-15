@@ -4,6 +4,15 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 ## Current state — hand-off (read this first in a new session)
 
+**Email redesign (2026-11-15, branch `feat/email-design`):** every outgoing mail (verification code, password
+reset, order paid, order delivered, and the admin test send) is now a complete HTML document with a
+plain-text part: site-name header, the admin-editable body, one focal block (the code in a large box; for
+orders a summary table — order number, item, amount, status — and a "View order" button), a safety note and a
+footer; light/dark via `prefers-color-scheme`, table layout with inline styles, no remote assets. New default
+subjects and bodies in en / zh-CN (codes are not placed in subjects). Templates stay editable in Settings;
+stored values that equal the previous built-in text follow the new defaults (`_LEGACY`), real edits are kept.
+No migration, no API change. `tests/test_email_layout.py`. Not done: a rendered preview in the console.
+
 **Production deployed 2026-11-10 16:24 UTC: `222b03b`** (v11 #82 + #83 + #84, migrations 0020–0022) from
 `5f709d3`. Pre-deploy backups (v1 script, sha256-verified off-host copies, `pg_restore --list` OK);
 rollback images `goods24-{api,web}:rollback-5f709d3`. Smoke all pass; order / payment / card / ledger
