@@ -4,6 +4,44 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 ## Current state — hand-off (read this first in a new session)
 
+**Hand-off 2026-11-15 (session ended early on quota; read this block first).**
+
+- **BLOCKER — the GitHub account `arifulcrypto` is suspended** (seen 2026-11-15: `git ls-remote`, `gh api user`
+  and GraphQL all return 403 "Your account was suspended"). No push, PR, CI, merge or GHCR pull is possible
+  until the owner resolves it at https://support.github.com. CI is the test gate (AGENTS.md §7) and
+  `prod.sh deploy` pulls from GHCR, so **nothing can be merged or deployed**; all work below is local
+  commits only. The cause is not known. *Inference only:* the public repo
+  `arifulcrypto/gpt-subscribe-studio-dev` was pushed shortly before. Keep off-host copies of this repo
+  (`git bundle create`) until access is back.
+- **Branches (local):** `main` is 2 behind `origin/main` (`19c7625`, which already contains pay-ux #88;
+  `fix/pay-ux` has no diff against it and can be deleted). v12 M1 is merged into **`feat/v12-procurement`**
+  (#89, `a00b58e`), **not into `main`**. M2 lives on `feat/v12-procurement-m2` in the worktree
+  `.claude/worktrees/agent-af3aa371765135692`.
+- **v12 M2 state:** `68ca6df` is a **WIP snapshot** of the interrupted session (36 files: `procurement/engine.py`,
+  `procurement/keys.py`, `modules/webhooks.py`, `suppliers/zovocard/webhook.py`, `modules/catalog/upstream.py`,
+  migration `0024_procurement_cdk`, `tests/test_procurement_m2.py` with 17 tests). Lint-clean on those files;
+  **the tests were not run and nothing was reviewed.** Next: `scripts/dev.sh up`, run
+  `pytest -q tests/test_procurement_m2.py tests/test_procurement*.py` under `flock`, finish what the spec's
+  §10 M2 list still lacks (check: admin-password confirmation for production suppliers, dev.sh + e2e smoke
+  wiring, manual fulfil/void/switch, cost report, redemption site), then security-reviewer + payment-auditor,
+  then squash the WIP commit.
+- **Done this session:** `app/suppliers/gpt_session.py` (`0bfcd4e`) — offline pre-check of a pasted ChatGPT
+  session, 18 unit tests green, not wired to any endpoint yet. Live checks (spec §15): test session valid,
+  ipcook SOCKS5 exits work. Credentials saved: `~/.secrets/gpt-test-session.json`, `~/.secrets/ipcook.env`.
+- **Queue (owner, 2026-11-15), each its own PR, none started:**
+  1. Dark mode for the buyer app and console, following the system theme (`prefers-color-scheme`); validate on
+     the demo.
+  2. Optional TOTP 2FA (`feat/totp-2fa`, spec §13).
+  3. Telegram notifications: English by default, language (en / zh-CN) selectable in the admin console,
+     texts through i18n.
+  4. Email templates: proper layout and styling so the key information is easy to find. The owner's note
+     said "shutdown-related information" — **meaning unclear, ask before building** (order/delivery details?
+     service expiry?).
+  5. Second GPT supplier adapter built on the open-source payment protocol
+     (`crhywun/gpt-subscribe-studio-1`; owner fork `arifulcrypto/gpt-subscribe-studio-dev`, local `/opt/gss/src`)
+     plus the browser-session-injection path, as a backup to ZovoCard. **Not analysed yet** (spec §15).
+  6. ZovoCard sandbox probe: still waiting for the sandbox key.
+
 **v12 procurement M1 — built (2026-11-14, branch `feat/v12-procurement-m1`, ADR-038, migration
 `0023_procurement`):** `app/suppliers/` (protocol, ZovoCard read-only client with the status/error-code
 table, mock + manual suppliers), `app/procurement/` (health loop, internal probe API on :8004, CLI

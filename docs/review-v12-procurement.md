@@ -313,3 +313,37 @@ disabled under `prefers-reduced-motion`). Frontend design is done by the orchest
    procurement's outbound traffic to the supplier hosts (firewall / egress proxy) before real funds.
 5. Supplier balance is 6.27 USD: below any useful breaker threshold, which is the intended state until the
    security review.
+
+## 15. GPT session checks and the backup supplier (owner, 2026-11-15)
+
+**Session pre-check (built).** `backend/app/suppliers/gpt_session.py::parse_gpt_session` validates a pasted
+`chatgpt.com/api/auth/session` document offline before it is sealed or forwarded: size cap 64 KB, tolerant of
+text around the JSON, requires `sessionToken` + `accessToken`, rejects a bare `eyJ…` access token, checks the
+access-token `exp` and the session `expires`, and that `account.id` matches the token's
+`chatgpt_account_id`. Error codes (to map to i18n keys): `too_large`, `not_json`, `access_token_only`,
+`missing_session_token`, `missing_access_token`, `malformed_access_token`, `expired`, `missing_account`,
+`account_mismatch`. The JWT signature is **not** verified, so the result is a hint; the supplier preflight is
+the truth. The raw session is a credential under the same rule as card secrets: sealed with the procurement
+key (§5), never logged, UI shows `email_masked` and the plan only. To do: wire it into the `upstream_direct`
+checkout and the redemption site (M3).
+
+**Live verification (2026-11-15) [V].** Owner test session (Plus, personal workspace, Google login, no MFA):
+access token valid about 10 days from issue, session cookie until 2027-02-13. Through the ipcook SOCKS5 exit
+(US, residential) `GET /backend-api/me` and `GET /backend-api/accounts/check/v4-2023-04-27` return 200 with a
+plain `Authorization: Bearer` header and the session's own User-Agent; the entitlement shows an active
+`chatgptplusplan`. Both proxy geos tested (`-US_city_LosAngeles`, `-PH`) exit in the named country.
+Read-only calls only; no checkout or payment endpoint was called.
+
+**Backup supplier — to analyse, nothing built.** Owner direction: keep ZovoCard as the primary upstream
+(the protocol changes often, so the vendor absorbs that) and add a second adapter under `suppliers/` that
+performs the subscription itself, using the payment protocol of `gpt-subscribe-studio` and, alternatively,
+browser session injection (currently done by hand with a Chrome extension). Before any code:
+1. Read the fork and write `docs/research/gpt-subscribe-studio.md` (licence, the exact endpoints and payment
+   flow, what it needs from the buyer, failure modes, how often upstream changed).
+2. Decide the trust boundary: it holds buyer sessions and a payment instrument, so it belongs in the
+   `procurement` process (egress, no vault private key), with the proxy as per-supplier settings and
+   credentials in `env/procurement.env`, never in the repo.
+3. Owner decisions needed: which payment instrument funds the purchases, which billing countries are used,
+   and acceptance of the account/terms-of-service risk on the upstream platform. This adapter moves real
+   money, so invariant 11 applies: no production use before the independent security review.
+
