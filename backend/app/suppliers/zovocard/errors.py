@@ -15,7 +15,8 @@ a write for the same reason (``Rule.write_outcome``).
 permissions): the engine opens the supplier breaker and alerts staff. Such calls were refused
 before anything was executed, so their outcome is UNAVAILABLE (definite "no charge"); the one
 exception is ``request_failed`` on a write, which stays AMBIGUOUS because we cannot tell its
-variants apart without reading ``msg``.
+variants apart without reading ``msg``, and which does NOT stop the supplier (it may be one paused
+plan; the engine checks the offer's availability before the first send).
 """
 
 from __future__ import annotations
@@ -31,10 +32,13 @@ class Rule:
     supplier_stop: bool = False
     # outcome on a write when it differs from a read: the vendor may have executed the request
     write_outcome: Outcome | None = None
+    # supplier_stop on a write when it differs from a read (None = same as ``supplier_stop``)
+    write_stop: bool | None = None
 
     def resolve(self, write: bool) -> Rule:
         if write and self.write_outcome is not None:
-            return Rule(self.write_outcome, self.supplier_stop)
+            stop = self.supplier_stop if self.write_stop is None else self.write_stop
+            return Rule(self.write_outcome, stop)
         return self
 
 
@@ -64,9 +68,11 @@ TABLE: dict[tuple[int | None, str | None], Rule] = {
     (None, "insufficient_balance"): _STOP,
     # The vendor's catch-all ("具体看 msg": API-key spend cap, delisted product, maintenance...).
     # We never read msg, so on a write we cannot know whether anything ran: AMBIGUOUS. The spend
-    # cap variant is account-wide, hence the supplier stop [I] (review-v12 §5).
+    # cap variant is account-wide, hence the supplier stop on a READ [I] (review-v12 §5); on a
+    # write the answer is as likely a paused plan (one offer), so it never stops the whole
+    # supplier (payment audit H2): the engine marks the offer unchecked and keeps reconciling.
     (None, "request_failed"): Rule(
-        Outcome.UNAVAILABLE, supplier_stop=True, write_outcome=Outcome.AMBIGUOUS
+        Outcome.UNAVAILABLE, supplier_stop=True, write_outcome=Outcome.AMBIGUOUS, write_stop=False
     ),
     (None, "forbidden"): _FATAL,
     (None, "internal_error"): _SERVER,

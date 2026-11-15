@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 
-from sqlalchemy import func, insert, select
+from sqlalchemy import func, insert, select, update
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -77,6 +77,10 @@ POLL_STEPS = (15, 30, 60, 120, 300, 600, 900)  # seconds; capped at 15 min (spec
 MAX_RETRIES = 10
 MAX_RECONCILE = 40
 STUCK_AFTER = timedelta(minutes=30)
+# availability() reasons that mean "this plan cannot be bought" (anything else = lookup failed)
+PLAN_REFUSALS = frozenset(
+    {"not_purchasable", "invalid_offer", "cdk_gpt_only", "kind_not_supported_m1"}
+)
 OUTBOX_MAX_ATTEMPTS = 8
 
 
@@ -698,11 +702,14 @@ async def _lease(ctx: ProcurementContext, job_id: uuid.UUID, tenant_id: uuid.UUI
                 await _needs_manual(db, job, "offer_changed")
                 await db.commit()
                 return None
-            if job.state == "queued":
-                await _transition(db, job, "submitting", "submit")
-            job.step = "sent"  # from here on a crash means "maybe sent": reconcile
-            job.maybe_sent = True
-            job.first_sent_at = now
+            if job.step != "ready":
+                mode = "precheck"  # read-only availability check before the first send (H2)
+            else:
+                if job.state == "queued":
+                    await _transition(db, job, "submitting", "submit")
+                job.step = "sent"  # from here on a crash means "maybe sent": reconcile
+                job.maybe_sent = True
+                job.first_sent_at = now
         else:
             if offer is None:
                 # a job that may have reached a supplier is never moved automatically: ask it
@@ -761,6 +768,14 @@ def engine_supplier(ctx: ProcurementContext, ref: SupplierRef) -> Supplier:
 async def _call(ctx: ProcurementContext, lease: Lease) -> Result:
     try:
         sup = engine_supplier(ctx, lease.ref)
+        if lease.mode == "precheck":
+            av = await sup.availability(lease.spec.offer)
+            if av.available is True:
+                return Result(Outcome.OK)
+            reason = clean_detail(av.reason or "unavailable")
+            # only the catalog's own "no" is definite; a failed lookup says nothing about the plan
+            definite = reason in PLAN_REFUSALS
+            return Result(Outcome.UNAVAILABLE if definite else Outcome.RETRYABLE, error_code=reason)
         if lease.mode == "submit":
             return await sup.submit(lease.spec)
         if lease.mode in ("void", "dvoid"):
@@ -901,6 +916,41 @@ async def _apply_void(db: AsyncSession, job: ProcurementJob, res: Result, now: d
         job.next_poll_at = now + _backoff(job.attempts, res.retry_after)
 
 
+async def _set_check(db: AsyncSession, job: ProcurementJob, ok: bool) -> None:
+    """The offer's last availability verdict (the storefront hides an unchecked source)."""
+    if job.offer_id is not None:
+        await db.execute(
+            update(SupplierOffer)
+            .where(SupplierOffer.tenant_id == job.tenant_id, SupplierOffer.id == job.offer_id)
+            .values(last_check_ok=ok, last_check_at=utcnow())
+        )
+
+
+async def _apply_precheck(
+    ctx: ProcurementContext,
+    db: AsyncSession,
+    job: ProcurementJob,
+    order: OrderRow,
+    res: Result,
+    now: datetime,
+) -> None:
+    """Nothing was sent. Available -> ready to submit; the catalog says no -> next source (or
+    ``needs_manual`` without one) and the offer is marked unchecked; a failed lookup is retried."""
+    o = res.outcome
+    if o is Outcome.OK:
+        job.step, job.attempts, job.error_code, job.next_poll_at = "ready", 0, None, now
+        await _set_check(db, job, True)
+    elif o is Outcome.UNAVAILABLE:
+        await _set_check(db, job, False)
+        await _failover(ctx, db, job, order, "plan_unavailable")
+    else:
+        job.error_code = clean_detail(res.error_code or "precheck_failed")
+        if job.attempts > MAX_RETRIES:
+            await _needs_manual(db, job, "precheck_failed")
+        else:
+            job.next_poll_at = now + _backoff(job.attempts, res.retry_after)
+
+
 async def _apply_detached(
     db: AsyncSession, job: ProcurementJob, lease: Lease, res: Result, now: datetime
 ) -> None:
@@ -978,6 +1028,10 @@ async def _apply(ctx: ProcurementContext, lease: Lease, res: Result) -> None:
             await _apply_detached(db, job, lease, res, now)
             await db.commit()
             return
+        if lease.mode == "precheck":
+            await _apply_precheck(ctx, db, job, order, res, now)
+            await db.commit()
+            return
         if o is Outcome.OK:
             await _fulfil(ctx, db, job, order, res)
         elif o is Outcome.ACCEPTED_PENDING:
@@ -998,6 +1052,8 @@ async def _apply(ctx: ProcurementContext, lease: Lease, res: Result) -> None:
                 job.next_poll_at = now + _backoff(job.attempts, res.retry_after)
         elif o is Outcome.AMBIGUOUS:
             job.error_code = clean_detail(res.error_code or "ambiguous")
+            if res.error_code == "request_failed":
+                await _set_check(db, job, False)  # per-offer stop: the supplier stays open
             if job.state == "submitting":
                 job.step = "reconcile"
             if job.attempts > MAX_RECONCILE:
@@ -1049,6 +1105,8 @@ async def process_job(ctx: ProcurementContext, job_id: uuid.UUID, tenant_id: uui
         await _apply(ctx, lease, res)
     finally:
         del res  # drop the plaintext reference as early as possible
+    if lease.mode == "precheck":
+        await process_job(ctx, job_id, tenant_id)  # a passed check sends in the same pass
     if charged:  # review-v12 §6: the balance (and the breaker) is refreshed after every job
         try:
             await refresh_balance(ctx, lease.ref)

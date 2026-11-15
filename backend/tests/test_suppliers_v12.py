@@ -129,6 +129,8 @@ def test_error_table_row(key, write):
     outcome, stop = EXPECTED[key]
     if write:
         outcome = WRITE_OUTCOME.get(key, outcome)
+        if key == (None, "request_failed"):
+            stop = False  # a write never stops the whole supplier (payment audit H2)
     status = status if status is not None else STATUS_FOR.get(code or "", 400)
     rule = classify(status, code, write=write)
     assert (rule.outcome, rule.supplier_stop) == (outcome, stop)
@@ -141,7 +143,7 @@ def test_server_errors_and_catch_all_are_ambiguous_on_writes():
     assert classify(500, "internal_error", write=True).outcome is Outcome.AMBIGUOUS
     assert classify(500, "internal_error", write=False).outcome is Outcome.RETRYABLE
     rf = classify(400, "request_failed", write=True)
-    assert rf.outcome is Outcome.AMBIGUOUS and rf.supplier_stop is True
+    assert rf.outcome is Outcome.AMBIGUOUS and rf.supplier_stop is False
     rf = classify(400, "request_failed", write=False)
     assert rf.outcome is Outcome.UNAVAILABLE and rf.supplier_stop is True
     # definite "no charge" codes stay UNAVAILABLE on writes (vendor §3 / A.2)

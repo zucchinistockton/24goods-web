@@ -284,3 +284,89 @@ async def test_refund_does_not_wait_for_a_job_the_engine_holds(env, up):
         await holder.rollback()
     assert await _order_status(env, order) == "paid"  # nothing half-done
     assert (await _refund(env, order)).status_code == 200
+
+
+# ------------------------------------------------------------------ H2
+async def _offer_check(env, oid) -> bool | None:
+    return await env.scalar("SELECT last_check_ok FROM supplier_offers WHERE id = :o", o=oid)
+
+
+async def test_unavailable_plan_fails_over_before_anything_is_sent(env, up):
+    a = MockSupplier("mock_a", purchasable=())  # the plan is paused at the first supplier
+    b = MockSupplier("mock_b")
+    sid_a, offer_a = await up.supplier(a, code="mock_a", priority=10)
+    await up.supplier(b, code="mock_b", priority=20)
+    _buyer, order = await up.paid_order()
+    for _ in range(3):
+        await up.run()
+    job = await _job(up, order)
+    assert job.state == "fulfilled" and job.tried_offer_ids == [offer_a]
+    assert a.calls == [] and len(b.charged) == 1  # nothing was ever sent to the paused plan
+    assert await _offer_check(env, offer_a) is False
+    assert await env.scalar("SELECT breaker_open FROM suppliers WHERE id = :s", s=sid_a) is False
+
+
+async def test_unavailable_plan_without_alternative_needs_manual_not_charged(env, up):
+    a = MockSupplier("mock_a", purchasable=())
+    sid, offer = await up.supplier(a)
+    _buyer, order = await up.paid_order()
+    for _ in range(2):
+        await up.run()
+    job = await _job(up, order)
+    assert job.state == "needs_manual" and job.error_code == "no_source:plan_unavailable"
+    assert not job.maybe_sent and a.calls == []
+    assert await _offer_check(env, offer) is False
+    assert await env.scalar("SELECT breaker_open FROM suppliers WHERE id = :s", s=sid) is False
+
+
+async def test_failed_availability_lookup_is_retried_not_treated_as_a_refusal(env, up):
+    class Flaky(MockSupplier):
+        broken = 1
+
+        async def availability(self, offer):
+            from app.suppliers.base import Availability
+
+            if self.broken:
+                self.broken -= 1
+                return Availability(False, "http_503")
+            return await super().availability(offer)
+
+    mock = Flaky("mock_a")
+    await up.supplier(mock)
+    _buyer, order = await up.paid_order()
+    await up.run()
+    job = await _job(up, order)
+    assert job.state == "queued" and job.error_code == "http_503" and mock.calls == []
+    await up.make_due()
+    await up.run()
+    assert (await _job(up, order)).state == "fulfilled"
+
+
+async def test_ambiguous_request_failed_does_not_open_the_supplier_breaker(env, up):
+    from app.suppliers.zovocard.errors import classify
+
+    rule = classify(400, "request_failed", write=True)
+    assert rule.outcome is Outcome.AMBIGUOUS and rule.supplier_stop is False
+
+    class Paused(MockSupplier):
+        async def submit(self, job):
+            self.calls.append(("submit", job.idempotency_key))
+            return Result(
+                rule.outcome, error_code="request_failed", supplier_stop=rule.supplier_stop
+            )
+
+        async def query(self, job):
+            return await self.submit(job)
+
+    mock = Paused("mock_a")
+    sid, offer = await up.supplier(mock)
+    _buyer, order = await up.paid_order()
+    for _ in range(3):
+        await up.run()
+        await up.make_due()
+    job = await _job(up, order)
+    assert job.state == "submitting" and job.step == "reconcile" and job.maybe_sent
+    assert await env.scalar("SELECT breaker_open FROM suppliers WHERE id = :s", s=sid) is False
+    assert await _offer_check(env, offer) is False  # per-offer stop: the storefront hides it
+    keys = {k for _, k in mock.calls}
+    assert keys == {job.idempotency_key}  # still the same key, still AMBIGUOUS for money
