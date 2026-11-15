@@ -145,7 +145,7 @@ class Up:
             return list(await db.scalars(stmt))
 
     async def paid_order(self, qty: int = 1):
-        buyer, user = await self.env.login("buyer")
+        buyer, _user = await self.env.login("buyer")
         order = await buy(buyer, self.product, qty)
         await pay_order(self.env, buyer, order)
         assert await self.env.drain() >= 1  # delivery: order.paid -> procure.requested
@@ -240,7 +240,7 @@ async def test_upstream_order_never_claims_local_pool(env, up):
 async def test_timeout_after_send_reconciles_with_the_same_key(env, up):
     mock = LosingMock("mock_a", lose=1)
     await up.supplier(mock)
-    buyer, order = await up.paid_order()
+    _buyer, order = await up.paid_order()
     await up.run()
     (job,) = await up.jobs(order["id"])
     assert job.state == "submitting" and job.step == "reconcile"
@@ -256,7 +256,7 @@ async def test_timeout_after_send_reconciles_with_the_same_key(env, up):
 async def test_pending_is_polled_never_resubmitted(env, up):
     mock = LosingMock("mock_a", lose=0, pending=True)
     await up.supplier(mock)
-    buyer, order = await up.paid_order()
+    _buyer, order = await up.paid_order()
     await up.run()
     (job,) = await up.jobs(order["id"])
     assert job.state == "accepted_pending"
@@ -277,7 +277,7 @@ async def test_unavailable_queries_then_fails_over(env, up):
     b = MockSupplier("mock_b")
     _, offer_a = await up.supplier(a, code="mock_a", priority=10)
     await up.supplier(b, code="mock_b", priority=20)
-    buyer, order = await up.paid_order()
+    _buyer, order = await up.paid_order()
     await up.drain_all() if hasattr(up, "drain_all") else None
     for _ in range(3):
         await up.run()
@@ -314,7 +314,7 @@ async def test_supplier_stop_opens_breaker_and_hides_stock(env, up):
             return Result(Outcome.UNAVAILABLE, error_code="not_found")
 
     sid, _ = await up.supplier(Stopping("mock_a"))
-    buyer, order = await up.paid_order()
+    _buyer, order = await up.paid_order()
     for _ in range(3):
         await up.run()
     assert await env.scalar("SELECT breaker_open FROM suppliers WHERE id = :s", s=sid) is True
@@ -379,7 +379,7 @@ async def test_zovocard_ambiguous_issue_is_replayed_once(env, up, quirk):
 async def test_zovocard_channel_unavailable_without_alternative(env, up):
     vendor = await _zovo(up)
     vendor.force("/gpt-direct/cdks", "503", times=2)  # submit + verifying replay
-    buyer, order = await up.paid_order()
+    _buyer, order = await up.paid_order()
     for _ in range(3):
         await up.run()
     (job,) = await up.jobs(order["id"])
@@ -503,7 +503,7 @@ async def test_webhook_out_of_order_and_never_fulfils(env, up, hook):
 
     mock = MockSupplier("mock_a")
     await up.supplier(mock)
-    buyer, order = await up.paid_order()
+    _buyer, order = await up.paid_order()
     await up.run()
     (job,) = await up.jobs(order["id"])
     # rebind the job to the zovocard account the webhook resolves to
@@ -596,7 +596,7 @@ async def test_write_grants_are_narrow(env, up):
             ("UPDATE orders SET status = status", {}),
             ("SELECT id FROM card_stock", {}),
         ):  # fmt: skip
-            with pytest.raises(Exception, match="row-level security|permission denied"):
+            with pytest.raises(Exception, match=r"row-level security|permission denied"):
                 await db.execute(text(sql), params)
             await db.rollback()
         # an order.paid row of this tenant is invisible to procurement
