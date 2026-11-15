@@ -254,7 +254,7 @@ cat > env/mockzovo.env <<EOF
 APP_ENV=$APP_ENV_NAME
 APP_MOCKZOVO_HOST=0.0.0.0
 APP_MOCKZOVO_PORT=8005
-APP_MOCKZOVO_SCENARIOS=1
+APP_MOCKZOVO_SCENARIOS=$([[ "$MODE" == "demo" ]] && echo 1 || echo 0)
 APP_HEALTH_PORT=8005
 EOF
 cat > env/mockusdt.env <<EOF

@@ -41,7 +41,9 @@ const emptyForm = (): SupplierInput => ({
 const f = ref<SupplierInput>(emptyForm())
 const password = ref('')
 /** the server asks for the admin password when a supplier becomes a production one */
-const needsPassword = computed(() => f.value.env === 'production' && editing.value?.env !== 'production')
+const needsPassword = computed(
+  () => f.value.env === 'production' && (editing.value?.env !== 'production' || (f.value.enabled && !editing.value.enabled)),
+)
 
 const probing = ref<string | null>(null)
 const probeOpen = ref(false)
@@ -123,6 +125,12 @@ async function save() {
 }
 
 async function toggle(row: AdminSupplier, v: boolean) {
+  if (v && row.env === 'production') {
+    // switching a production supplier on needs the admin password: ask for it in the dialog
+    openDialog(row)
+    f.value.enabled = true
+    return
+  }
   try {
     Object.assign(row, await api.update(row.id, { enabled: v }))
   } catch (e) {

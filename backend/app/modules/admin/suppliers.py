@@ -239,11 +239,13 @@ async def update_supplier(
     before = _snap(row)
     patch = body.model_dump(exclude_unset=True, exclude_none=True)
     patch.pop("current_password", None)
-    if patch.get("env") == "production" and row.env != "production":
-        await _require_password(admin, body.current_password)
     env = patch.get("env", row.env)
     enabled = patch.get("enabled", row.enabled)
     _check_production(res, env, enabled)
+    # fresh proof for every step that points jobs at a production account: the switch to
+    # production AND switching an existing production supplier on
+    if env == "production" and (row.env != "production" or (enabled and not row.enabled)):
+        await _require_password(admin, body.current_password)
     if "label" in patch:
         row.label = patch["label"].strip() or row.code
     if "env" in patch:

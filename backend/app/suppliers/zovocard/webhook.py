@@ -28,8 +28,9 @@ SIGNATURE_HEADER = "x-signature"
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _KEY_BAD = re.compile(r"[^A-Za-z0-9_.:@-]")
 
+# ``code_prefix`` is deliberately absent: part of a code is part of a secret (AGENTS §1.1)
 _CDK_FIELDS = (
-    "event_id", "type", "cdk_id", "code_prefix", "cdk_status", "plan", "order_id",
+    "event_id", "type", "cdk_id", "cdk_status", "plan", "order_id",
     "from_status", "to_status", "status", "stage", "occurred_at", "app_id",
     "client_request_id", "service_fee_minor", "service_fee_status", "final_amount_minor",
     "currency", "card_last_four", "funding_hold_status",

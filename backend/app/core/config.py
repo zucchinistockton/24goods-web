@@ -185,6 +185,14 @@ class Settings(BaseSettings):
                 raise ValueError("APP_ZPAY_API_BASE must be https:// in prod (it carries the key)")
             if not self.cookie_secure:
                 raise ValueError("APP_COOKIE_SECURE must be true in prod")
+        # a key shared by both environments would book sandbox events on the production account
+        split = lambda v: {x.strip() for x in v.split(",") if x.strip()}  # noqa: E731
+        prod_keys = split(self.zovocard_webhook_secret)
+        sandbox_keys = split(self.zovocard_sandbox_webhook_secret)
+        if prod_keys & sandbox_keys:
+            raise ValueError("ZovoCard production and sandbox webhook secrets must differ")
+        if self.env == "prod" and any(len(k) < 32 for k in prod_keys | sandbox_keys):
+            raise ValueError("ZovoCard webhook secrets must be at least 32 characters in prod")
 
         return self
 

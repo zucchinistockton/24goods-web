@@ -508,3 +508,22 @@ async def test_app_api_updates_only_editable_supplier_columns(env):
             with pytest.raises(Exception, match="permission denied"):
                 await db.execute(text(sql), {"i": sid})
             await db.rollback()
+
+
+async def test_enabling_a_production_supplier_needs_the_password(env):
+    """Once the production lock is lifted, switching a production supplier on asks again."""
+    env.res.settings = env.res.settings.model_copy(update={"procurement_allow_production": True})
+    admin, _ = await env.login("admin")
+    row = await _create(admin, env="production", current_password=PASSWORD)
+    assert row["enabled"] is False
+    r = await admin.patch(f"{URL}/{row['id']}", json={"enabled": True})
+    assert r.status_code == 403
+    r = await admin.patch(f"{URL}/{row['id']}", json={"enabled": True, "current_password": "no"})
+    assert r.status_code == 403
+    r = await admin.patch(
+        f"{URL}/{row['id']}", json={"enabled": True, "current_password": PASSWORD}
+    )
+    assert r.status_code == 200 and r.json()["enabled"] is True
+    # switching it off, or editing it while on, needs no password
+    assert (await admin.patch(f"{URL}/{row['id']}", json={"label": "L"})).status_code == 200
+    assert (await admin.patch(f"{URL}/{row['id']}", json={"enabled": False})).status_code == 200

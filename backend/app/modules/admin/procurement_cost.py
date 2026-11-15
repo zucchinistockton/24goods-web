@@ -317,7 +317,7 @@ async def export_csv(
                 _csv_cell(r.external_id),
                 _csv_cell(r.type),
                 _money(r.amount),
-                r.currency,
+                _csv_cell(r.currency),
                 _dec(r.balance_after) or "",
                 _csv_cell(r.card_mask or ""),
                 _csv_cell(r.ref_id or ""),
