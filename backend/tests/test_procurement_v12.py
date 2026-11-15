@@ -315,7 +315,7 @@ async def test_app_procurement_grants_are_narrow(env, proc):
             "SELECT email FROM users",
             "UPDATE card_stock SET status = status",
         ):
-            with pytest.raises(Exception, match="permission denied|row-level security"):
+            with pytest.raises(Exception, match=r"permission denied|row-level security"):
                 await db.execute(text(sql))
             await db.rollback()
         assert (await db.execute(text("SELECT count(*) FROM procurement_jobs"))).scalar() == 0
