@@ -241,6 +241,68 @@ async def refresh_offers(ctx: ProcurementContext, ref: SupplierRef) -> int:
     return len(results)
 
 
+async def check_offer(
+    ctx: ProcurementContext, tenant_id: uuid.UUID, offer_id: uuid.UUID
+) -> dict[str, object]:
+    """Staff "check availability" of ONE offer (GET only), enabled or not, so a source can be
+    tested before it is switched on. Stores ``last_check_ok`` like the periodic refresh."""
+    async with tenant_session(ctx.maker, tenant_id) as db:
+        kind = await db.scalar(select(Tenant.kind).where(Tenant.id == tenant_id))
+        if kind != PLATFORM:
+            raise SupplierNotFound
+        row = (
+            await db.execute(
+                select(
+                    SupplierOffer.kind,
+                    SupplierOffer.params,
+                    SupplierAccount.id,
+                    SupplierAccount.code,
+                    SupplierAccount.adapter,
+                    SupplierAccount.env,
+                    SupplierAccount.health,
+                )
+                .join(SupplierAccount, SupplierAccount.id == SupplierOffer.supplier_id)
+                .where(SupplierOffer.tenant_id == tenant_id, SupplierOffer.id == offer_id)
+            )
+        ).first()
+    if row is None:
+        raise SupplierNotFound
+    ref = SupplierRef(row.id, tenant_id, row.code, row.adapter, row.env, row.health)
+    ok, reason = False, "not_configured"
+    try:
+        supplier = make_supplier(ctx, ref)
+    except SupplierConfigError:
+        supplier = None
+    if supplier is not None:
+        try:
+            av = await asyncio.wait_for(
+                supplier.availability(OfferSpec(kind=row.kind, params=dict(row.params or {}))),
+                ctx.settings.probe_timeout_s,
+            )
+            ok, reason = av.available is True, (None if av.available is True else av.reason)
+        except asyncio.TimeoutError:
+            reason = "timeout"
+        except SupplierError as exc:
+            reason = exc.reason
+        except Exception:  # an unknown answer is "not available"
+            reason = "check_failed"
+        finally:
+            await supplier.aclose()
+    now = datetime.now(timezone.utc)
+    async with tenant_session(ctx.maker, tenant_id) as db:
+        await db.execute(
+            update(SupplierOffer)
+            .where(SupplierOffer.tenant_id == tenant_id, SupplierOffer.id == offer_id)
+            .values(last_check_ok=ok, last_check_at=now)
+        )
+        await db.commit()
+    return {
+        "available": ok,
+        "reason": clean_detail(reason) if reason else None,
+        "checked_at": now.isoformat(),
+    }
+
+
 async def refresh_all(ctx: ProcurementContext) -> int:
     refs = await enabled_suppliers(ctx)
     for ref in refs:
