@@ -99,6 +99,11 @@ class ProcurementJob(Base):
     )
     upstream_status: Mapped[str | None] = mapped_column(String(32))
     alerted_at: Mapped[datetime | None]
+    # 0027: send tracking (see the migration docstring)
+    maybe_sent: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    recover: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    lease_until: Mapped[datetime | None]
+    first_sent_at: Mapped[datetime | None]
     created_at: Mapped[datetime] = created_at()
     updated_at: Mapped[datetime] = updated_at()
 
