@@ -477,7 +477,15 @@ async def _offer(db: AsyncSession, job: ProcurementJob) -> OfferRow | None:
 
 
 async def _failover(
-    ctx: HasRedis, db: AsyncSession, job: ProcurementJob, order: OrderRow, reason: str
+    ctx: HasRedis,
+    db: AsyncSession,
+    job: ProcurementJob,
+    order: OrderRow,
+    reason: str,
+    *,
+    actor_id: uuid.UUID | None = None,
+    actor_role: str = "system",
+    ip: str | None = None,
 ) -> None:
     tried = [*list(job.tried_offer_ids or []), *([job.offer_id] if job.offer_id else [])]
     job.tried_offer_ids = tried
@@ -494,7 +502,9 @@ async def _failover(
     job.upstream_ref = None
     job.attempts = 0
     job.next_poll_at = utcnow()
-    await _transition(db, job, "queued", f"failover:{reason}")
+    await _transition(
+        db, job, "queued", f"failover:{reason}", actor_id=actor_id, actor_role=actor_role, ip=ip
+    )
 
 
 async def _lease(ctx: ProcurementContext, job_id: uuid.UUID, tenant_id: uuid.UUID) -> Lease | None:
@@ -633,6 +643,30 @@ async def _open_breaker(db: AsyncSession, job: ProcurementJob, reason: str) -> N
     )
 
 
+async def emit_if_complete(db: AsyncSession, order: OrderRow) -> bool:
+    """When every unit of the order has a fulfilled job, emit ``procure.fulfilled`` (delivery
+    then delivers; it never re-delivers a card, so a repeated event is harmless)."""
+    siblings = list(
+        await db.scalars(
+            select(ProcurementJob)
+            .where(ProcurementJob.order_id == order.id, ProcurementJob.state != "voided")
+            .order_by(ProcurementJob.unit_no)
+            .with_for_update()
+        )
+    )
+    if len(siblings) == order.qty and all(s.state == "fulfilled" for s in siblings):
+        ids = [str(c) for s in siblings for c in s.card_stock_ids]
+        _emit(
+            db,
+            order.tenant_id,
+            TOPIC_FULFILLED,
+            f"fulfilled:{order.id}",
+            {"order_id": str(order.id), "card_stock_ids": ids},
+        )
+        return True
+    return False
+
+
 async def _fulfil(
     ctx: ProcurementContext, db: AsyncSession, job: ProcurementJob, order: OrderRow, res: Result
 ) -> None:
@@ -675,23 +709,7 @@ async def _fulfil(
     job.step = "done"
     job.next_poll_at = None
     await _transition(db, job, "fulfilled", "supplier_ok")
-    siblings = list(
-        await db.scalars(
-            select(ProcurementJob)
-            .where(ProcurementJob.order_id == order.id, ProcurementJob.state != "voided")
-            .order_by(ProcurementJob.unit_no)
-            .with_for_update()
-        )
-    )
-    if len(siblings) == order.qty and all(s.state == "fulfilled" for s in siblings):
-        ids = [str(c) for s in siblings for c in s.card_stock_ids]
-        _emit(
-            db,
-            order.tenant_id,
-            TOPIC_FULFILLED,
-            f"fulfilled:{order.id}",
-            {"order_id": str(order.id), "card_stock_ids": ids},
-        )
+    await emit_if_complete(db, order)
 
 
 async def _apply_void(db: AsyncSession, job: ProcurementJob, res: Result, now: datetime) -> None:
