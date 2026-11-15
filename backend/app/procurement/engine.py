@@ -31,12 +31,13 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 
 from sqlalchemy import func, insert, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import audit
 from app.core.cardvault import CardContext
 from app.core.db import set_tenant, tenant_session
+from app.core.errors import Conflict
 from app.models import (
     CardStock,
     Order,
@@ -256,6 +257,109 @@ async def _needs_manual(
         )
 
 
+def _workable(job: ProcurementJob) -> bool:
+    """The poller leases a job in a work state, or a closed job with a pending ``recover``."""
+    return job.state in WORK or job.recover
+
+
+async def lock_job_set(
+    db: AsyncSession, tenant_id: uuid.UUID, order_id: uuid.UUID, *, nowait: bool = False
+) -> list[ProcurementJob]:
+    """Lock EVERY job of an order in one ordered statement (L4). Lock order everywhere is
+    job set -> order -> supplier; the engine cannot lock orders (no UPDATE grant), the API
+    paths that already hold the order (refund, close) take the job set with ``nowait`` and
+    answer 409 ``procurement_busy`` instead of waiting, so no wait cycle can form."""
+    stmt = (
+        select(ProcurementJob)
+        .where(ProcurementJob.tenant_id == tenant_id, ProcurementJob.order_id == order_id)
+        .order_by(ProcurementJob.unit_no, ProcurementJob.id)
+        .with_for_update(nowait=nowait)
+    )
+    try:
+        async with db.begin_nested():
+            return list(await db.scalars(stmt))
+    except DBAPIError as exc:
+        orig = exc.orig
+        code = getattr(orig, "sqlstate", None) or getattr(orig, "pgcode", None)
+        if nowait and code == "55P03":  # lock_not_available
+            raise Conflict(
+                "Procurement is working on this order right now; try again in a moment",
+                code="procurement_busy",
+            ) from None
+        raise
+
+
+async def lock_job(
+    db: AsyncSession, tenant_id: uuid.UUID, job_id: uuid.UUID
+) -> ProcurementJob | None:
+    """Lock the job (and, in the same ordered statement, its siblings)."""
+    order_id = await db.scalar(
+        select(ProcurementJob.order_id).where(
+            ProcurementJob.id == job_id, ProcurementJob.tenant_id == tenant_id
+        )
+    )
+    if order_id is None:
+        return None
+    jobs = await lock_job_set(db, tenant_id, order_id)
+    return next((j for j in jobs if j.id == job_id), None)
+
+
+async def close_job(
+    db: AsyncSession,
+    job: ProcurementJob,
+    reason: str,
+    *,
+    actor_id: uuid.UUID | None = None,
+    actor_role: str = "system",
+    ip: str | None = None,
+) -> None:
+    """Close a job whose order will not be delivered (refund, close, no longer ``paid``).
+
+    Never sent -> ``failed``. A job that may have reached the supplier is never dropped: it is
+    ``failed`` with ``recover`` set, and the engine then asks once under the SAME key to learn the
+    reference and disables the code (``voided``), or ends in ``needs_manual`` flagged as maybe
+    charged. Touches only columns ``app_api`` may update."""
+    reached = bool(job.maybe_sent or job.upstream_ref)
+    job.error_code = clean_detail(reason)
+    job.step, job.attempts = "done", 0
+    job.recover = reached
+    job.next_poll_at = utcnow() if reached else None
+    await _transition(
+        db,
+        job,
+        "failed",
+        reason,
+        severity="warning" if reached else "info",
+        actor_id=actor_id,
+        actor_role=actor_role,
+        ip=ip,
+    )
+
+
+CLOSABLE = ("queued", "submitting", "accepted_pending", "needs_manual")
+
+
+async def close_order_jobs(
+    db: AsyncSession,
+    order: Order,
+    *,
+    actor_id: uuid.UUID | None,
+    actor_role: str,
+    ip: str | None,
+    reason: str,
+) -> int:
+    """Refund / cancel of an upstream order: close its open jobs (caller holds the order lock)."""
+    if order.delivery_mode not in UPSTREAM_MODES:
+        return 0
+    jobs = await lock_job_set(db, order.tenant_id, order.id, nowait=True)
+    n = 0
+    for job in jobs:
+        if job.state in CLOSABLE:
+            await close_job(db, job, reason, actor_id=actor_id, actor_role=actor_role, ip=ip)
+            n += 1
+    return n
+
+
 # ------------------------------------------------------------------ job creation
 async def handle_requested(ctx: ProcurementContext, db: AsyncSession, payload: dict) -> None:
     """One job per order unit, committed by the caller BEFORE any supplier call."""
@@ -427,7 +531,7 @@ async def process_outbox_one(ctx: ProcurementContext) -> bool:
 class Lease:
     job_id: uuid.UUID
     tenant_id: uuid.UUID
-    mode: str  # submit | query | verify
+    mode: str  # submit | query | verify | void | recover | dvoid
     state: str
     step: str
     key: str
@@ -435,8 +539,8 @@ class Lease:
     ref: SupplierRef
 
 
-def _spec(job: ProcurementJob, offer: OfferRow) -> JobSpec:
-    voiding = job.state == "void_pending"
+def _spec(job: ProcurementJob, offer: OfferRow, mode: str) -> JobSpec:
+    voiding = mode in ("void", "dvoid")
     return JobSpec(
         job_id=job.id.hex,
         step="void" if voiding else job.step,
@@ -487,6 +591,10 @@ async def _failover(
     actor_role: str = "system",
     ip: str | None = None,
 ) -> None:
+    if job.maybe_sent or job.upstream_ref:
+        # another supplier is only ever tried when the first one is known to have done nothing
+        await _needs_manual(db, job, f"maybe_sent:{reason}")
+        return
     tried = [*list(job.tried_offer_ids or []), *([job.offer_id] if job.offer_id else [])]
     job.tried_offer_ids = tried
     cands = await candidates(ctx, db, order, exclude=tried)
@@ -507,6 +615,45 @@ async def _failover(
     )
 
 
+async def _stop_recovery(db: AsyncSession, job: ProcurementJob, reason: str) -> None:
+    """A recovery that cannot finish: the job goes to ``needs_manual`` (flagged as maybe charged
+    through ``maybe_sent`` / ``upstream_ref``); a hand-fulfilled job only gets a critical audit."""
+    job.recover = False
+    job.next_poll_at = None
+    if job.state == "failed":
+        await _needs_manual(db, job, reason, notify_order=False)
+    else:
+        await audit(
+            db,
+            tenant_id=job.tenant_id,
+            action="procurement.recover_failed",
+            target=f"procurement_job:{job.id}",
+            detail={"reason": clean_detail(reason), "order_id": str(job.order_id)},
+            severity="critical",
+        )
+
+
+async def _lease_detached(
+    ctx: ProcurementContext, db: AsyncSession, job: ProcurementJob, now: datetime
+) -> Lease | None:
+    """A closed job with ``recover``: learn the reference by one same-key query (never sealing
+    anything), then disable the code under the void key."""
+    offer = await _offer_any(db, job)
+    if offer is None:
+        await _stop_recovery(db, job, "offer_missing")
+        await db.commit()
+        return None
+    mode = "dvoid" if job.upstream_ref else "recover"
+    job.attempts += 1
+    job.next_poll_at = job.lease_until = now + timedelta(seconds=ctx.settings.job_lease_s)
+    lease = Lease(
+        job.id, job.tenant_id, mode, job.state, job.step, job.idempotency_key,
+        _spec(job, offer, mode), offer.ref,
+    )  # fmt: skip
+    await db.commit()
+    return lease
+
+
 async def _lease(ctx: ProcurementContext, job_id: uuid.UUID, tenant_id: uuid.UUID) -> Lease | None:
     now = utcnow()
     async with tenant_session(ctx.maker, tenant_id) as db:
@@ -515,23 +662,34 @@ async def _lease(ctx: ProcurementContext, job_id: uuid.UUID, tenant_id: uuid.UUI
             .where(ProcurementJob.id == job_id)
             .with_for_update(skip_locked=True)
         )
-        if (
-            job is None
-            or job.state not in WORK
-            or job.next_poll_at is None
-            or job.next_poll_at > now
-        ):
+        if job is None or not _workable(job) or job.next_poll_at is None or job.next_poll_at > now:
             await db.rollback()
             return None
+        if job.state not in WORK:  # closed job with a pending recovery
+            return await _lease_detached(ctx, db, job, now)
         order = await load_order(db, job.order_id)
         assert order is not None
-        offer = await _offer(db, job)
-        mode = "query"
-        if job.state == "queued" or (job.state == "submitting" and job.step == "submit"):
-            if order.status != "paid":
+        if job.state == "void_pending":
+            mode = "void"
+        elif job.state == "queued" or (
+            job.state == "submitting" and job.step in ("submit", "ready")
+        ):
+            mode = "submit"
+        elif job.state == "submitting" and job.step == "verify":
+            mode = "verify"
+        else:
+            mode = "query"
+        if mode != "void" and order.status != "paid":
+            # no purchase and no code binding for an order that is not (or no longer) paid: a
+            # held order waits for staff, a closed one ends the job (a possible code is voided)
+            if order.status == "manual_review":
                 await _needs_manual(db, job, "order_not_paid", notify_order=False)
-                await db.commit()
-                return None
+            else:
+                await close_job(db, job, "order_not_paid")
+            await db.commit()
+            return None
+        offer = await _offer(db, job)
+        if mode == "submit" and not job.maybe_sent:
             if offer is None:  # never sent with this offer: fail over without a query
                 await _failover(ctx, db, job, order, "offer_unusable")
                 await db.commit()
@@ -541,30 +699,28 @@ async def _lease(ctx: ProcurementContext, job_id: uuid.UUID, tenant_id: uuid.UUI
                 await db.commit()
                 return None
             if job.state == "queued":
-                job.step = "sent"  # from here on a crash means "maybe sent": reconcile
                 await _transition(db, job, "submitting", "submit")
-            else:
-                job.step = "sent"
-            mode = "submit"
-        elif job.state == "void_pending":
-            mode = "void"
-        elif job.state == "submitting" and job.step == "verify":
-            mode = "verify"
-        elif job.state == "submitting" and job.step == "sent":
-            job.step = "reconcile"  # leased earlier and never finished: maybe sent
-        if offer is None:
-            # a job that may have reached a supplier is never moved automatically: query it
-            # through its own supplier even if the offer was disabled meanwhile
-            offer = await _offer_any(db, job)
+            job.step = "sent"  # from here on a crash means "maybe sent": reconcile
+            job.maybe_sent = True
+            job.first_sent_at = now
+        else:
             if offer is None:
-                await _needs_manual(db, job, "offer_missing")
-                await db.commit()
-                return None
+                # a job that may have reached a supplier is never moved automatically: ask it
+                # through its own supplier even if the offer was disabled meanwhile
+                offer = await _offer_any(db, job)
+                if offer is None:
+                    await _needs_manual(db, job, "offer_missing")
+                    await db.commit()
+                    return None
+            if mode == "submit":
+                job.step = "sent"  # same-key resubmit after a reconcile found nothing
+            elif mode == "query" and job.state == "submitting":
+                job.step = "reconcile"  # leased earlier and never finished: maybe sent
         job.attempts += 1
-        job.next_poll_at = now + timedelta(seconds=ctx.settings.job_lease_s)
+        job.next_poll_at = job.lease_until = now + timedelta(seconds=ctx.settings.job_lease_s)
         lease = Lease(
             job.id, job.tenant_id, mode, job.state, job.step, job.idempotency_key,
-            _spec(job, offer), offer.ref,
+            _spec(job, offer, mode), offer.ref,
         )  # fmt: skip
         await db.commit()
     return lease
@@ -607,12 +763,12 @@ async def _call(ctx: ProcurementContext, lease: Lease) -> Result:
         sup = engine_supplier(ctx, lease.ref)
         if lease.mode == "submit":
             return await sup.submit(lease.spec)
-        if lease.mode == "void":
+        if lease.mode in ("void", "dvoid"):
             return await sup.void(lease.spec)
-        return await sup.query(lease.spec)
+        return await sup.query(lease.spec)  # query / verify / recover: same-key replay
     except Exception as exc:  # unknown failure: if it may have been sent, reconcile
         log.error("supplier call failed job=%s error=%s", lease.job_id, type(exc).__name__)
-        if lease.mode in ("submit", "void"):
+        if lease.mode in ("submit", "void", "dvoid"):
             return Result(Outcome.AMBIGUOUS, error_code="internal_error")
         return Result(Outcome.RETRYABLE, error_code="internal_error")
 
@@ -670,11 +826,29 @@ async def emit_if_complete(db: AsyncSession, order: OrderRow) -> bool:
 async def _fulfil(
     ctx: ProcurementContext, db: AsyncSession, job: ProcurementJob, order: OrderRow, res: Result
 ) -> None:
+    # the reference and the cost are recorded before anything can refuse the code (L1): a code
+    # the supplier issued must stay findable so it can be disabled
+    job.upstream_ref = res.upstream_ref or job.upstream_ref
+    if res.cost is not None:
+        job.cost, job.currency = res.cost.amount, res.cost.currency
+    if order.status != "paid":
+        # the order was refunded / held while the supplier call ran: never bind the code to it
+        # (the answer is dropped here, never stored); the code is disabled at the supplier
+        job.error_code = "order_not_paid"
+        if job.upstream_ref:
+            job.step, job.attempts, job.next_poll_at = "void", 0, utcnow()
+            await _transition(db, job, "void_pending", "order_not_paid", severity="warning")
+        else:
+            await _needs_manual(db, job, "order_not_paid_no_ref", notify_order=False)
+        return
     if len(res.secrets) != 1 or ctx.sealer is None or order.product_id is None:
         # never store or log what we got; a CDK replay returns it again once fixed
-        job.step = "reconcile"
         job.error_code = "seal_unavailable" if ctx.sealer is None else "secret_count"
-        job.next_poll_at = utcnow() + _backoff(job.attempts, None)
+        if job.attempts > MAX_RETRIES:
+            await _needs_manual(db, job, job.error_code)
+        else:
+            job.step = "reconcile"
+            job.next_poll_at = utcnow() + _backoff(job.attempts, None)
         return
     sealer = ctx.sealer
     card_id = uuid.uuid4()
@@ -701,10 +875,7 @@ async def _fulfil(
         await _needs_manual(db, job, "duplicate_code")
         return
     job.card_stock_ids = [card_id]
-    job.upstream_ref = res.upstream_ref
     job.upstream_status = "unused"
-    if res.cost is not None:
-        job.cost, job.currency = res.cost.amount, res.cost.currency
     job.error_code = None
     job.step = "done"
     job.next_poll_at = None
@@ -730,12 +901,61 @@ async def _apply_void(db: AsyncSession, job: ProcurementJob, res: Result, now: d
         job.next_poll_at = now + _backoff(job.attempts, res.retry_after)
 
 
+async def _apply_detached(
+    db: AsyncSession, job: ProcurementJob, lease: Lease, res: Result, now: datetime
+) -> None:
+    """Recovery of a closed job: ``recover`` learns the reference (the answer's code is dropped,
+    never sealed), ``dvoid`` disables the code. Never changes who the code is delivered to."""
+    o = res.outcome
+    if lease.mode == "recover":
+        if o is Outcome.OK:
+            job.upstream_ref = res.upstream_ref or job.upstream_ref
+            if res.cost is not None:
+                job.cost, job.currency = res.cost.amount, res.cost.currency
+            job.upstream_status = "unused"
+            if not job.upstream_ref:
+                await _stop_recovery(db, job, "recover_no_ref")
+                return
+            job.attempts, job.next_poll_at = 0, now  # next: disable it
+            await audit(
+                db,
+                tenant_id=job.tenant_id,
+                action="procurement.job_recovered",
+                target=f"procurement_job:{job.id}",
+                detail={"order_id": str(job.order_id), "state": job.state},
+                severity="warning",
+            )
+        elif o in (Outcome.UNAVAILABLE, Outcome.FATAL):  # the supplier holds nothing for the key
+            job.recover, job.maybe_sent, job.next_poll_at = False, False, None
+            await audit(
+                db,
+                tenant_id=job.tenant_id,
+                action="procurement.recover_nothing_found",
+                target=f"procurement_job:{job.id}",
+                detail={"order_id": str(job.order_id), "error_code": clean_detail(res.error_code)},
+            )
+        elif job.attempts > MAX_RECONCILE:
+            await _stop_recovery(db, job, "unresolved")
+        else:
+            job.error_code = clean_detail(res.error_code or "recover_retry")
+            job.next_poll_at = now + _backoff(min(job.attempts, 3), res.retry_after)
+        return
+    # dvoid
+    if o is Outcome.OK:
+        job.recover, job.next_poll_at, job.upstream_status = False, None, "disabled"
+        if job.state == "failed":
+            await _transition(db, job, "voided", "recovered_void", severity="warning")
+    elif o is Outcome.FATAL or job.attempts > MAX_RETRIES:
+        await _stop_recovery(db, job, f"void_rejected:{res.error_code or 'unresolved'}")
+    else:
+        job.error_code = clean_detail(res.error_code or "void_retry")
+        job.next_poll_at = now + _backoff(job.attempts, res.retry_after)
+
+
 async def _apply(ctx: ProcurementContext, lease: Lease, res: Result) -> None:
     now = utcnow()
     async with tenant_session(ctx.maker, lease.tenant_id) as db:
-        job = await db.scalar(
-            select(ProcurementJob).where(ProcurementJob.id == lease.job_id).with_for_update()
-        )
+        job = await lock_job(db, lease.tenant_id, lease.job_id)
         if (
             job is None
             or job.state != lease.state
@@ -744,6 +964,7 @@ async def _apply(ctx: ProcurementContext, lease: Lease, res: Result) -> None:
         ):
             await db.rollback()  # staff acted meanwhile: their action wins
             return
+        job.lease_until = None
         order = await load_order(db, job.order_id)
         assert order is not None
         o = res.outcome
@@ -753,6 +974,10 @@ async def _apply(ctx: ProcurementContext, lease: Lease, res: Result) -> None:
             return
         if res.supplier_stop:
             await _open_breaker(db, job, res.error_code or "supplier_stop")
+        if lease.mode in ("recover", "dvoid"):
+            await _apply_detached(db, job, lease, res, now)
+            await db.commit()
+            return
         if o is Outcome.OK:
             await _fulfil(ctx, db, job, order, res)
         elif o is Outcome.ACCEPTED_PENDING:
@@ -766,6 +991,7 @@ async def _apply(ctx: ProcurementContext, lease: Lease, res: Result) -> None:
             job.error_code = clean_detail(res.error_code or "retryable")
             if lease.mode == "submit":
                 job.step = "submit"  # a RETRYABLE write was not executed
+                job.maybe_sent = job.upstream_ref is not None
             if job.attempts > MAX_RETRIES:
                 await _needs_manual(db, job, "retry_exhausted")
             else:
@@ -784,13 +1010,16 @@ async def _apply(ctx: ProcurementContext, lease: Lease, res: Result) -> None:
                 job.step = "verify"  # failover only after query() also finds nothing
                 job.next_poll_at = now
             elif lease.mode == "verify":
+                job.maybe_sent = False  # submit and the same-key query both found nothing
                 await _failover(ctx, db, job, order, job.error_code)
             elif job.state == "accepted_pending":
                 await _needs_manual(db, job, "upstream_lost")
             else:  # reconcile found nothing: resubmit under the SAME key
                 job.step = "submit"
                 job.next_poll_at = now
-        else:  # FATAL
+        else:  # FATAL: a deterministic refusal, nothing was executed for this key
+            if job.upstream_ref is None:
+                job.maybe_sent = False
             await _needs_manual(db, job, res.error_code or "fatal")
         if (
             job.state in ACTIVE
@@ -815,7 +1044,7 @@ async def process_job(ctx: ProcurementContext, job_id: uuid.UUID, tenant_id: uui
     if lease is None:
         return False
     res = await _call(ctx, lease)
-    charged = res.outcome is Outcome.OK or lease.mode == "submit"
+    charged = res.outcome is Outcome.OK or lease.mode in ("submit", "recover")
     try:
         await _apply(ctx, lease, res)
     finally:
@@ -834,7 +1063,7 @@ async def due_jobs(ctx: ProcurementContext, limit: int = 20) -> list[tuple[uuid.
             await db.execute(
                 select(ProcurementJob.id, ProcurementJob.tenant_id)
                 .where(
-                    ProcurementJob.state.in_(WORK),
+                    ProcurementJob.state.in_(WORK) | ProcurementJob.recover.is_(True),
                     ProcurementJob.next_poll_at <= func.now(),
                 )
                 .order_by(ProcurementJob.next_poll_at)

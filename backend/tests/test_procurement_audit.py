@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+# ruff: noqa: F811  (fixtures are imported from test_procurement_m2)
 import asyncio
 import os
+import uuid
 
 import asyncpg
 from sqlalchemy import text
 
+from app.suppliers.base import Outcome, Result
+from app.suppliers.mock import MockSupplier
 from tests.conftest import ALEMBIC_INI, OWNER_PW, _with_db
-from tests.test_procurement_m2 import Up, up  # noqa: F401
+from tests.test_procurement_m2 import LosingMock, Up, up  # noqa: F401
 
 
 async def _sql(env, sql: str, **params):
@@ -101,3 +105,182 @@ async def test_migration_0027_up_and_down(services):
             await admin.execute(f"DROP DATABASE IF EXISTS {db_name} WITH (FORCE)")
         finally:
             await admin.close()
+
+
+# ------------------------------------------------------------------ helpers
+async def _refund(env, order):
+    admin, _ = await env.login("admin")
+    return await admin.post(
+        f"/api/v1/admin/orders/{order['id']}/refund",
+        json={"reference": "REF-" + uuid.uuid4().hex[:8].upper()},
+    )
+
+
+async def _create_jobs_only(up: Up) -> None:
+    """Drain the outbox only: jobs exist, nothing was sent to a supplier."""
+    from app.procurement.engine import process_outbox_one
+
+    while await process_outbox_one(up.ctx):
+        pass
+
+
+async def _job(up: Up, order):
+    (job,) = await up.jobs(order["id"])
+    return job
+
+
+async def _order_status(env, order) -> str:
+    return await env.scalar("SELECT status FROM orders WHERE id = :o", o=uuid.UUID(order["id"]))
+
+
+async def _cards(env, order) -> int:
+    return await env.scalar(
+        "SELECT count(*) FROM card_stock WHERE order_id = :o", o=uuid.UUID(order["id"])
+    )
+
+
+# ------------------------------------------------------------------ H1
+async def test_refund_during_reconcile_voids_the_code(env, up):
+    mock = LosingMock("mock_a", lose=1)
+    await up.supplier(mock)
+    _buyer, order = await up.paid_order()
+    await up.run()
+    job = await _job(up, order)
+    assert job.state == "submitting" and job.step == "reconcile" and job.maybe_sent
+    assert len(mock.charged) == 1  # the supplier issued a code whose answer was lost
+    r = await _refund(env, order)
+    assert r.status_code == 200, r.text
+    job = await _job(up, order)
+    assert job.state == "failed" and job.recover and job.error_code == "order_refunded"
+    await up.make_due()
+    for _ in range(3):
+        await up.run()
+    job = await _job(up, order)
+    assert job.state == "voided" and not job.recover
+    assert job.upstream_ref and job.upstream_status == "disabled"
+    assert [op for op, _ in mock.calls] == ["submit", "query", "void"]
+    assert not mock.charged  # disabled at the supplier
+    assert await _cards(env, order) == 0 and await _order_status(env, order) == "refunded"
+    actors = await env.scalar(
+        "SELECT count(*) FROM audit_log WHERE action = 'procurement.job_state' "
+        "AND actor_id IS NOT NULL AND after->>'state' = 'failed'"
+    )
+    assert actors == 1  # the refund's closing of the job is attributed to the staff member
+    assert await env.scalar(
+        "SELECT count(*) FROM audit_log WHERE action = 'procurement.job_recovered'"
+    ) == 1  # fmt: skip
+
+
+async def test_refund_before_any_send_fails_the_job_without_a_call(env, up):
+    mock = MockSupplier("mock_a")
+    await up.supplier(mock)
+    _buyer, order = await up.paid_order()
+    await _create_jobs_only(up)
+    job = await _job(up, order)
+    assert job.state == "queued" and not job.maybe_sent
+    assert (await _refund(env, order)).status_code == 200
+    job = await _job(up, order)
+    assert job.state == "failed" and not job.recover and job.error_code == "order_refunded"
+    await up.make_due()
+    await up.run()
+    assert mock.calls == [] and await _cards(env, order) == 0
+
+
+async def test_engine_never_sends_or_replays_for_an_order_that_left_paid(env, up):
+    mock = LosingMock("mock_a", lose=1)
+    await up.supplier(mock)
+    _buyer, order = await up.paid_order()
+    await up.run()
+    assert [op for op, _ in mock.calls] == ["submit"]
+    # the order leaves `paid` behind the engine's back (any path that does not touch jobs)
+    await _sql(env, "UPDATE orders SET status = 'refunded'")
+    await up.make_due()
+    for _ in range(3):
+        await up.run()
+    job = await _job(up, order)
+    # the reconcile (which could still buy) never ran as such: only the recovery that voids
+    assert job.state == "voided" and not mock.charged
+    assert [op for op, _ in mock.calls] == ["submit", "query", "void"]
+    assert await _cards(env, order) == 0
+    # a never-sent job of a closed order is failed without any call
+    mock2 = MockSupplier("mock_a")
+    up.mocks = {k: mock2 for k in up.mocks}
+    _b, order2 = await up.paid_order()
+    await _create_jobs_only(up)
+    await _sql(
+        env, "UPDATE orders SET status = 'cancelled' WHERE id = :o", o=uuid.UUID(order2["id"])
+    )
+    await up.make_due()
+    await up.run()
+    job2 = await _job(up, order2)
+    assert job2.state == "failed" and job2.error_code == "order_not_paid" and mock2.calls == []
+
+
+async def test_held_order_parks_the_job_instead_of_sending(env, up):
+    mock = MockSupplier("mock_a")
+    await up.supplier(mock)
+    _buyer, order = await up.paid_order()
+    await _create_jobs_only(up)
+    await _sql(env, "UPDATE orders SET status = 'manual_review'")
+    await up.run()
+    job = await _job(up, order)
+    assert job.state == "needs_manual" and job.error_code == "order_not_paid"
+    assert mock.calls == []
+
+
+async def test_answer_after_refund_is_not_bound_and_the_code_is_voided(env, up):
+    class Racing(MockSupplier):
+        async def submit(self, job):
+            res = await super().submit(job)  # the supplier charges
+            async with self.owner() as db:  # ... and the order is refunded meanwhile
+                await db.execute(text("UPDATE orders SET status = 'refunded'"))
+                await db.commit()
+            return res
+
+    mock = Racing("mock_a")
+    mock.owner = env.owner_session
+    await up.supplier(mock)
+    _buyer, order = await up.paid_order()
+    for _ in range(3):
+        await up.run()
+    job = await _job(up, order)
+    assert job.state == "voided" and job.upstream_ref and job.cost is not None
+    assert job.upstream_status == "disabled"
+    assert await _cards(env, order) == 0  # never bound to the refunded order
+    assert not mock.charged and [op for op, _ in mock.calls] == ["submit", "void"]
+
+
+async def test_unfinished_recovery_ends_in_needs_manual_flagged(env, up):
+    class Dumb(LosingMock):
+        async def query(self, job):
+            self.calls.append(("query", job.idempotency_key))
+            return Result(Outcome.AMBIGUOUS, error_code="timeout_after_send")
+
+    mock = Dumb("mock_a", lose=1)
+    await up.supplier(mock)
+    _buyer, order = await up.paid_order()
+    await up.run()
+    assert (await _refund(env, order)).status_code == 200
+    await _sql(env, "UPDATE procurement_jobs SET attempts = 41")
+    await up.make_due()
+    await up.run()
+    job = await _job(up, order)
+    assert job.state == "needs_manual" and job.error_code == "unresolved" and job.maybe_sent
+    assert not job.recover
+
+
+async def test_refund_does_not_wait_for_a_job_the_engine_holds(env, up):
+    mock = MockSupplier("mock_a")
+    await up.supplier(mock)
+    _buyer, order = await up.paid_order()
+    await _create_jobs_only(up)
+    job = await _job(up, order)
+    async with env.owner_session() as holder:  # the engine (or staff) holds the job row
+        await holder.execute(
+            text("SELECT id FROM procurement_jobs WHERE id = :j FOR UPDATE"), {"j": job.id}
+        )
+        r = await asyncio.wait_for(_refund(env, order), timeout=15)
+        assert r.status_code == 409 and r.json()["error"]["code"] == "procurement_busy"
+        await holder.rollback()
+    assert await _order_status(env, order) == "paid"  # nothing half-done
+    assert (await _refund(env, order)).status_code == 200

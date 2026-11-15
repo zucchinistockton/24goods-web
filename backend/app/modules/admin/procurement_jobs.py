@@ -63,20 +63,6 @@ STATES = (
     "void_pending",
     "voided",
 )
-# error codes after which the supplier may already have charged: such a job is only ever
-# resolved through a query on the same key (or by hand), never through another supplier
-MAYBE_CHARGED = frozenset(
-    {
-        "unresolved",
-        "upstream_lost",
-        "timeout_after_send",
-        "internal_error",
-        "seal_unavailable",
-        "secret_count",
-        "duplicate_code",
-        "retry_exhausted",
-    }
-)
 OPEN = ("queued", "submitting", "accepted_pending", "needs_manual")
 RATE = ("procurement:job", 120, 3600)
 
@@ -91,12 +77,15 @@ class FulfilIn(BaseModel):
 
 
 def maybe_charged(job: ProcurementJob) -> bool:
+    """The supplier may hold a code for this job: such a job is only ever resolved through a
+    same-key query (or by hand), never through another supplier. Reads the persisted
+    ``maybe_sent`` flag (set before the first call of a send), not an error-code guess."""
     code = job.error_code or ""
     return bool(
-        job.upstream_ref
+        job.maybe_sent
+        or job.upstream_ref
         or job.card_stock_ids
         or job.state in ("accepted_pending", "fulfilled", "void_pending")
-        or code in MAYBE_CHARGED
         or code.startswith("void_rejected")
     )
 
@@ -143,6 +132,8 @@ def _job_view(
         "next_poll_at": _iso(j.next_poll_at),
         "manual_by": str(j.manual_by) if j.manual_by else None,
         "charged_possible": maybe_charged(j),
+        "maybe_sent": bool(j.maybe_sent),
+        "recovering": bool(j.recover),
         "actions": allowed_actions(j),
         "created_at": _iso(j.created_at),
         "updated_at": _iso(j.updated_at),
@@ -308,11 +299,9 @@ async def job_detail(
 
 # ------------------------------------------------------------------ actions
 async def _lock(db: AsyncSession, tid: uuid.UUID, job_id: uuid.UUID) -> ProcurementJob:
-    job = await db.scalar(
-        select(ProcurementJob)
-        .where(ProcurementJob.id == job_id, ProcurementJob.tenant_id == tid)
-        .with_for_update()
-    )
+    """Lock the job together with its siblings (one ordered statement: job set -> order ->
+    supplier is the lock order everywhere, L4)."""
+    job = await engine.lock_job(db, tid, job_id)
     if job is None:
         raise NotFound("Job not found")
     return job
@@ -551,6 +540,10 @@ async def void_job(
     ip = client_ip(request)
     job = await _lock(db, admin.tenant_id, job_id)
     _need(job, ("fulfilled", "needs_manual", "failed"), "voided")
+    if job.recover:
+        raise InvalidState(
+            "The engine is still recovering a possible code for this job", code="recover_pending"
+        )
     reason = clean_detail(body.reason, 120)
     if job.upstream_ref and job.offer_id is not None:
         job.step, job.attempts, job.next_poll_at = "void", 0, _now()

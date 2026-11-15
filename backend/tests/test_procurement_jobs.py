@@ -173,7 +173,11 @@ async def test_retry_of_a_maybe_charged_job_reconciles_first(env, up):
     _mock, _buyer, order = await _needs_manual(env, up)
     job = await _one_job(up, order)
     # the engine gave up on an unresolved answer: the supplier may have charged
-    await _sql(env, "UPDATE procurement_jobs SET error_code = 'unresolved', step = 'reconcile'")
+    await _sql(
+        env,
+        "UPDATE procurement_jobs SET error_code = 'unresolved', step = 'reconcile', "
+        "maybe_sent = true",
+    )
     detail = (await staff.get(f"{JOBS}/{job.id}")).json()
     assert detail["charged_possible"] is True and "switch" not in detail["actions"]
     r = await staff.post(f"{JOBS}/{job.id}/retry")

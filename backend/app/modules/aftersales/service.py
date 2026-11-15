@@ -40,6 +40,7 @@ from app.modules.orders.service import get_owned, release_manual_stock
 from app.modules.payments.ledger import Line, post_txn
 from app.modules.payments.settle import payment_for_order, payment_lines
 from app.payments.zpay import CHANNEL
+from app.procurement.engine import close_order_jobs
 
 ELIGIBLE = ("delivered", "completed")
 # From the Nth replacement on (3rd), replacing needs an admin (agents can't loop replacements).
@@ -453,6 +454,11 @@ async def refund_order(
         if not reverse_ledger and (pay is None or pay.status != "succeeded"):
             raise InvalidState("No recorded payment for this order; cancel it instead")
         await release_manual_stock(db, order.tenant_id, [order])  # undelivered: stock goes back
+    # an upstream order: its open procurement jobs end here (never sent -> failed; a job that may
+    # have reached the supplier is recovered and its code disabled, never silently dropped)
+    await close_order_jobs(
+        db, order, actor_id=staff.id, actor_role=staff.role, ip=ip, reason="order_refunded"
+    )
     order.status = "refunded"
     order.version += 1
     await add_event(

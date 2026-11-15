@@ -50,6 +50,7 @@ from app.modules.orders.service import (
 from app.modules.payments.channels import split_amount
 from app.modules.payments.settle import apply_sold, lock_checkout, payment_for_order, sold_keys
 from app.modules.promo import service as promo_svc
+from app.procurement.engine import close_order_jobs
 
 
 async def lock_order(db: AsyncSession, order_id: uuid.UUID, tenant_id: uuid.UUID) -> Order:
@@ -573,6 +574,9 @@ async def _close_held(
     held = {o.id: (await hold_reason(db, o))[0] for o in orders}
     for o in orders:
         before = snapshot(o)
+        await close_order_jobs(
+            db, o, actor_id=actor_id, actor_role=actor_role, ip=ip, reason="order_closed"
+        )  # an upstream order held for review: its open jobs end with it
         o.status = "cancelled"
         o.cancel_reason = reason
         o.version += 1
