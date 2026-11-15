@@ -41,6 +41,8 @@
   --c-bad-ink: #b42318;
   --c-info-soft: #eef2ff;
   --c-info-ink: #3b4fb8;
+  --c-on-danger: #ffffff; /* text on a --c-danger badge */
+  --c-skeleton: #e9e9e9;
   --c-focus-ring: #1f1f1f;
   --c-focus-halo: #ffffff;
   --c-backdrop-1: rgba(255, 214, 10, 0.14);
@@ -105,6 +107,18 @@
   --gc-accent-soft: var(--c-accent-soft);
   --gc-accent-ink: var(--c-accent-ink);
   --gc-danger: var(--c-danger);
+  /* every token the shared chat/UI components read must be defined here: an undefined one falls
+     back to a light literal and breaks the dark theme */
+  --gc-panel: var(--c-surface);
+  --gc-surface: var(--c-surface);
+  --gc-card-bg: var(--c-surface);
+  --gc-card-border: var(--c-tint);
+  --gc-btn-bg: var(--c-surface);
+  --gc-btn-border: var(--c-line);
+  --gc-skeleton: var(--c-fill-strong);
+  --gc-system-bg: var(--c-tint);
+  --gc-chip-bg: var(--c-tint);
+  --gc-accent: var(--c-info-ink);
   --gc-fill: var(--c-fill);
   --gc-tint: var(--c-tint);
   --gc-line: var(--c-line);
@@ -131,7 +145,7 @@
   --c-surface: #20201d;
   --c-page: #0d0d0c;
   --c-success: #4cc38a;
-  --c-danger: #ff6b6b;
+  --c-danger: #ff7676;
   --c-warning: #f5b040;
   --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.3), 0 2px 8px rgba(0, 0, 0, 0.3);
   --c-fill: #2b2a27;
@@ -153,6 +167,8 @@
   --c-bad-ink: #ff9a8f;
   --c-info-soft: #1d2340;
   --c-info-ink: #a9b8ff;
+  --c-on-danger: #1f1f1f;
+  --c-skeleton: #2b2a27;
   --c-focus-ring: #ffd60a;
   --c-focus-halo: #161614;
   --c-backdrop-1: rgba(255, 214, 10, 0.05);

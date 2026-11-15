@@ -114,7 +114,7 @@ watch(id, () => void loadDetail())
   padding: 8px 16px;
   color: inherit;
   text-decoration: none;
-  border-bottom: 1px solid var(--c-border, rgba(0, 0, 0, 0.06));
+  border-bottom: 1px solid var(--c-line);
 }
 .dot {
   flex: none;

@@ -183,8 +183,8 @@ function download() {
   margin: 0 0 10px;
 }
 .dv-card {
-  border: 1px dashed var(--c-code-border, #e7d9a8);
-  background: var(--c-code-bg, #faf8f2);
+  border: 1px dashed var(--c-note-line, #e7d9a8);
+  background: var(--c-note-bg, #faf8f2);
   border-radius: 10px;
   padding: 4px 4px 4px 12px;
   margin-bottom: 8px;
@@ -263,7 +263,7 @@ function download() {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   margin: 0;
-  background: var(--c-code-bg, #faf8f2);
+  background: var(--c-note-bg, #faf8f2);
   border-radius: 10px;
   padding: 10px 12px;
 }

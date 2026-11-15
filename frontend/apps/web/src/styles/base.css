@@ -130,7 +130,7 @@ a {
   color: var(--c-info-ink);
 }
 .skeleton {
-  background: linear-gradient(90deg, var(--c-fill) 25%, var(--c-surface) 37%, var(--c-fill) 63%);
+  background: linear-gradient(90deg, var(--c-skeleton) 25%, var(--c-fill) 37%, var(--c-skeleton) 63%);
   background-size: 400% 100%;
   animation: shimmer 1.4s ease infinite;
   border-radius: 6px;
