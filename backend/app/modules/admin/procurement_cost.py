@@ -135,7 +135,13 @@ async def margin(
         .where(ProcurementJob.tenant_id == tid, ProcurementJob.state != "voided")
         .distinct()
     )
-    base = [Order.tenant_id == tid, Order.id.in_(has_jobs), Order.created_at.between(start, end)]
+    # a refunded order earned nothing: it is not part of the margin (its cost stays in the ledger)
+    base = [
+        Order.tenant_id == tid,
+        Order.id.in_(has_jobs),
+        Order.status != "refunded",
+        Order.created_at.between(start, end),
+    ]
     total = await db.scalar(select(func.count(Order.id)).where(*base)) or 0
     orders = (
         await db.execute(

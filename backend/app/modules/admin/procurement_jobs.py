@@ -26,7 +26,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import func, insert, select
+from sqlalchemy import func, insert, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -574,15 +574,53 @@ async def void_job(
             db, job, "void_pending", f"manual:{reason}", actor_id=admin.id,
             actor_role=admin.role, ip=ip, severity="warning",
         )  # fmt: skip
+    elif job.maybe_sent and job.offer_id is not None:
+        # the supplier may hold a code we never learned about: never "voided" without a call;
+        # the engine asks once under the same key, records the reference and disables it
+        job.error_code = "void_requested"
+        job.step = "done"
+        _schedule_recovery(job)
+        await engine._transition(
+            db, job, "failed", f"manual:{reason}", actor_id=admin.id,
+            actor_role=admin.role, ip=ip, severity="warning",
+        )  # fmt: skip
+        await _note(db, job, admin, ip, "recover_scheduled")
     else:
         job.step, job.next_poll_at = "done", None
         await engine._transition(
             db, job, "voided", f"manual:{reason}", actor_id=admin.id,
             actor_role=admin.role, ip=ip, severity="warning",
         )  # fmt: skip
+    # after the transition: the database only lets the API void a sold code of a job in a void
+    # state (card_stock_guard, migration 0027)
+    voided_cards = await _void_cards(db, job, admin, reason)
+    if voided_cards:
+        await _note(db, job, admin, ip, "cards_voided", cards=voided_cards)
     view = await _view_of(db, job)
     await db.commit()
     return view
+
+
+async def _void_cards(db: AsyncSession, job: ProcurementJob, admin: User, reason: str) -> int:
+    """The sealed code of a voided job can never be delivered (or delivered again): its
+    ``card_stock`` row goes to ``void`` at once, before the supplier is asked to disable it."""
+    if not job.card_stock_ids:
+        return 0
+    res = await db.execute(
+        update(CardStock)
+        .where(
+            CardStock.tenant_id == job.tenant_id,
+            CardStock.id.in_(list(job.card_stock_ids)),
+            CardStock.status != "void",
+        )
+        .values(
+            status="void",
+            void_reason=clean_detail(f"procurement_void:{reason}", 64),
+            voided_at=_now(),
+            voided_by=admin.id,
+        )
+    )
+    return int(res.rowcount or 0)  # type: ignore[attr-defined]
 
 
 @router.post("/{job_id}/fail")

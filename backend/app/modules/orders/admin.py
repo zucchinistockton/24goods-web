@@ -436,6 +436,8 @@ async def _accept_held(
     if order.kind == "reseller_signup":
         raise InvalidState("A held sign-up order cannot be released here; refund it instead")
     if order.delivery_mode in ("upstream_cdk",):
+        # TODO(v12-M3): a late-payment upstream order held in manual_review has no procurement
+        # job to act on (L3 of the M2 payment audit); give it a staff "release into procurement".
         # its procurement jobs decide (retry / switch source / fulfil manually, review-v12)
         raise InvalidState(
             "Release supplier-sourced orders through their procurement jobs",

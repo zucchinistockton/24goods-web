@@ -12,11 +12,11 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Mapping
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,7 +34,10 @@ log = logging.getLogger("app.procurement.ledger")
 LINK_TYPE_PREFIX = "gpt_direct"  # ref_id of these rows is the CDK / direct order, not a card id
 MAX_ABS = Decimal("1000000000000")
 BACKFILL_PAGE_SIZE = 100
-BACKFILL_MAX_PAGES = 50
+BACKFILL_MAX_PAGES = 50  # hard cap per pass (5000 rows)
+# A pass always covers at least this much history, even when the newest page brings nothing new
+# (webhooks may have booked the newest rows while older ones were missed): L5 of the M2 audit.
+BACKFILL_LOOKBACK = timedelta(days=2)
 
 
 def row_from_event(payload: Mapping[str, Any]) -> LedgerRow | None:
@@ -165,7 +168,9 @@ async def handle_balance_event(
 
 
 async def backfill(ctx: ProcurementContext, ref: SupplierRef, currency: str) -> int:
-    """``GET /balance-logs`` newest first until a page brings nothing new. Returns new rows."""
+    """``GET /balance-logs`` newest first, page by page, until a page reaches rows older than the
+    last booked row and the lookback window (never because one page had no new rows), or the hard
+    page cap. Returns the number of new rows."""
     try:
         supplier = make_supplier(ctx, ref)
     except SupplierConfigError:
@@ -175,6 +180,17 @@ async def backfill(ctx: ProcurementContext, ref: SupplierRef, currency: str) -> 
     try:
         if fetch is None:
             return 0
+        async with tenant_session(ctx.maker, ref.tenant_id) as db:
+            last_booked = await db.scalar(
+                select(func.max(SupplierLedgerEntry.occurred_at)).where(
+                    SupplierLedgerEntry.tenant_id == ref.tenant_id,
+                    SupplierLedgerEntry.supplier_id == ref.id,
+                )
+            )
+        # page until the rows are older than the last booked row AND the lookback window
+        floor = datetime.now(timezone.utc) - BACKFILL_LOOKBACK
+        if last_booked is not None:
+            floor = min(floor, last_booked)
         for page in range(1, BACKFILL_MAX_PAGES + 1):
             rows: list[LedgerRow] = await fetch(page, BACKFILL_PAGE_SIZE)
             if not rows:
@@ -189,7 +205,8 @@ async def backfill(ctx: ProcurementContext, ref: SupplierRef, currency: str) -> 
                 )
                 await db.commit()
             total += new
-            if new == 0 or len(rows) < BACKFILL_PAGE_SIZE:
+            dated = [r.occurred_at for r in rows if r.occurred_at is not None]
+            if len(rows) < BACKFILL_PAGE_SIZE or (dated and min(dated) < floor):
                 break
     finally:
         await supplier.aclose()

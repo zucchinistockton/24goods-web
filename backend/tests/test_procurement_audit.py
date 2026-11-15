@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import os
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import asyncpg
 from sqlalchemy import text
@@ -797,3 +798,187 @@ async def test_healthy_source_is_preferred_over_one_paused_by_balance(env, up):
     for _ in range(3):
         await up.run()
     assert (await _job(up, order)).state == "fulfilled" and a.calls == [] and len(b.charged) == 1
+
+
+# ------------------------------------------------------------------ lows
+async def test_l1_reference_is_stored_before_a_refused_seal_and_the_loop_is_capped(env, up):
+    mock = MockSupplier("mock_a")
+    await up.supplier(mock)
+    up.ctx.sealer = None  # nothing can be sealed
+    _buyer, order = await up.paid_order()
+    await up.run()
+    job = await _job(up, order)
+    assert job.state == "submitting" and job.error_code == "seal_unavailable"
+    assert job.upstream_ref and job.cost is not None  # findable, so it can be disabled
+    assert await _cards(env, order) == 0
+    await _sql(env, "UPDATE procurement_jobs SET attempts = 11")
+    await up.make_due()
+    await up.run()
+    job = await _job(up, order)
+    assert job.state == "needs_manual" and job.error_code == "seal_unavailable"
+    assert job.upstream_ref  # staff can void the code the engine could not keep
+    staff, _ = await env.login("admin")
+    detail = (await staff.get(f"{JOBS}/{job.id}")).json()
+    assert detail["charged_possible"] is True and "void" in detail["actions"]
+
+
+async def test_l2_void_makes_the_sealed_code_undeliverable(env, up):
+    admin, _ = await env.login("admin")
+    mock = MockSupplier("mock_a")
+    await up.supplier(mock)
+    buyer, order = await up.paid_order()
+    await up.run()  # fulfilled, procure.fulfilled queued but not delivered yet
+    job = await _job(up, order)
+    r = await admin.post(f"{JOBS}/{job.id}/void", json={"reason": "supplier recalled the code"})
+    assert r.status_code == 200 and r.json()["state"] == "void_pending", r.text
+    row = (
+        await _sql(env, "SELECT status, void_reason, voided_by FROM card_stock WHERE order_id = :o"
+                   .replace(":o", f"'{order['id']}'"))
+    ).one()  # fmt: skip
+    assert row.status == "void" and row.void_reason.startswith("procurement_void")
+    assert row.voided_by is not None
+    await up.run()
+    assert (await _job(up, order)).state == "voided" and not mock.charged
+    await env.drain()  # delivery: the voided code is never delivered
+    assert await _order_status(env, order) != "delivered"
+    cards = (await buyer.post(f"/api/v1/orders/{order['id']}/reveal")).json().get("cards", [])
+    assert cards == []
+
+
+async def test_l2_void_of_a_possibly_sent_job_goes_through_the_supplier(env, up):
+    admin, _ = await env.login("admin")
+    mock = LosingMock("mock_a", lose=1)
+    await up.supplier(mock)
+    _buyer, order = await up.paid_order()
+    await up.run()  # charged, answer lost
+    await _sql(env, "UPDATE procurement_jobs SET state = 'needs_manual', error_code = 'unresolved'")
+    job = await _job(up, order)
+    r = await admin.post(f"{JOBS}/{job.id}/void", json={"reason": "check supplier"})
+    assert r.status_code == 200, r.text
+    assert r.json()["state"] == "failed" and r.json()["recovering"] is True  # not voided yet
+    await up.make_due()
+    for _ in range(3):
+        await up.run()
+    job = await _job(up, order)
+    assert job.state == "voided" and job.upstream_status == "disabled"
+    assert [op for op, _ in mock.calls] == ["submit", "query", "void"] and not mock.charged
+
+
+async def test_l4_actions_on_two_jobs_of_one_order_do_not_deadlock(env, up):
+    staff, _ = await env.login("agent")
+    await up.supplier(MockSupplier("mock_a", outcomes=[Outcome.FATAL, Outcome.FATAL]))
+    _buyer, order = await up.paid_order(qty=2)
+    await up.run()
+    j1, j2 = await up.jobs(order["id"])
+    assert j1.state == j2.state == "needs_manual"
+    await _sql(env, "UPDATE procurement_jobs SET maybe_sent = false")
+    rs = await asyncio.wait_for(
+        asyncio.gather(
+            staff.post(f"{JOBS}/{j1.id}/fail", json={"reason": "no stock"}),
+            staff.post(f"{JOBS}/{j2.id}/fail", json={"reason": "no stock"}),
+            _refund(env, order),
+        ),
+        timeout=30,
+    )
+    assert [r.status_code for r in rs[:2]] == [200, 200]
+    assert rs[2].status_code in (200, 409)  # busy answers 409 instead of waiting
+
+
+async def test_l5_backfill_continues_past_a_page_without_new_rows(env, up):
+    from app.devtools.mock_zovocard import MockZovo
+    from app.procurement import ledger
+    from app.procurement.service import backfill_ledgers
+    from tests.test_procurement_ledger import _rows, _zovo
+
+    vendor = MockZovo()
+    now = datetime.now(timezone.utc)
+    vendor.balance_logs = [
+        {"id": i, "created_at": (now - timedelta(minutes=150 - i)).isoformat(), "amount": -1,
+         "type": "recharge"}
+        for i in range(150, 0, -1)
+    ]  # fmt: skip
+    sid, _ = await _zovo(up, vendor)
+    async with env.owner_session() as db:  # webhooks booked the newest 100 rows
+        for entry in vendor.balance_logs[:100]:
+            await ledger.handle_balance_event(
+                db,
+                tenant_id=env.tenant_id,
+                supplier_id=sid,
+                payload={
+                    "balance_log_id": entry["id"], "type": "recharge", "amount": "-1",
+                    "occurred_at": entry["created_at"],
+                },
+                received_at=None,
+            )  # fmt: skip
+        await db.commit()
+    assert len(await _rows(env)) == 100
+    assert await backfill_ledgers(up.ctx) == 50  # the older 50 sit on page 2: not given up
+    assert len(await _rows(env)) == 150
+    assert await backfill_ledgers(up.ctx) == 0
+
+
+async def test_l5_margin_excludes_refunded_orders(env, up):
+    from tests.test_procurement_cost import COST, _setup
+
+    admin, _ = await env.login("admin")
+    _sid, order, _unused = await _setup(env, up)
+    today = datetime.now(timezone.utc).date()
+    window = {"date_from": f"{today.year}-01-01", "date_to": today.isoformat()}
+    assert len((await admin.get(f"{COST}/margin", params=window)).json()["items"]) == 1
+    await _sql(env, "UPDATE orders SET status = 'refunded' WHERE id = :o", o=uuid.UUID(order["id"]))
+    body = (await admin.get(f"{COST}/margin", params=window)).json()
+    assert body["items"] == [] and body["total"] == 0
+
+
+async def test_l7_idempotency_conflict_is_fatal_and_stays_maybe_charged(env, up):
+    from app.suppliers.zovocard.errors import classify
+
+    rule = classify(409, "IDEMPOTENCY_CONFLICT", write=True)
+    assert rule.outcome is Outcome.FATAL and rule.supplier_stop is False
+    assert classify(409, None, write=True).outcome is Outcome.AMBIGUOUS  # still "running"
+
+    class Conflict(MockSupplier):
+        async def submit(self, job):
+            self.calls.append(("submit", job.idempotency_key))
+            return Result(Outcome.FATAL, error_code="IDEMPOTENCY_CONFLICT")
+
+    mock = Conflict("mock_a")
+    await up.supplier(mock)
+    _buyer, order = await up.paid_order()
+    await up.run()
+    job = await _job(up, order)
+    assert job.state == "needs_manual" and job.error_code == "IDEMPOTENCY_CONFLICT"
+    assert job.maybe_sent  # the first request under that key may have executed
+    staff, _ = await env.login("agent")
+    detail = (await staff.get(f"{JOBS}/{job.id}")).json()
+    assert detail["charged_possible"] is True and "switch" not in detail["actions"]
+    # a plain FATAL (nothing executed) is still not flagged
+    assert [op for op, _ in mock.calls] == ["submit"]
+
+
+async def test_l2_api_may_void_a_sold_code_only_for_a_job_being_voided(env, up):
+    """The card_stock guard keeps its rule: only the narrow procurement exception is added."""
+    import pytest
+
+    await up.supplier(MockSupplier("mock_a"))
+    _buyer, order = await up.paid_order()
+    await up.run()
+    job = await _job(up, order)
+    (card_id,) = job.card_stock_ids
+    q = "UPDATE card_stock SET status = 'void', void_reason = :r, voided_at = now() WHERE id = :c"
+    async with env.api_session(env.tenant_id) as db:
+        for reason in ("procurement_void:x", "something_else"):  # job is `fulfilled`: refused
+            with pytest.raises(Exception, match="may only void"):
+                await db.execute(text(q), {"c": card_id, "r": reason})
+            await db.rollback()
+        await db.execute(text("UPDATE procurement_jobs SET state = 'void_pending', step = 'void'"))
+        with pytest.raises(Exception, match="may only void"):  # wrong reason prefix
+            await db.execute(text(q), {"c": card_id, "r": "something_else"})
+        await db.rollback()
+        await db.execute(text("UPDATE procurement_jobs SET state = 'void_pending', step = 'void'"))
+        await db.execute(text(q), {"c": card_id, "r": "procurement_void:ok"})
+        with pytest.raises(Exception, match="may only void"):  # a void card cannot move again
+            await db.execute(
+                text("UPDATE card_stock SET status = 'sold' WHERE id = :c"), {"c": card_id}
+            )
+        await db.rollback()

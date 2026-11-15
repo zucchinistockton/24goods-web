@@ -342,7 +342,10 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
             cached = mock.idem.get(idem)
             if cached is not None:
                 if cached[0] != fingerprint:
-                    return JSONResponse({"code": 409, "msg": "key reused with another body"}, 409)
+                    return JSONResponse(
+                        {"code": 409, "error_code": "IDEMPOTENCY_CONFLICT",
+                         "msg": "key reused with another body"}, 409,
+                    )  # fmt: skip
                 return JSONResponse(cached[1], headers={"Idempotent-Replayed": "true"})
             scn = str(body.get("plan", "")) if mock.scenarios and path == "/gpt-direct/cdks" else ""
             first = scn.startswith("scn_") and idem not in mock.scn_seen

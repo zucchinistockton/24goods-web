@@ -113,6 +113,9 @@ TABLE: dict[tuple[int | None, str | None], Rule] = {
     (None, "GPT_PREFLIGHT_RATE_LIMITED"): _RETRY,
     # ---- A.5 CDK
     (None, "CDK_DISABLE_REJECTED"): _FATAL,  # already used or unknown: cannot void
+    # the key was already used with ANOTHER body: the first request may have executed, so the
+    # engine keeps the job flagged as maybe charged (payment audit L7); never "still running"
+    (None, "IDEMPOTENCY_CONFLICT"): _FATAL,
     (None, "API_SCOPE_UNAVAILABLE"): _STOP,
     (None, "ORDER_NOT_FOUND"): _FATAL,
     (None, "cdk_brand_prefix_invalid"): _FATAL,

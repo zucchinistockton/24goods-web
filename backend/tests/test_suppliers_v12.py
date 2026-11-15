@@ -80,6 +80,7 @@ EXPECTED: dict[tuple[int | None, str | None], tuple[Outcome, bool]] = {
     (None, "GPT_RENEW_TARGET_NOT_PRO"): (Outcome.FATAL, False),
     (None, "GPT_RENEW_SUBSCRIPTION_EXPIRED"): (Outcome.FATAL, False),
     (None, "GPT_PREFLIGHT_RATE_LIMITED"): (Outcome.RETRYABLE, False),
+    (None, "IDEMPOTENCY_CONFLICT"): (Outcome.FATAL, False),  # payment audit L7
     (None, "CDK_DISABLE_REJECTED"): (Outcome.FATAL, False),
     (None, "API_SCOPE_UNAVAILABLE"): (Outcome.UNAVAILABLE, True),
     (None, "ORDER_NOT_FOUND"): (Outcome.FATAL, False),
@@ -112,6 +113,7 @@ STATUS_FOR = {
     "product_approval_required": 403,
     "ACCOUNT_UNAVAILABLE": 401,
     "product_policy_outdated": 409,
+    "IDEMPOTENCY_CONFLICT": 409,
     "CDK_DISABLE_REJECTED": 409,
     "GPT_PREFLIGHT_RATE_LIMITED": 429,
     "ORDER_NOT_FOUND": 404,

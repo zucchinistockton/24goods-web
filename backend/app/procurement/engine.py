@@ -486,6 +486,8 @@ async def handle_event(ctx: ProcurementContext, db: AsyncSession, payload: dict)
             if isinstance(status, str) and job.upstream_status not in _CDK_TERMINAL:
                 job.upstream_status = clean_detail(status, 32)
             if job.state in ACTIVE:
+                # TODO(v12-M3): this pulls next_poll_at forward even on a leased job (L6 of the
+                # M2 payment audit); the lease_until column now lets it skip a live lease.
                 job.next_poll_at = utcnow()
     elif ev.kind == "balance_change":
         # cost ledger: the same unique insert path as the balance-logs backfill (ledger.py);
@@ -1156,7 +1158,8 @@ async def _apply(ctx: ProcurementContext, lease: Lease, res: Result) -> None:
                 job.step = "submit"
                 job.next_poll_at = now
         else:  # FATAL: a deterministic refusal, nothing was executed for this key
-            _unsent(job)
+            if res.error_code != "IDEMPOTENCY_CONFLICT":
+                _unsent(job)  # (a conflicting key HAS been used: the first request may have run)
             await _needs_manual(db, job, res.error_code or "fatal")
         if (
             job.state in ACTIVE
