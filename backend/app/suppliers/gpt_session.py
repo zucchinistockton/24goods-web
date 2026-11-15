@@ -2,8 +2,9 @@
 
 Pure and offline: no network call, no logging. It rejects input that cannot work (a bare access
 token, truncated JSON, an expired token) before anything is sealed or sent to a supplier, and
-returns a non-secret summary for the UI. The access-token payload is decoded **without** verifying its
-signature, so every field here is a hint: the supplier's preflight stays the truth (review-v12 §5).
+returns a non-secret summary for the UI. The access-token payload is decoded **without** verifying
+its signature, so every field here is a hint: the supplier's preflight stays the truth
+(review-v12 §5).
 
 The raw session is a credential. ``GptSession.canonical`` is the only field that carries it; it is
 excluded from ``repr`` and must only ever be sealed or forwarded, never stored or logged in
