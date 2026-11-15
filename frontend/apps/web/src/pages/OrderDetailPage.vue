@@ -21,6 +21,7 @@ import {
   type BuyerInputConfig,
   type CheckoutView,
   type Order,
+  isInstantMode,
 } from '@24goods/shared'
 import { api } from '../api'
 import AfterSalesSheet from '../components/AfterSalesSheet.vue'
@@ -391,7 +392,7 @@ function gotCode() {
       <section class="section card pad">
         <div class="o-title">{{ order.title }}</div>
         <div class="o-line">
-          <span v-if="order.delivery_mode === 'auto_card'" class="badge-instant">
+          <span v-if="isInstantMode(order.delivery_mode)" class="badge-instant">
             {{ t(`deliveryMode.${order.delivery_mode}`) }}
           </span>
           <ManualPromise v-else :eta="order.delivery_eta_hours" compact />

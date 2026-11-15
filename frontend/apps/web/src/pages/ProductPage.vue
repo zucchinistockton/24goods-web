@@ -13,6 +13,7 @@ import {
   safeLinkUrl,
   type Product,
   type ProductSummary,
+  isInstantMode,
 } from '@24goods/shared'
 import { useNoindex } from '../composables/useNoindex'
 import { api } from '../api'
@@ -92,7 +93,7 @@ const images = computed(() => {
   return list.slice(0, 12)
 })
 const price = computed(() => (product.value ? moneyParts(product.value.price, product.value.currency, locale.value) : null))
-const isAuto = computed(() => product.value?.delivery_mode === 'auto_card')
+const isAuto = computed(() => isInstantMode(product.value?.delivery_mode))
 const soldOut = computed(() => (product.value ? isSoldOut(product.value) : false))
 const as = computed(() => afterSalesLabel(product.value?.after_sales_hours, product.value?.after_sales_months))
 const labels = computed(() => formatLabels(product.value?.delivery_format, product.value?.delivery_separator))

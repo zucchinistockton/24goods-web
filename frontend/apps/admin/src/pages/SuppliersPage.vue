@@ -15,7 +15,7 @@ import {
   type SupplierHealth,
   type SupplierInput,
 } from '../api-suppliers'
-import { toastError, toastOk } from '../ui'
+import { confirmBox, toastError, toastOk } from '../ui'
 
 const api = createSuppliersApi(client)
 const { t, locale } = useI18n()
@@ -39,6 +39,9 @@ const emptyForm = (): SupplierInput => ({
   enabled: false,
 })
 const f = ref<SupplierInput>(emptyForm())
+const password = ref('')
+/** the server asks for the admin password when a supplier becomes a production one */
+const needsPassword = computed(() => f.value.env === 'production' && editing.value?.env !== 'production')
 
 const probing = ref<string | null>(null)
 const probeOpen = ref(false)
@@ -74,6 +77,7 @@ function openDialog(row: AdminSupplier | null) {
       }
     : emptyForm()
   errors.value = {}
+  password.value = ''
   dialog.value = true
 }
 
@@ -82,6 +86,7 @@ function validate(): boolean {
   if (!editing.value && !supplierCodeOk(f.value.code, f.value.adapter)) e.code = t('suppliers.err.code')
   if (!f.value.label.trim()) e.label = t('suppliers.err.label')
   if (!SUPPLIER_AMOUNT_RE.test(f.value.min_spendable.trim())) e.min_spendable = t('suppliers.err.amount')
+  if (needsPassword.value && !password.value) e.password = t('suppliers.err.password')
   errors.value = e
   return Object.keys(e).length === 0
 }
@@ -89,6 +94,7 @@ function validate(): boolean {
 function explain(e: unknown) {
   if (isApiError(e) && e.code === 'supplier_code') errors.value = { code: t('suppliers.err.code') }
   else if (isApiError(e) && e.code === 'production_locked') errors.value = { enabled: t('suppliers.err.productionLocked') }
+  else if (isApiError(e) && e.status === 403 && needsPassword.value) errors.value = { password: t('suppliers.err.passwordWrong') }
   else if (isApiError(e) && e.status === 409) errors.value = { code: t('suppliers.err.taken') }
   else toastError(e)
 }
@@ -97,13 +103,15 @@ async function save() {
   if (saving.value || !validate()) return
   saving.value = true
   const body = { ...f.value, label: f.value.label.trim(), min_spendable: f.value.min_spendable.trim() }
+  const pw = needsPassword.value ? { current_password: password.value } : {}
   try {
     if (editing.value) {
       const { label, env, priority, min_spendable, enabled } = body
-      await api.update(editing.value.id, { label, env, priority, min_spendable, enabled })
+      await api.update(editing.value.id, { label, env, priority, min_spendable, enabled, ...pw })
     } else {
-      await api.create(body)
+      await api.create({ ...body, ...pw })
     }
+    password.value = ''
     toastOk(t('suppliers.saved'))
     dialog.value = false
     void load()
@@ -120,6 +128,16 @@ async function toggle(row: AdminSupplier, v: boolean) {
   } catch (e) {
     if (isApiError(e) && e.code === 'production_locked') ElMessage.warning({ message: t('suppliers.err.productionLocked'), grouping: true })
     else toastError(e)
+  }
+}
+
+async function resetBreaker(row: AdminSupplier) {
+  if (!(await confirmBox(t('suppliers.breaker.confirm')))) return
+  try {
+    Object.assign(row, await api.resetBreaker(row.id))
+    toastOk(t('suppliers.breaker.reset'))
+  } catch (e) {
+    toastError(e)
   }
 }
 
@@ -172,6 +190,10 @@ const permLabel = (k: string) => (['direct', 'cards', 'cdk', 'manual'].includes(
           <template #default="{ row }">
             <el-tag size="small" :type="healthType(row.health)">{{ t(`suppliers.health.${row.health}`) }}</el-tag>
             <div v-if="row.health_detail" class="muted small mono">{{ row.health_detail }}</div>
+            <div v-if="row.breaker_open" class="breaker small">
+              {{ t(`suppliers.breaker.${row.breaker_kind === 'balance' ? 'balance' : 'hard'}`) }}
+              <span v-if="row.breaker_reason" class="mono">{{ row.breaker_reason }}</span>
+            </div>
           </template>
         </el-table-column>
         <el-table-column :label="t('suppliers.col.balance')" width="170">
@@ -189,10 +211,11 @@ const permLabel = (k: string) => (['direct', 'cards', 'cdk', 'manual'].includes(
             <el-switch :model-value="row.enabled" :aria-label="t('suppliers.col.enabled')" @change="(v: string | number | boolean) => toggle(row as AdminSupplier, !!v)" />
           </template>
         </el-table-column>
-        <el-table-column :label="t('common.actions')" width="210" fixed="right">
+        <el-table-column :label="t('common.actions')" width="300" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" :loading="probing === row.id" :disabled="!!probing && probing !== row.id" @click="probe(row as AdminSupplier)">{{ t('suppliers.test') }}</el-button>
             <el-button link type="primary" @click="openDialog(row as AdminSupplier)">{{ t('common.edit') }}</el-button>
+            <el-button v-if="row.breaker_open && row.breaker_kind !== 'balance'" link type="danger" @click="resetBreaker(row as AdminSupplier)">{{ t('suppliers.breaker.resetBtn') }}</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -226,6 +249,10 @@ const permLabel = (k: string) => (['direct', 'cards', 'cdk', 'manual'].includes(
           </el-form-item>
           <el-form-item :label="t('suppliers.f.enabled')" :error="errors.enabled"><el-switch v-model="f.enabled" /></el-form-item>
         </div>
+        <el-form-item v-if="needsPassword" :label="t('suppliers.f.password')" :error="errors.password">
+          <el-input v-model="password" type="password" show-password autocomplete="current-password" maxlength="128" />
+          <div class="muted small">{{ t('suppliers.f.passwordHint') }}</div>
+        </el-form-item>
         <div class="muted small">{{ t('suppliers.f.secretsNote') }}</div>
       </el-form>
       <template #footer>
@@ -272,6 +299,10 @@ const permLabel = (k: string) => (['direct', 'cards', 'cdk', 'manual'].includes(
 }
 .num {
   font-variant-numeric: tabular-nums;
+}
+.breaker {
+  color: var(--el-color-danger);
+  margin-top: 2px;
 }
 .lock {
   margin-bottom: 12px;

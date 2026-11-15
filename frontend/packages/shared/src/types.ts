@@ -22,7 +22,10 @@ export interface User {
   avatar_preset?: string | null
 }
 
-export type DeliveryMode = 'auto_card' | 'manual'
+/** `upstream_cdk` (review-v12): a code bought from a supplier per order; instant for the buyer. */
+export type DeliveryMode = 'auto_card' | 'manual' | 'upstream_cdk'
+/** Code deliveries the buyer reveals at once (local pool or supplier), as opposed to staff delivery. */
+export const isInstantMode = (m: DeliveryMode | undefined | null): boolean => m === 'auto_card' || m === 'upstream_cdk'
 
 /** v11 W1: a purchasable SKU of a product (buyer view; prices already include the storefront markup). */
 export interface ProductVariant {
