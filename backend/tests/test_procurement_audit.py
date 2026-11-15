@@ -578,3 +578,80 @@ async def test_hand_fulfil_of_a_possibly_sent_job_disables_the_supplier_code(env
     await _sql(env, "UPDATE procurement_jobs SET recover = true")  # as if it were still pending
     voided = await admin.post(f"{JOBS}/{job.id}/void", json={"reason": "check"})
     assert voided.status_code == 409 and voided.json()["error"]["code"] == "recover_pending"
+
+
+# ------------------------------------------------------------------ M2
+async def test_stale_procure_failed_does_not_hold_a_resolved_order(env, up):
+    staff, _ = await env.login("agent")
+    mock = MockSupplier("mock_a", outcomes=[Outcome.FATAL])
+    await up.supplier(mock)
+    buyer, order = await up.paid_order()
+    await up.run()
+    job = await _job(up, order)
+    assert job.state == "needs_manual"  # procure.failed is queued, delivery has not seen it
+    r = await staff.post(f"{JOBS}/{job.id}/retry")
+    assert r.status_code == 200, r.text
+    await up.run()
+    assert (await _job(up, order)).state == "fulfilled"
+    assert await env.drain() >= 2  # the stale procure.failed, then procure.fulfilled
+    assert await _order_status(env, order) == "delivered"
+    assert await env.scalar(
+        "SELECT count(*) FROM audit_log WHERE action = 'delivery.procurement_failed_stale'"
+    ) == 1  # fmt: skip
+    assert await env.scalar(
+        "SELECT count(*) FROM order_events WHERE to_status = 'manual_review'"
+    ) == 0  # fmt: skip
+    cards = (await buyer.post(f"/api/v1/orders/{order['id']}/reveal")).json()["cards"]
+    assert len(cards) == 1
+
+
+async def test_failed_event_still_holds_an_order_with_an_unresolved_job(env, up):
+    await up.supplier(MockSupplier("mock_a", outcomes=[Outcome.FATAL]))
+    _buyer, order = await up.paid_order()
+    await up.run()
+    assert await env.drain() >= 1
+    assert await _order_status(env, order) == "manual_review"
+
+
+async def test_order_held_for_procurement_is_delivered_once_every_unit_is_bound(env, up):
+    await up.supplier(MockSupplier("mock_a"))
+    buyer, order = await up.paid_order()
+    await up.run()
+    assert (await _job(up, order)).state == "fulfilled"  # procure.fulfilled is queued
+    # delivery processed a (stale) procure.failed first: the order sits in manual_review
+    await _sql(env, "UPDATE orders SET status = 'manual_review'")
+    await _sql(
+        env,
+        "INSERT INTO order_events (tenant_id, order_id, from_status, to_status, actor_kind, "
+        "reason) SELECT tenant_id, id, 'paid', 'manual_review', 'system', 'procurement_failed' "
+        "FROM orders",
+    )
+    assert await env.drain() >= 1  # procure.fulfilled for the held order
+    assert await _order_status(env, order) == "delivered"
+    cards = (await buyer.post(f"/api/v1/orders/{order['id']}/reveal")).json()["cards"]
+    assert len(cards) == 1
+    assert await env.scalar(
+        "SELECT count(*) FROM order_events WHERE from_status = 'manual_review' "
+        "AND to_status = 'delivered'"
+    ) == 1  # fmt: skip
+    assert await env.scalar(
+        "SELECT count(*) FROM audit_log WHERE action = 'delivery.procured_after_hold'"
+    ) == 1  # fmt: skip
+
+
+async def test_order_held_for_another_reason_is_not_released_by_procurement(env, up):
+    mock = MockSupplier("mock_a")
+    await up.supplier(mock)
+    _buyer, order = await up.paid_order()
+    for _ in range(2):
+        await up.run()
+    # a payment-anomaly hold (reason is not procurement_failed) placed before delivery ran
+    await _sql(env, "UPDATE orders SET status = 'manual_review'")
+    await _sql(
+        env,
+        "INSERT INTO order_events (tenant_id, order_id, from_status, to_status, actor_kind, "
+        "reason) SELECT tenant_id, id, 'paid', 'manual_review', 'system', 'amount_mismatch' "
+        "FROM orders",
+    )
+    await env.drain()
+    assert await _order_status(env, order) == "manual_review"
