@@ -15,13 +15,14 @@ const { t } = useI18n()
 const { saving, run } = useSave()
 const errors = ref<Record<string, string>>({})
 const testing = ref(false)
-const f = reactive({ enabled: false, chats: '', events: {} as Record<string, boolean>, buyerSound: true, buyerDesktop: false })
+const f = reactive({ enabled: false, lang: 'en' as 'en' | 'zh-CN', chats: '', events: {} as Record<string, boolean>, buyerSound: true, buyerDesktop: false })
 const token = ref<SecretField>(secretFromServer())
 watch(
   () => props.site,
   (s) => {
     const n = s.notifications
     f.enabled = n?.telegram_enabled ?? false
+    f.lang = n?.telegram_language === 'zh-CN' ? 'zh-CN' : 'en'
     f.chats = (n?.telegram_chat_ids ?? []).join('\n')
     f.buyerSound = n?.buyer_sound ?? true
     f.buyerDesktop = n?.buyer_desktop ?? false
@@ -47,6 +48,7 @@ async function save() {
       notifications: {
         telegram_enabled: f.enabled,
         telegram_chat_ids: list,
+        telegram_language: f.lang,
         event_order_paid: f.events.order_paid,
         event_chat_message: f.events.chat_message,
         event_after_sales: f.events.after_sales,
@@ -88,6 +90,13 @@ async function sendTest() {
       <el-form-item :label="t('v5.notify.chats')" :error="errors.chats">
         <el-input v-model="f.chats" type="textarea" :rows="3" spellcheck="false" placeholder="123456789&#10;-1001234567890" />
         <div class="muted small full">{{ t('v5.notify.chatsHint') }}</div>
+      </el-form-item>
+      <el-form-item :label="t('v5.notify.language')">
+        <el-radio-group v-model="f.lang">
+          <el-radio-button value="en">English</el-radio-button>
+          <el-radio-button value="zh-CN">中文</el-radio-button>
+        </el-radio-group>
+        <div class="muted small full">{{ t('v5.notify.languageHint') }}</div>
       </el-form-item>
     </section>
     <section class="panel block">

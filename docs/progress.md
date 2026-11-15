@@ -4,6 +4,13 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 ## Current state — hand-off (read this first in a new session)
 
+**Telegram notification language (2026-11-15, PR `feat/tg-language`).** Staff alerts are English by
+default; `notifications.telegram_language` (`en` | `zh-CN`, Settings → Notifications) switches them. All
+sentences live in one catalog (`app/core/notify_tg.py` `TEXTS`; callers pass `T(key, …)` and plain strings
+only for data), rendered when the message goes out and HTML-escaped after rendering. The service-expiry
+reminder uses the same setting for Telegram (e-mail keeps the staff owner's locale). A test keeps the
+zh-CN catalog complete and its placeholders equal to English. No migration.
+
 **Production deploy 2026-11-15: `d881dfa` (pay-page fixes #88, email redesign #3; no migration).**
 Images `ghcr.io/zucchinistockton/goods24-{api,web}:main`; c4 `.env` now points at the new owner (backup
 `.env.bak-20261115`). Rollback images kept on c4: `goods24-api:rollback-222b03b`, `goods24-web:rollback-222b03b`

@@ -509,8 +509,10 @@ async def alert_dead_jobs(res: Resources, db: AsyncSession, tid: uuid.UUID, now:
             tid,
             "payment_review",
             [
-                f"Delivery job {topic} #{oid} failed {DEAD_JOB_ATTEMPTS} times and was dropped",
-                f"Order {str((payload or {}).get('order_id', ''))[:36]} may be undelivered",
+                notify_tg.T("job.dead", topic=topic, id=oid, n=DEAD_JOB_ATTEMPTS),
+                notify_tg.T(
+                    "job.maybe_undelivered", order=str((payload or {}).get("order_id", ""))[:36]
+                ),
             ],
             link=notify_tg.admin_link(res, "orders"),
             once=(f"dead_job:{oid}", 30 * 86400),
@@ -566,8 +568,8 @@ async def alert_stale_unknown(
                 tid,
                 "payment_review",
                 [
-                    f"Payment attempt for {no} has been unresolved for 24 h",
-                    "Check the gateway console",
+                    notify_tg.T("pay.stale", no=no),
+                    notify_tg.T("pay.check_gateway"),
                 ],
                 link=notify_tg.admin_link(res, "orders"),
                 once=(f"stale_unknown:{no}", 7 * 86400),
