@@ -44,6 +44,7 @@ class SupplierAccount(Base):
     breaker_open: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     breaker_reason: Mapped[str | None] = mapped_column(String(64))
     breaker_at: Mapped[datetime | None]
+    breaker_kind: Mapped[str | None] = mapped_column(String(8))  # hard | balance
     created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[datetime] = created_at()
     updated_at: Mapped[datetime] = updated_at()
@@ -131,5 +132,7 @@ class SupplierLedgerEntry(Base):
     currency: Mapped[str] = mapped_column(String(3))
     balance_after: Mapped[Decimal | None] = mapped_column(AMOUNT)
     job_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("procurement_jobs.id"))
+    ref_id: Mapped[str | None] = mapped_column(String(64))
+    card_mask: Mapped[str | None] = mapped_column(String(24))
     occurred_at: Mapped[datetime]
     created_at: Mapped[datetime] = created_at()

@@ -206,6 +206,7 @@ class MockZovo:
     idem: dict[str, tuple[str, dict[str, Any]]] = field(default_factory=dict)
     cdks: dict[int, dict[str, Any]] = field(default_factory=dict)
     next_cdk: int = 1000
+    balance_logs: list[dict[str, Any]] = field(default_factory=list)  # newest first
     executions: int = 0  # how many issue requests really ran (tests: never twice per key)
 
     def force(self, path: str, quirk: str, times: int = 1) -> None:
@@ -369,7 +370,18 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
         if path == "/vip":
             return JSONResponse(_env(0, {"tier": "none", "is_svip": False}))
         if path == "/balance-logs":
-            return JSONResponse(_env(0, {"total": 0, "list": [], "spendable_balance": 12.34}))
+            try:
+                page = max(1, int(request.query_params.get("page", "1")))
+                size = min(200, max(1, int(request.query_params.get("page_size", "20"))))
+            except ValueError:
+                return JSONResponse({"code": 400, "msg": "bad paging"}, status_code=400)
+            chunk = mock.balance_logs[(page - 1) * size : page * size]
+            return JSONResponse(
+                _env(
+                    0,
+                    {"total": len(mock.balance_logs), "list": chunk, "spendable_balance": 12.34},
+                )
+            )
         return JSONResponse({"code": 404, "msg": "not found"}, status_code=404)
 
     async def force(request: Request) -> JSONResponse:

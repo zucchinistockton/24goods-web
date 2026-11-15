@@ -22,6 +22,7 @@ from app.suppliers.base import (
     Balance,
     Capability,
     JobSpec,
+    LedgerRow,
     Money,
     OfferSpec,
     Outcome,
@@ -33,7 +34,7 @@ from app.suppliers.base import (
     dec,
 )
 from app.suppliers.zovocard.client import ZovoClient
-from app.suppliers.zovocard.webhook import parse_webhook
+from app.suppliers.zovocard.webhook import mask_pan, parse_webhook
 
 log = logging.getLogger("app.suppliers.zovocard")
 
@@ -167,6 +168,52 @@ def parse_balance(data: Any) -> Balance:
     return Balance(spendable=spendable, currency=currency.upper(), total=total)
 
 
+def parse_time(value: Any) -> datetime | None:
+    """ISO-8601 (``Z`` or offset) or ``YYYY-MM-DD HH:MM:SS`` (UTC) -> aware datetime."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        t = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return t if t.tzinfo is not None else t.replace(tzinfo=timezone.utc)
+
+
+def parse_balance_logs(data: Any) -> tuple[list[LedgerRow], int | None]:
+    """``data.list[]`` of ``GET /balance-logs`` -> rows (newest first as sent). Rows without an
+    id or a finite amount are skipped; a full ``card_number`` becomes ``mask_pan`` here and the
+    remark (free text that carries the full PAN) is dropped."""
+    if not isinstance(data, Mapping) or not isinstance(data.get("list"), list):
+        raise SupplierError("malformed balance-logs payload", outcome=Outcome.RETRYABLE)
+    rows: list[LedgerRow] = []
+    for item in data["list"]:
+        if not isinstance(item, Mapping):
+            continue
+        rid = item.get("id")
+        if isinstance(rid, bool) or not isinstance(rid, (int, str)) or not str(rid).strip():
+            continue
+        try:
+            amount = dec(item.get("amount"))
+        except ValueError:
+            continue
+        after = _dec_or_none(item.get("after"))
+        ref = item.get("ref_id")
+        rows.append(
+            LedgerRow(
+                external_id=str(rid).strip()[:64],
+                type=str(item.get("type") or "unknown")[:48],
+                amount=amount,
+                currency=str(item.get("currency") or "")[:3].upper(),
+                occurred_at=parse_time(item.get("created_at")),
+                balance_after=after,
+                ref_id=str(ref)[:64] if isinstance(ref, (int, str)) and ref != "" else None,
+                card_mask=mask_pan(item["card_number"]) if item.get("card_number") else None,
+            )
+        )
+    total = data.get("total")
+    return rows, total if isinstance(total, int) and not isinstance(total, bool) else None
+
+
 def _dec_or_none(v: Any) -> Decimal | None:
     try:
         return dec(v)
@@ -215,6 +262,14 @@ class ZovoCardSupplier:
     async def balance(self) -> Balance:
         resp = await self.client.get("/balance")
         return parse_balance(resp.data)
+
+    async def balance_logs(self, page: int = 1, page_size: int = 100) -> list[LedgerRow]:
+        """``GET /balance-logs`` (read-only), newest first. Backfill for the cost ledger."""
+        resp = await self.client.get(
+            "/balance-logs", params={"page": str(page), "page_size": str(page_size)}
+        )
+        rows, _total = parse_balance_logs(resp.data)
+        return rows
 
     async def plans(self, product: str, *, fresh: bool = False) -> PlanCatalog:
         if product not in DIRECT_PRODUCTS:

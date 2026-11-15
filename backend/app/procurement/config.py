@@ -28,6 +28,7 @@ class ProcurementSettings:
     procurement_host: str = "127.0.0.1"
     procurement_port: int = 8004
     balance_interval_s: float = 300.0  # review-v12 §6: balance refreshed every 5 min
+    ledger_interval_s: float = 600.0  # review-v12 §6: balance-logs backfill every 10 min
     probe_timeout_s: float = 45.0
     probes_per_supplier_10min: int = 10
     # review-v12 §11: writes to a production supplier need this explicit opt-in (no dev/demo

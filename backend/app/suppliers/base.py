@@ -159,6 +159,21 @@ class Balance:
 
 
 @dataclass(frozen=True)
+class LedgerRow:
+    """One vendor balance-log row, normalised (review-v12 §6). ``card_mask`` is already masked:
+    a full card number never leaves the adapter. ``currency`` empty = the supplier's currency."""
+
+    external_id: str
+    type: str
+    amount: Decimal  # signed: positive = credit, negative = debit
+    currency: str
+    occurred_at: datetime | None
+    balance_after: Decimal | None = None
+    ref_id: str | None = None
+    card_mask: str | None = None
+
+
+@dataclass(frozen=True)
 class OfferSpec:
     """What a ``supplier_offers`` row asks for, independent of the database model."""
 

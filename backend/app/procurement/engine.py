@@ -48,6 +48,7 @@ from app.models import (
     SupplierOffer,
     SupplierWebhookEvent,
 )
+from app.procurement import ledger
 from app.procurement.context import ProcurementContext
 from app.procurement.service import SupplierRef, make_supplier
 from app.suppliers.base import (
@@ -347,6 +348,16 @@ async def handle_event(ctx: ProcurementContext, db: AsyncSession, payload: dict)
                 job.upstream_status = clean_detail(status, 32)
             if job.state in ACTIVE:
                 job.next_poll_at = utcnow()
+    elif ev.kind == "balance_change":
+        # cost ledger: the same unique insert path as the balance-logs backfill (ledger.py);
+        # card_fee events are never booked (their money arrives as a balance_change)
+        await ledger.handle_balance_event(
+            db,
+            tenant_id=ev.tenant_id,
+            supplier_id=ev.supplier_id,
+            payload=ev.payload or {},
+            received_at=ev.received_at,
+        )
     ev.processed_at = utcnow()
 
 

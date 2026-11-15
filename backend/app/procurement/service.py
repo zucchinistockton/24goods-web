@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -244,12 +245,36 @@ async def refresh_all(ctx: ProcurementContext) -> int:
     return len(refs)
 
 
+async def backfill_ledgers(ctx: ProcurementContext) -> int:
+    """``GET /balance-logs`` backfill of every enabled supplier into the cost ledger."""
+    from app.procurement.ledger import backfill
+
+    n = 0
+    for ref in await enabled_suppliers(ctx):
+        try:
+            async with tenant_session(ctx.maker, ref.tenant_id) as db:
+                cur = await db.scalar(
+                    select(SupplierAccount.currency).where(SupplierAccount.id == ref.id)
+                )
+            n += await backfill(ctx, ref, cur or "USD")
+        except Exception as exc:  # one broken supplier must not stop the others
+            log.error("ledger backfill failed supplier=%s error=%s", ref.id, type(exc).__name__)
+    return n
+
+
 async def run_loop(ctx: ProcurementContext, stop: asyncio.Event) -> None:
+    last_ledger = float("-inf")
     while not stop.is_set():
         try:
             await refresh_all(ctx)
         except Exception:
             log.exception("supplier refresh pass failed")
+        if time.monotonic() - last_ledger >= ctx.settings.ledger_interval_s - 1:
+            last_ledger = time.monotonic()
+            try:
+                await backfill_ledgers(ctx)
+            except Exception:
+                log.exception("ledger backfill pass failed")
         try:
             await asyncio.wait_for(stop.wait(), ctx.settings.balance_interval_s)
         except asyncio.TimeoutError:
