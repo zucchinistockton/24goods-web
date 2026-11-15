@@ -29,18 +29,18 @@ const { t, locale } = useI18n()
   padding: 0 8px;
   line-height: 20px;
   border-radius: 10px;
-  background: #fff4e5;
-  color: #8a4b00;
+  background: var(--c-warn-soft);
+  color: var(--c-warn-ink);
 }
 .ast-st.s-replaced,
 .ast-st.s-refunded,
 .ast-st.s-resolved {
-  background: #e8f6ee;
-  color: #17744a;
+  background: var(--c-ok-soft);
+  color: var(--c-ok-ink);
 }
 .ast-st.s-rejected {
-  background: #fdeaea;
-  color: #b42318;
+  background: var(--c-bad-soft);
+  color: var(--c-bad-ink);
 }
 .small {
   font-size: 12px;

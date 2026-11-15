@@ -8,10 +8,12 @@ import { applyVantLocale } from './locale'
 import { router, handleUnauthorized } from './router'
 import { setUnauthorizedHandler } from './api'
 import { SMART_TEXT_KEY } from '@24goods/shared/chat'
-import { captureStore, printCopyrightNotice } from '@24goods/shared'
+import { captureStore, followSystemTheme, printCopyrightNotice } from '@24goods/shared'
 import { confirmOpenLink, showToast } from './ui'
 
 printCopyrightNotice({ owner: 'Kesiv' })
+// dark mode follows the device: `dark` switches our tokens, `van-theme-dark` Vant's own palette
+followSystemTheme(['dark', 'van-theme-dark'], { light: '#ffd60a', dark: '#161614' })
 // v5 §7: capture ?store=slug before the first API call
 captureStore(window.location.search)
 const app = createApp(App)

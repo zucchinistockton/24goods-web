@@ -593,8 +593,8 @@ function deliveredOrderId(it: { kind: string; message?: { type: string; payload:
   color: var(--c-accent-ink);
 }
 .notice.offline {
-  background: #fff4e5;
-  color: #8a4b00;
+  background: var(--c-warn-soft);
+  color: var(--c-warn-ink);
   padding: 8px 12px;
 }
 .notice-btn {

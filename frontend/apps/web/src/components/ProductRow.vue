@@ -88,8 +88,8 @@ const as = computed(() => afterSalesLabel(props.product?.after_sales_hours, prop
   line-height: 18px;
   padding: 0 6px;
   border-radius: 4px;
-  background: #e8f6ee;
-  color: #17744a;
+  background: var(--c-ok-soft);
+  color: var(--c-ok-ink);
   font-weight: 600;
   white-space: nowrap;
 }
@@ -127,7 +127,7 @@ const as = computed(() => afterSalesLabel(props.product?.after_sales_hours, prop
   cursor: pointer;
 }
 .prow-buy:disabled {
-  background: #e4e4e4;
+  background: var(--c-fill-strong);
   color: var(--c-muted);
   cursor: default;
 }

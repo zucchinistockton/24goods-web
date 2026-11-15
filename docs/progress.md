@@ -10,6 +10,14 @@ sentences live in one catalog (`app/core/notify_tg.py` `TEXTS`; callers pass `T(
 only for data), rendered when the message goes out and HTML-escaped after rendering. The service-expiry
 reminder uses the same setting for Telegram (e-mail keeps the staff owner's locale). A test keeps the
 zh-CN catalog complete and its placeholders equal to English. No migration.
+**Dark mode (2026-11-15, PR `feat/dark-mode`).** Both apps follow the system theme
+(`prefers-color-scheme`, live; no manual switch, nothing stored). `followSystemTheme()` in
+`packages/shared/src/theme.ts` sets `html.dark` (+ `van-theme-dark` in the buyer app) before mount and keeps
+`theme-color` in step. Buyer app: dark values for every token in `styles/tokens.css` plus new semantic tokens
+(`--c-fill`, `--c-chip`, `--c-hero-*`, `--c-note-*`, `--c-warn/ok/bad/info-soft|ink`, …) replacing ~70
+hard-coded colours; QR codes keep a white plate. Console: Element Plus dark variables + `--a-*` dark values.
+Shared chat/UI components read `--gc-*` tokens with the old light values as fallbacks. No `color-mix()` (older
+mobile browsers). Typechecked and built by CI only; **look at both themes on the demo before production**.
 
 **Production deploy 2026-11-15: `d881dfa` (pay-page fixes #88, email redesign #3; no migration).**
 Images `ghcr.io/zucchinistockton/goods24-{api,web}:main`; c4 `.env` now points at the new owner (backup

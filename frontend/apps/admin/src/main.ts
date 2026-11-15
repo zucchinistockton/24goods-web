@@ -1,6 +1,7 @@
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import 'element-plus/theme-chalk/base.css'
+import 'element-plus/theme-chalk/dark/css-vars.css'
 import './styles/admin.css'
 import App from './App.vue'
 import { i18n } from './i18n'
@@ -8,9 +9,11 @@ import { router, handleUnauthorized } from './router'
 import { setUnauthorizedHandler } from './api'
 import { SMART_TEXT_KEY } from '@24goods/shared/chat'
 import { confirmBox, toastOk } from './ui'
-import { printCopyrightNotice } from '@24goods/shared'
+import { followSystemTheme, printCopyrightNotice } from '@24goods/shared'
 
 printCopyrightNotice({ owner: 'Kesiv' })
+// dark mode follows the device: `html.dark` switches Element Plus's palette and our tokens
+followSystemTheme(['dark'])
 const app = createApp(App)
 app.use(createPinia())
 app.use(i18n)

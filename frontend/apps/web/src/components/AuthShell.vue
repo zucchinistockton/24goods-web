@@ -35,7 +35,7 @@ function back() {
   min-height: 100vh;
   min-height: 100dvh;
   padding: calc(var(--safe-top) + 8px) 16px calc(var(--safe-bottom) + 24px);
-  background: linear-gradient(180deg, var(--c-accent) 0, #ffe680 180px, var(--c-bg) 320px);
+  background: linear-gradient(180deg, var(--c-hero-1) 0, var(--c-hero-2) 180px, var(--c-bg) 320px);
 }
 .back {
   width: 44px;
@@ -56,7 +56,7 @@ function back() {
   height: 48px;
   border-radius: 14px;
   object-fit: cover;
-  background: #1f1f1f;
+  background: var(--c-chip);
   color: var(--c-accent);
   display: grid;
   place-items: center;
@@ -67,7 +67,7 @@ function back() {
   width: 52px;
   height: 52px;
   border-radius: 16px;
-  background: #1f1f1f;
+  background: var(--c-chip);
   color: var(--c-accent);
   display: grid;
   place-items: center;
