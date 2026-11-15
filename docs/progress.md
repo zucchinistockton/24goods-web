@@ -15,11 +15,18 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
   `ENABLE_CODEQL` settings; a GHCR token from the new account on c4 (`~/.secrets/ghcr_token` is the old,
   dead PAT) — **production cannot pull new images until that exists**; the demo updater's token likewise.
   PR events did not start CI on the first PRs; `gh workflow run CI --ref <branch>` does.
-- **ZovoCard sandbox (account valid until 2026-11-18 10:57):** console login saved in
-  `~/.secrets/zovocard-sandbox.txt`. Still needed from the console's Developers page before the probe can
-  run: a sandbox `app_id` / `app_secret`, the key's IP allowlist set to the dev box egress `107.173.10.79`,
-  and (for webhook tests) the key-level callback URL plus its signing secret. No scanning: scripted probe
-  and the named scenario tests only (spec §12).
+- **ZovoCard sandbox (account valid until 2026-11-18 10:57): probe green and one CDK scenario verified**
+  (issue, same-key replay, void; spec §12). Key in `~/.secrets/zovocard.env`. Open: webhook test (needs the
+  sandbox signing secret, the demo stack running and M2 deployed there), the remaining [I] items of §14.3.
+- **Checked 2026-11-15:** production (c4) serves normally on the old images `ghcr.io/arifulcrypto/...:main`
+  (containers up 4 days, disk 82 %); the `rollback-*` images were pruned, so **there is no local rollback
+  image: tag the running images before the next deploy**. c4 has `gh` logged in as the new account but no
+  Docker registry login; `prod.sh` logs in transiently with `~/.secrets/ghcr_token`, which is still the dead
+  token (a new one needs `read:packages`). **No image exists under the new owner yet:** on the new repo only
+  `workflow_dispatch` starts CI (0 push / pull_request runs, also for the merge of #1), and the GHCR push job
+  runs only on a push event to `main`. Likely an account-level restriction (inference): verify the account
+  email, then push to `main` again; otherwise allow the push job on a manual run. The demo stack on the dev
+  box is stopped (exited 2 days ago). Repo-local git identity now `zucchinistockton` (noreply address).
 - **Branches (local):** `main` is 2 behind `origin/main` (`19c7625`, which already contains pay-ux #88;
   `fix/pay-ux` has no diff against it and can be deleted). v12 M1 is merged into **`feat/v12-procurement`**
   (#89, `a00b58e`), **not into `main`**. M2 lives on `feat/v12-procurement-m2` in the worktree
@@ -48,7 +55,7 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
      (`crhywun/gpt-subscribe-studio-1`; owner fork `arifulcrypto/gpt-subscribe-studio-dev`, local `/opt/gss/src`)
      plus the browser-session-injection path, as a backup to ZovoCard. **Future work, parked** (owner,
      2026-11-15: payment instrument and billing countries undecided; spec §15).
-  6. ZovoCard sandbox probe: still waiting for the sandbox key.
+  6. ~~ZovoCard sandbox probe~~ done (see above).
 
 **v12 procurement M1 — built (2026-11-14, branch `feat/v12-procurement-m1`, ADR-038, migration
 `0023_procurement`):** `app/suppliers/` (protocol, ZovoCard read-only client with the status/error-code

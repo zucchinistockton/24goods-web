@@ -285,6 +285,20 @@ run `python -m app.procurement probe --supplier zovocard --env sandbox`, then th
 The owner's mainland VPS is a last resort for reaching the sandbox and must not hold a long-lived
 connection; nothing is deployed there (AGENTS.md §1.7).
 
+**Sandbox verification (2026-11-15) [V].** Key in `~/.secrets/zovocard.env` (`ZOVOCARD_SANDBOX_APP_ID` /
+`_APP_SECRET`); the account expires 2026-11-18 10:57. From the dev box (IP allowlist on):
+- `python -m app.procurement probe --supplier zovocard --env sandbox` is green: auth OK, IP allowed, direct and
+  card permissions, 5 purchasable plans, 29 card products, balance 50000 USD. **M1 exit criterion met.**
+- One scripted `upstream_cdk` scenario through `ZovoCardSupplier` (plan `plus`, count 1): `submit` -> OK with
+  one code and an upstream id; **same-key replay returns the same id and the same code** (the idempotency
+  cache works as documented, which is what `query()` relies on); `void` (`/disable`) -> OK; a replay after the
+  void still answers from the cache, so it reports the issue, not the current CDK status.
+- Issue cost is reported as 0.00 USD: the charge happens at redemption, so the breaker reserve needs the
+  per-plan redemption cost (§14.3, still open).
+- Not done: webhook delivery. The console callback is `https://demo.kesiv.com/api/v1/webhooks/zovocard`, but
+  the demo stack is stopped, it runs `main` (the route exists only on the M2 branch), and the sandbox
+  webhook signing secret has not been provided. Polling does not depend on it.
+
 ## 13. Added scope (owner, 2026-11-14)
 
 **Optional two-factor authentication (TOTP), own PR `feat/totp-2fa`, after M1.** Buyers and staff may enable
@@ -304,7 +318,8 @@ disabled under `prefers-reduced-motion`). Frontend design is done by the orchest
 
 ## 14. Open items
 
-1. Sandbox ticket approval → sandbox key (§12).
+1. ~~Sandbox ticket approval → sandbox key~~ done 2026-11-15 (§12); webhook test still needs the sandbox
+   signing secret and M2 on the demo.
 2. Rotate the production key and the webhook signing key before go-live (both were pasted into chat).
 3. **[I]** to confirm in sandbox: exact body of the recharge-pending 400; whether `GET /gpt-direct/cdks`
    exposes the idempotency key or only replay recovers an ambiguous issue; `card_3ds_otp` field names (§7.4);
