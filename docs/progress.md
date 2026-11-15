@@ -4,6 +4,62 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 ## Current state — hand-off (read this first in a new session)
 
+**Hand-off 2026-11-15 evening (session paused on quota; this block supersedes the one below).**
+
+- **START HERE.** Branch `feat/v12-procurement-m2` (worktree `.claude/worktrees/agent-af3aa371765135692`,
+  draft PR #2). Order:
+  1. Check CI on the branch head (`gh run list --branch feat/v12-procurement-m2`). The run on `1430b47` had
+     frontend + E2E green and the backend suite still running; the head after it adds the security fixes
+     (`7eef58c`) and this note, so read the newest run. Fix what fails.
+  2. **Payment-auditor on M2 was started but its report was not received: run it again** (prompt: money and
+     fulfilment paths of M2, diff `origin/feat/v12-procurement...HEAD -- backend e2e`; double purchase,
+     order state machine, webhooks as hints, ledger, balance breaker, error classification, void). Fix findings.
+  3. Merge `main` into `feat/v12-procurement` (it is behind), take PR #2 out of draft and **squash-merge** it
+     into `feat/v12-procurement` (this removes the WIP commit `68ca6df`).
+  4. Redemption site (spec §8) as its own PR, after M2 is merged (owner decision).
+  5. Own PRs: dark mode, Telegram notification language switch, optional TOTP 2FA (spec §13).
+  Owner standing instructions (2026-11-15): merge green PRs to `main` without asking; deploy to demo and
+  production once tested (tag rollback images first); English only.
+- **M2 state: everything in spec §10 except the redemption site is built.** Backend (implementer, 8 commits
+  `1543fcf`..`1d4a037`): admin password for production suppliers; cost ledger (`procurement/ledger.py`, one
+  unique insert for webhook + `balance-logs` backfill, migration 0025); balance breaker
+  (`procurement/breaker.py`, kinds `hard` / `balance`, auto-recovery, staff alert); admin API under
+  `/api/v1/admin/procurement` (`/sources`, `/jobs` with requery / retry / switch / fulfil / void / fail,
+  `/cost` summary / margin / unreconciled / CSV; migration 0026 grants); `POST /admin/suppliers/{id}/reset-breaker`;
+  procurement + `mockzovo` in `scripts/dev.sh`, compose demo profile, `bootstrap.sh`, and
+  `e2e/smoke.py::v12_procurement` (timeout-after-send, 409, 202, 503 failover, duplicate webhook, forged
+  signature). Orchestrator: several webhook signing keys per environment (comma-separated), admin console
+  page `ProcurementPage.vue` (jobs / sources / costs) + `api-procurement.ts`, Suppliers page password field and
+  breaker reset, product dialog offers `upstream_cdk`, buyer app shows `upstream_cdk` as instant
+  (`isInstantMode`), en + zh-CN strings. Not done: `docs/dev-setup.md` for the two new dev processes;
+  ADR-038 update for M2; the admin UI was typechecked by CI only and not looked at in a browser.
+- **CI findings fixed on the way:** `ruff format` on 0025; the `procurement` Redis ACL user lacked `INCRBY`
+  (the rate limiter in the probe route answered 503 in the E2E stack; `deploy/bootstrap.sh`). **An already
+  bootstrapped stack (demo, later production) needs the Redis ACL line updated by hand.**
+- **Security-reviewer on M2: pass with notes, no critical/high.** Fixed in `7eef58c`: password also required
+  to switch an existing production supplier on (M1 of the report); `code_prefix` no longer stored from CDK
+  events; production and sandbox webhook keys must differ (settings validator, >= 32 chars in prod); CSV
+  currency cell guarded; mock scenario plans only in demo mode. Left as notes: manual fulfil answers 409
+  `duplicate_code` (a slow existence oracle for staff, rate limited); engine/ledger queries rely on the RLS
+  pin without an explicit `tenant_id` filter (defence in depth); any staff role may fulfil manually (as
+  specified).
+- **Sandbox (expires 2026-11-18 10:57): second pass recorded in spec §12 / §14.3.** Settled: the CDK list
+  exposes no idempotency key. Not measurable there: redemption cost (mock redemption), recharge-pending 400,
+  `card_3ds_otp`. **No vendor-sent webhook has reached the demo yet.** Owner saved a key-level subscription;
+  its signing key is in `~/.secrets/zovocard.env` (`ZOVOCARD_SANDBOX_KEY_WEBHOOK_SECRET`) and is what the demo
+  API now verifies with (`/opt/24goods-demo/deploy/env/api.env`, backup `api.env.bak-20261115b`). Open
+  questions to the owner: the key-level callback URL was pasted as `demo.kestv.com` (must be
+  `demo.kesiv.com`); which of the two general-callback keys is the sandbox one. When answered, re-run the four
+  sandbox calls (issue, disable, enable, disable) and watch `supplier_events` on the demo. The demo still
+  runs the M2 image of `d043908` (single key per environment, no procurement process).
+- **Production (c4) runs `d881dfa`** (PR #3 email redesign + #88), deployed 2026-11-15 by hand; rollback images
+  `goods24-{api,web}:rollback-222b03b` on c4; details in the block on `main` (#5). Do not use
+  `scripts/prod.sh deploy` until its registry login is fixed (dead token, and its logout removes c4's working
+  login). Production webhook callback: leave blank until v12 is deployed there. To rotate before go-live: the
+  ZovoCard production API key and signing key (pasted in chat), `APP_OWNER_PASSWORD` on c4 (printed once in a
+  session log).
+- **CI triggers work again** on the new repository (`push` and `pull_request` start runs).
+
 **Hand-off 2026-11-15 (session ended early on quota; read this block first).**
 
 - **START HERE (next session).** Work on `feat/v12-procurement-m2` (worktree
