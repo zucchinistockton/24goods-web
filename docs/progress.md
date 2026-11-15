@@ -11,9 +11,8 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
   1. Check CI on the branch head (`gh run list --branch feat/v12-procurement-m2`). The run on `1430b47` had
      frontend + E2E green and the backend suite still running; the head after it adds the security fixes
      (`7eef58c`) and this note, so read the newest run. Fix what fails.
-  2. **Payment-auditor on M2 was started but its report was not received: run it again** (prompt: money and
-     fulfilment paths of M2, diff `origin/feat/v12-procurement...HEAD -- backend e2e`; double purchase,
-     order state machine, webhooks as hints, ledger, balance breaker, error classification, void). Fix findings.
+  2. **Fix the payment-auditor findings on M2 (list below) with tests, then re-run the auditor.** M2 must
+     not merge before H1, H2 and M1–M5 are fixed.
   3. Merge `main` into `feat/v12-procurement` (it is behind), take PR #2 out of draft and **squash-merge** it
      into `feat/v12-procurement` (this removes the WIP commit `68ca6df`).
   4. Redemption site (spec §8) as its own PR, after M2 is merged (owner decision).
@@ -33,6 +32,45 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
   breaker reset, product dialog offers `upstream_cdk`, buyer app shows `upstream_cdk` as instant
   (`isInstantMode`), en + zh-CN strings. Not done: `docs/dev-setup.md` for the two new dev processes;
   ADR-038 update for M2; the admin UI was typechecked by CI only and not looked at in a browser.
+- **Payment-auditor on M2 (2026-11-15): FAIL for real-money use; no double purchase or double delivery
+  found under normal operation.** Open findings (paths under `backend/app/`):
+  - **H1** a reconcile/verify call can buy after the order left `paid`, and `_fulfil` ignores order status
+    (`procurement/engine.py` `_lease` order check only in the submit branches, `_fulfil`;
+    `aftersales/service.py` `refund_order` never touches jobs). Refund during a reconcile => supplier paid,
+    buyer refunded, code sealed to a refunded order. Fix: order check for every executing mode; `_fulfil`
+    refuses a non-paid order, stores `upstream_ref`, goes `void_pending`; refund moves open jobs to
+    failed / void.
+  - **H2** a paused plan (HTTP 400 `request_failed`) opens the HARD breaker for the whole supplier and the
+    job replays ~27 min, then is stuck as maybe-charged (`suppliers/zovocard/errors.py`, `engine.py`
+    `_open_breaker`, `candidates`, `_lease`). Fix: `availability()` before the first submit; no
+    supplier-wide breaker from an ambiguous `request_failed` (per-offer stop, `last_check_ok=false`).
+  - **M1** staff `fulfil` / `fail` while the supplier call is in flight orphans a charged code
+    (`modules/admin/procurement_jobs.py`; the engine then drops its OK result, `upstream_ref` never stored).
+    Fix: refuse while the lease is live, or reconcile once to record the ref and void.
+  - **M2** a stale `procure.failed` strands an order in `manual_review` with every job fulfilled
+    (`delivery/worker.py` `handle_procure_failed` / `handle_procured`). Fix: ignore the event when no job is
+    unresolved; deliver an order held for `procurement_failed` once all units are bound.
+  - **M3** the balance breaker fails open (unknown reserve counts 0; `min_spendable` default 0; no
+    evaluation when the balance read fails) and its recovery does not resume jobs that were failed over
+    (`procurement/breaker.py`, `engine.py`). Fix: fail closed (cost estimate or known plan cost required to
+    enable an offer; unknown cost opens the breaker; stale balance => no lease); back off queued jobs on a
+    balance breaker instead of failing them over.
+  - **M4** `maybe_charged` is a heuristic over `error_code`, so "switch" can reach a second supplier after
+    the first may have charged (retry/requery clear the code; `offer_missing` not listed). Fix: persist a
+    `maybe_sent` flag in the `_lease` commit and base switch / failover on it.
+  - **M5** reconcile/verify do not compare `request_hash` (an edited offer replays another body under the
+    same key) and there is no maximum age for a same-key replay. Fix: enforce the hash in every mode; add
+    and document a replay age limit.
+  - **Low:** L1 store `upstream_ref` before any early exit in `_fulfil` (and cap that loop); L2 void does
+    not void the `card_stock` row, touch the order or allow a replacement job, and voids a maybe-charged
+    job without a supplier call; L3 late-payment upstream orders in `manual_review` cannot be released;
+    L4 lock order job->order->siblings (admin) vs job->siblings (engine) can deadlock; L5 ledger backfill
+    stops at the first page without new rows, naive timestamps assumed UTC, `ref_id` = CDK id unverified,
+    silent CSV / summary truncation, margin includes refunded orders; L6 `handle_event` pulls
+    `next_poll_at` forward on a leased job (matters for M3); L7 409 `IDEMPOTENCY_CONFLICT` should be FATAL
+    + maybe charged, not "still running".
+  - **Test gaps:** refund or hold during a reconcile; paused plan vs breaker; staff action racing an
+    in-flight call; stale `procure.failed`.
 - **CI findings fixed on the way:** `ruff format` on 0025; the `procurement` Redis ACL user lacked `INCRBY`
   (the rate limiter in the probe route answered 503 in the E2E stack; `deploy/bootstrap.sh`). **An already
   bootstrapped stack (demo, later production) needs the Redis ACL line updated by hand.**
