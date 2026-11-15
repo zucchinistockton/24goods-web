@@ -51,7 +51,7 @@
 环境要求：Linux、Docker、Python ≥ 3.10、Node 22 + pnpm（corepack）。2 GB 内存的机器即可运行。
 
 ```bash
-git clone https://github.com/arifulcrypto/24goods-web.git && cd 24goods-web
+git clone https://github.com/zucchinistockton/24goods-web.git && cd 24goods-web
 scripts/dev.sh setup     # 容器（PostgreSQL、Redis）、虚拟环境、pnpm install，密钥放在 .dev/
 scripts/dev.sh up        # API + 发货进程 + Vite 开发服务器（热更新 + 模拟数据）
 scripts/dev.sh creds     # 演示账号（买家 / 客服 / 管理员）
@@ -64,7 +64,7 @@ scripts/dev.sh down      # 不用时关闭
 
 ```bash
 PUBLIC_BASE_URL=http://127.0.0.1:8080 PUBLISH_HTTP=8080 \
-API_IMAGE=ghcr.io/arifulcrypto/goods24-api:main WEB_IMAGE=ghcr.io/arifulcrypto/goods24-web:main \
+API_IMAGE=ghcr.io/zucchinistockton/goods24-api:main WEB_IMAGE=ghcr.io/zucchinistockton/goods24-web:main \
   ./deploy/bootstrap.sh
 docker compose -f deploy/docker-compose.yml --env-file deploy/.env --profile demo up -d --wait
 cat deploy/secrets/demo-credentials.txt

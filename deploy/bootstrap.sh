@@ -21,8 +21,8 @@ if [[ -f .env && $FORCE -eq 0 ]]; then
   exit 1
 fi
 
-API_IMAGE="${API_IMAGE:-ghcr.io/arifulcrypto/goods24-api:main}"
-WEB_IMAGE="${WEB_IMAGE:-ghcr.io/arifulcrypto/goods24-web:main}"
+API_IMAGE="${API_IMAGE:-ghcr.io/zucchinistockton/goods24-api:main}"
+WEB_IMAGE="${WEB_IMAGE:-ghcr.io/zucchinistockton/goods24-web:main}"
 PUBLISH_HTTP="${PUBLISH_HTTP:-80}"
 SITE_ADDRESS="${SITE_ADDRESS:-:80}"
 PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-http://127.0.0.1:${PUBLISH_HTTP}}"

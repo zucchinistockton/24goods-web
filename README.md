@@ -51,7 +51,7 @@ The full list is in [AGENTS.md §1](AGENTS.md). Scans are not an audit: an indep
 Requirements: Linux, Docker, Python ≥ 3.10, Node 22 + pnpm (corepack). Works on a 2 GB box.
 
 ```bash
-git clone https://github.com/arifulcrypto/24goods-web.git && cd 24goods-web
+git clone https://github.com/zucchinistockton/24goods-web.git && cd 24goods-web
 scripts/dev.sh setup     # containers (PostgreSQL, Redis), venv, pnpm install, secrets in .dev/
 scripts/dev.sh up        # API + delivery + Vite dev servers with hot reload and mock data
 scripts/dev.sh creds     # demo logins (buyer / agent / admin)
@@ -64,7 +64,7 @@ Details, ports and the SSH tunnel for opening it from your PC: [docs/dev-setup.m
 
 ```bash
 PUBLIC_BASE_URL=http://127.0.0.1:8080 PUBLISH_HTTP=8080 \
-API_IMAGE=ghcr.io/arifulcrypto/goods24-api:main WEB_IMAGE=ghcr.io/arifulcrypto/goods24-web:main \
+API_IMAGE=ghcr.io/zucchinistockton/goods24-api:main WEB_IMAGE=ghcr.io/zucchinistockton/goods24-web:main \
   ./deploy/bootstrap.sh
 docker compose -f deploy/docker-compose.yml --env-file deploy/.env --profile demo up -d --wait
 cat deploy/secrets/demo-credentials.txt
