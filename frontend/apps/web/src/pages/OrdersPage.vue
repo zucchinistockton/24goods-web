@@ -276,7 +276,7 @@ const tone = (s: Order['status']) =>
   color: var(--c-price);
 }
 .status.info {
-  color: #3b4fb8;
+  color: var(--c-info-ink);
 }
 .status.ok {
   color: var(--c-success);

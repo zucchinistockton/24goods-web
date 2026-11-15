@@ -302,7 +302,7 @@ h3 {
   padding: 8px;
   border: 1px solid var(--a-line);
   border-radius: 8px;
-  background: #fafafa;
+  background: var(--a-hover);
   margin-bottom: 6px;
   text-align: start;
   cursor: pointer;

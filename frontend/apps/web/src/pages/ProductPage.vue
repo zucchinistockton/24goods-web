@@ -273,7 +273,7 @@ function back() {
 }
 .gallery {
   position: relative;
-  background: #f0eee8;
+  background: var(--c-fill);
   aspect-ratio: 4 / 3;
   max-height: 280px;
   width: 100%;
@@ -304,7 +304,7 @@ function back() {
   height: 100%;
   font-size: 64px;
   font-weight: 800;
-  color: rgba(0, 0, 0, 0.1);
+  color: var(--c-fill-strong);
 }
 .gallery-count {
   position: absolute;
@@ -385,8 +385,8 @@ function back() {
   line-height: 18px;
   padding: 0 6px;
   border-radius: 4px;
-  background: #e8f6ee;
-  color: #17744a;
+  background: var(--c-ok-soft);
+  color: var(--c-ok-ink);
   font-weight: 600;
 }
 .fmt {

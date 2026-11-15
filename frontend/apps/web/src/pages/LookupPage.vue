@@ -194,7 +194,7 @@ onBeforeUnmount(reset)
   padding: 0 12px;
   border: 0;
   border-radius: 999px;
-  background: #f2f2f2;
+  background: var(--c-fill);
   font: inherit;
   font-size: 12px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;

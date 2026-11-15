@@ -438,8 +438,8 @@ async function submit() {
   font-size: 12px;
   padding: 0 6px;
   border-radius: 4px;
-  background: #fdecec;
-  color: #c0392b;
+  background: var(--c-bad-soft);
+  color: var(--c-bad-ink);
 }
 .bottom {
   display: flex;

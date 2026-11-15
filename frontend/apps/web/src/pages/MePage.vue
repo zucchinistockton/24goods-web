@@ -314,13 +314,13 @@ function secureAccount() {
   align-items: center;
   gap: 14px;
   padding: calc(var(--safe-top) + 28px) 20px 28px;
-  background: linear-gradient(180deg, var(--c-accent), #ffe680 80%, var(--c-bg));
+  background: linear-gradient(180deg, var(--c-hero-1), var(--c-hero-2) 80%, var(--c-bg));
 }
 .avatar {
   width: 60px;
   height: 60px;
   border-radius: 18px;
-  background: #1f1f1f;
+  background: var(--c-chip);
   color: var(--c-accent);
   display: grid;
   place-items: center;
@@ -329,7 +329,7 @@ function secureAccount() {
   flex: none;
 }
 .avatar.guest {
-  background: rgba(255, 255, 255, 0.7);
+  background: var(--c-glass);
   color: var(--c-text-2);
 }
 .who {
@@ -386,7 +386,7 @@ function secureAccount() {
 }
 .seg {
   display: inline-flex;
-  background: #f2f2f2;
+  background: var(--c-fill);
   border-radius: 999px;
   padding: 2px;
 }
@@ -432,7 +432,7 @@ function secureAccount() {
   height: 44px;
   border: 0;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.6);
+  background: var(--c-glass);
   cursor: pointer;
   flex: none;
 }

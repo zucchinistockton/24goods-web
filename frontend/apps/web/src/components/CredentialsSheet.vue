@@ -82,8 +82,8 @@ h2 {
   gap: 8px;
   padding: 8px 8px 8px 12px;
   border-radius: 10px;
-  background: #faf8f2;
-  border: 1px dashed #e7d9a8;
+  background: var(--c-note-bg);
+  border: 1px dashed var(--c-note-line);
   margin-bottom: 8px;
 }
 .val {
