@@ -137,7 +137,7 @@ async function contact() {
   width: 48px;
   height: 48px;
   border-radius: 14px;
-  background: #2b2b2b;
+  background: var(--c-chip);
   color: var(--c-accent);
   display: grid;
   place-items: center;

@@ -11,8 +11,9 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
   1. Check CI on the branch head (`gh run list --branch feat/v12-procurement-m2`). The run on `1430b47` had
      frontend + E2E green and the backend suite still running; the head after it adds the security fixes
      (`7eef58c`) and this note, so read the newest run. Fix what fails.
-  2. **Fix the payment-auditor findings on M2 (list below) with tests, then re-run the auditor.** M2 must
-     not merge before H1, H2 and M1–M5 are fixed.
+  2. Payment-auditor findings: **fixed 2026-11-15** (commits `38754af`..`6469097`, migration 0027, 40 tests in
+     `tests/test_procurement_audit.py`; rules in spec §16; L3 and L6 left as `TODO(v12-M3)`). **Re-run the
+     payment-auditor on the fixes** and close what it still finds before merging.
   3. Merge `main` into `feat/v12-procurement` (it is behind), take PR #2 out of draft and **squash-merge** it
      into `feat/v12-procurement` (this removes the WIP commit `68ca6df`).
   4. Redemption site (spec §8) as its own PR, after M2 is merged (owner decision).
@@ -206,6 +207,39 @@ Order of work: M1 (adapter + probe + process + admin Suppliers page) -> M2 (CDK,
 ops, redemption site) -> M3 (VCC, 3DS, direct top-up). Side PRs: `fix/pay-ux-reco` (USDT/Alipay pay UX,
 exclude-from-recommendations flag), `feat/totp-2fa` (optional TOTP, spec §13). Status of each: see the
 spec's §10 and the open PRs.
+**Telegram notification language (2026-11-15, PR `feat/tg-language`).** Staff alerts are English by
+default; `notifications.telegram_language` (`en` | `zh-CN`, Settings → Notifications) switches them. All
+sentences live in one catalog (`app/core/notify_tg.py` `TEXTS`; callers pass `T(key, …)` and plain strings
+only for data), rendered when the message goes out and HTML-escaped after rendering. The service-expiry
+reminder uses the same setting for Telegram (e-mail keeps the staff owner's locale). A test keeps the
+zh-CN catalog complete and its placeholders equal to English. No migration.
+**Dark mode (2026-11-15, PR `feat/dark-mode`).** Both apps follow the system theme
+(`prefers-color-scheme`, live; no manual switch, nothing stored). `followSystemTheme()` in
+`packages/shared/src/theme.ts` sets `html.dark` (+ `van-theme-dark` in the buyer app) before mount and keeps
+`theme-color` in step. Buyer app: dark values for every token in `styles/tokens.css` plus new semantic tokens
+(`--c-fill`, `--c-chip`, `--c-hero-*`, `--c-note-*`, `--c-warn/ok/bad/info-soft|ink`, …) replacing ~70
+hard-coded colours; QR codes keep a white plate. Console: Element Plus dark variables + `--a-*` dark values.
+Shared chat/UI components read `--gc-*` tokens with the old light values as fallbacks. No `color-mix()` (older
+mobile browsers). Typechecked and built by CI only; **look at both themes on the demo before production**.
+
+**Production deploy 2026-11-15: `d881dfa` (pay-page fixes #88, email redesign #3; no migration).**
+Images `ghcr.io/zucchinistockton/goods24-{api,web}:main`; c4 `.env` now points at the new owner (backup
+`.env.bak-20261115`). Rollback images kept on c4: `goods24-api:rollback-222b03b`, `goods24-web:rollback-222b03b`
+(to roll back: set `API_IMAGE` / `WEB_IMAGE` to them, `compose up -d --wait`). Deployed by hand (sync, pull,
+migrate, up) because `prod.sh deploy` logs in with `~/.secrets/ghcr_token` (dead) and then logs c4 out of its
+working registry login: fix `prod.sh` or replace the token before using it again. `prod.sh smoke`: all pass.
+`push` and `pull_request` events start CI again on the new repository (seen on #3 and on `main`).
+PR #3 security review: pass, two low findings fixed (a code can no longer reach a subject; test send brand).
+
+**Email redesign (2026-11-15, branch `feat/email-design`):** every outgoing mail (verification code, password
+reset, order paid, order delivered, and the admin test send) is now a complete HTML document with a
+plain-text part: site-name header, the admin-editable body, one focal block (the code in a large box; for
+orders a summary table — order number, item, amount, status — and a "View order" button), a safety note and a
+footer; light/dark via `prefers-color-scheme`, table layout with inline styles, no remote assets. New default
+subjects and bodies in en / zh-CN (codes are not placed in subjects). Templates stay editable in Settings;
+stored values that equal the previous built-in text follow the new defaults (`_LEGACY`), real edits are kept.
+No migration, no API change. `tests/test_email_layout.py`. Not done: a rendered preview in the console.
+
 **Production deployed 2026-11-10 16:24 UTC: `222b03b`** (v11 #82 + #83 + #84, migrations 0020–0022) from
 `5f709d3`. Pre-deploy backups (v1 script, sha256-verified off-host copies, `pg_restore --list` OK);
 rollback images `goods24-{api,web}:rollback-5f709d3`. Smoke all pass; order / payment / card / ledger

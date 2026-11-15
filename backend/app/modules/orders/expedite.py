@@ -93,7 +93,7 @@ def alert_staff(res: Resources, order: Order, count_hint: str = "") -> None:
         res,
         order,
         "order_paid",
-        ["Buyer asks to ship this manual order now"],
+        [notify_tg.T("order.expedite")],
         once_suffix=f":expedite:{count_hint}",
-        label="URGENT: buyer reminder",
+        label=notify_tg.T("label.urgent_reminder"),
     )

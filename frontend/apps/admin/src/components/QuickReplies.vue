@@ -162,7 +162,7 @@ async function remove(row: ReplyTemplate) {
 }
 .qr-label {
   font-size: 12px;
-  color: #909399;
+  color: var(--a-muted);
   margin-bottom: 2px;
 }
 .qr-row {

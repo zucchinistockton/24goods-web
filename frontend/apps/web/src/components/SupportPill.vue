@@ -31,7 +31,7 @@ const msg = computed(() => (props.showMessage ? support.status?.message : null))
   padding: 0 12px;
   border-radius: 999px;
   border: 0;
-  background: rgba(255, 255, 255, 0.85);
+  background: var(--c-veil);
   color: var(--c-text);
   font-size: 12px;
   cursor: pointer;

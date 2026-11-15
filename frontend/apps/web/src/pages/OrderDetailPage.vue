@@ -588,17 +588,17 @@ function gotCode() {
 .status-card {
   margin: 0;
   padding: 18px 16px 28px;
-  background: linear-gradient(180deg, var(--c-accent), #ffe680);
+  background: linear-gradient(180deg, var(--c-hero-1), var(--c-hero-2));
   color: var(--c-on-accent);
 }
 .status-card.st-cancelled,
 .status-card.st-expired,
 .status-card.st-refunded {
-  background: linear-gradient(180deg, #d9d9d9, #ececec);
+  background: linear-gradient(180deg, var(--c-fill-strong), var(--c-fill));
 }
 .status-card.st-completed,
 .status-card.st-delivered {
-  background: linear-gradient(180deg, #bff0c9, #e2f8e7);
+  background: linear-gradient(180deg, var(--c-ok-soft), var(--c-bg));
 }
 .status-title {
   font-size: 20px;
@@ -658,8 +658,8 @@ function gotCode() {
 .warn {
   border-radius: 8px;
   margin-bottom: 12px;
-  --van-notice-bar-background: #fff4e5;
-  --van-notice-bar-text-color: #8a4b00;
+  --van-notice-bar-background: var(--c-warn-soft);
+  --van-notice-bar-text-color: var(--c-warn-ink);
   --van-notice-bar-font-size: 12px;
   --van-notice-bar-line-height: 18px;
 }
@@ -677,8 +677,8 @@ function gotCode() {
   gap: 8px;
   padding: 8px 8px 8px 12px;
   border-radius: 10px;
-  background: #faf8f2;
-  border: 1px dashed #e7d9a8;
+  background: var(--c-note-bg);
+  border: 1px dashed var(--c-note-line);
 }
 .code {
   flex: 1;
@@ -696,7 +696,7 @@ function gotCode() {
 .att-img {
   padding: 0;
   border: 0;
-  background: #f0eee8;
+  background: var(--c-fill);
   border-radius: 10px;
   overflow: hidden;
   width: 160px;
@@ -820,8 +820,8 @@ function gotCode() {
   gap: 8px;
   padding: 8px 8px 8px 12px;
   border-radius: 10px;
-  background: #faf8f2;
-  border: 1px dashed #e7d9a8;
+  background: var(--c-note-bg);
+  border: 1px dashed var(--c-note-line);
 }
 .ac {
   flex: 1;

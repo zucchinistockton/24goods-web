@@ -50,7 +50,7 @@ const soldOut = computed(() => isSoldOut(props.product))
 .pcard-cover {
   position: relative;
   aspect-ratio: 1 / 1;
-  background: #f0eee8;
+  background: var(--c-fill);
   overflow: hidden;
 }
 .pcard-cover img {
@@ -66,7 +66,7 @@ const soldOut = computed(() => isSoldOut(props.product))
   place-items: center;
   font-size: 32px;
   font-weight: 800;
-  color: rgba(0, 0, 0, 0.12);
+  color: var(--c-fill-strong);
 }
 .pcard-soldout {
   position: absolute;

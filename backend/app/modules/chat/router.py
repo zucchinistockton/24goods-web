@@ -98,7 +98,10 @@ async def send_message(
             res,
             conv.tenant_id,
             "chat_message",
-            [f"From {notify_tg.mask_email(user.email)}", f"Type: {body.type}"],
+            [
+                notify_tg.T("chat.from", who=notify_tg.mask_email(user.email)),
+                notify_tg.T("chat.type", type=body.type),
+            ],
             link=notify_tg.admin_link(res, "inbox"),
             once=(f"chat:{conv.id}", 300),
         )

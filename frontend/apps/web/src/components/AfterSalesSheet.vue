@@ -141,7 +141,7 @@ h2 {
   align-items: center;
   padding: 0 14px;
   border-radius: 999px;
-  background: #f2f2f2;
+  background: var(--c-fill);
   font-size: 13px;
   cursor: pointer;
 }
@@ -151,7 +151,7 @@ h2 {
   pointer-events: none;
 }
 .reason.on {
-  background: #1f1f1f;
+  background: var(--c-chip);
   color: var(--c-accent);
   font-weight: 600;
 }
@@ -218,7 +218,7 @@ textarea {
   font-size: 16px;
 }
 .add {
-  border: 1px dashed #bbb;
+  border: 1px dashed var(--c-muted);
   background: none;
   font-size: 26px;
   color: var(--c-muted);

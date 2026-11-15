@@ -237,7 +237,7 @@ function openSupport() {
 
 <style scoped>
 .hero {
-  background: linear-gradient(180deg, var(--c-accent) 0%, #ffe680 70%, var(--c-bg) 100%);
+  background: linear-gradient(180deg, var(--c-hero-1) 0%, var(--c-hero-2) 70%, var(--c-bg) 100%);
   padding: calc(var(--safe-top) + 10px) 12px 6px;
 }
 .hero-top {
@@ -335,7 +335,7 @@ function openSupport() {
   padding: 0 14px;
   border-radius: 999px;
   border: 0;
-  background: rgba(255, 255, 255, 0.7);
+  background: var(--c-glass);
   color: var(--c-text-2);
   font-size: 13px;
   cursor: pointer;
@@ -347,7 +347,7 @@ function openSupport() {
   inset: -4px 0;
 }
 .chip.on {
-  background: #1f1f1f;
+  background: var(--c-chip);
   color: var(--c-accent);
   font-weight: 600;
 }
@@ -378,7 +378,7 @@ function openSupport() {
 }
 .seg {
   display: inline-flex;
-  background: #ececec;
+  background: var(--c-fill);
   border-radius: 999px;
   padding: 2px;
 }
@@ -407,7 +407,7 @@ function openSupport() {
   width: 32px;
   height: 32px;
   border-radius: 8px;
-  background: #1f1f1f;
+  background: var(--c-chip);
   color: var(--c-accent);
   display: grid;
   place-items: center;

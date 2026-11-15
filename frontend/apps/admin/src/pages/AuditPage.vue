@@ -149,7 +149,7 @@ const SEV: Record<string, 'info' | 'warning' | 'danger'> = { info: 'info', warni
 .detail {
   margin: 0;
   padding: 8px;
-  background: #f8fafc;
+  background: var(--a-hover);
   border-radius: 6px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;

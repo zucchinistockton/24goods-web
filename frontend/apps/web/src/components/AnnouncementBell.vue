@@ -33,7 +33,7 @@ const count = computed(() => (store.showBadge ? store.unread : 0))
   padding: 0 4px;
   border-radius: 8px;
   background: var(--c-danger, #ee0a24);
-  color: #fff;
+  color: var(--c-on-danger);
   font-size: 10px;
   line-height: 16px;
   text-align: center;

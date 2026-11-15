@@ -511,8 +511,10 @@ async def alert_dead_jobs(res: Resources, db: AsyncSession, tid: uuid.UUID, now:
             tid,
             "payment_review",
             [
-                f"Delivery job {topic} #{oid} failed {DEAD_JOB_ATTEMPTS} times and was dropped",
-                f"Order {str((payload or {}).get('order_id', ''))[:36]} may be undelivered",
+                notify_tg.T("job.dead", topic=topic, id=oid, n=DEAD_JOB_ATTEMPTS),
+                notify_tg.T(
+                    "job.maybe_undelivered", order=str((payload or {}).get("order_id", ""))[:36]
+                ),
             ],
             link=notify_tg.admin_link(res, "orders"),
             once=(f"dead_job:{oid}", 30 * 86400),
@@ -554,8 +556,8 @@ async def alert_procurement_jobs(
             tid,
             "payment_review",
             [
-                f"Procurement job {str(jid)[:8]} is {state} ({code or 'stuck'})",
-                f"Order {str(oid)[:36]} waits for a supplier code",
+                notify_tg.T("proc.job_stuck", job=str(jid)[:8], state=state, code=code or "stuck"),
+                notify_tg.T("proc.order_waits", order=str(oid)[:36]),
             ],
             link=notify_tg.admin_link(res, "orders"),
             once=(f"procurement_job:{jid}:{state}", 30 * 86400),
@@ -591,8 +593,8 @@ async def alert_supplier_breakers(res: Resources, db: AsyncSession, tid: uuid.UU
             tid,
             "payment_review",
             [
-                f"Supplier {code} ({env}) is paused for new orders",
-                f"Reason: {reason or 'unknown'} ({kind or 'hard'})",
+                notify_tg.T("proc.supplier_paused", code=code, env=env),
+                notify_tg.T("proc.pause_reason", reason=reason or "unknown", kind=kind or "hard"),
             ],
             link=notify_tg.admin_link(res, "orders"),
             once=(f"supplier_breaker:{sid}:{int(at.timestamp())}", 30 * 86400),
@@ -648,8 +650,8 @@ async def alert_stale_unknown(
                 tid,
                 "payment_review",
                 [
-                    f"Payment attempt for {no} has been unresolved for 24 h",
-                    "Check the gateway console",
+                    notify_tg.T("pay.stale", no=no),
+                    notify_tg.T("pay.check_gateway"),
                 ],
                 link=notify_tg.admin_link(res, "orders"),
                 once=(f"stale_unknown:{no}", 7 * 86400),
