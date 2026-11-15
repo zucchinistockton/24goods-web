@@ -334,7 +334,10 @@ def render_template(
     if "order_url" in values:
         clean["order_url"] = str(values["order_url"]).strip()
     body_tpl = tpl["body_i18n"][loc]
-    subject = _substitute(tpl["subject_i18n"][loc], clean, escape=False)
+    # a code never goes into a subject (lock-screen previews), also when an edited template asks
+    no_code = {k: v for k, v in clean.items() if k != "code"}
+    subject = _substitute(tpl["subject_i18n"][loc].replace("{code}", ""), no_code, escape=False)
+    subject = " ".join(subject.split())
     text = _text(kind, loc, clean, _substitute(body_tpl, clean, escape=False), body_tpl)
     html = _layout(kind, loc, clean, subject, render(_substitute(body_tpl, clean, escape=True)))
     return subject, text, html

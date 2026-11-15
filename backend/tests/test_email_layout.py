@@ -64,3 +64,11 @@ def test_legacy_stored_defaults_follow_the_new_text() -> None:
     assert got["subject_i18n"]["en"] == DEFAULTS["order_paid"]["subject_i18n"]["en"]
     assert got["subject_i18n"]["zh-CN"] == "自定义主题 {order_no}"
     assert got["body_i18n"] == DEFAULTS["order_paid"]["body_i18n"]
+
+
+def test_edited_subject_cannot_carry_the_code() -> None:
+    custom = {"subject_i18n": {"en": "Code {code} for {site_name}"}}
+    ts = {"email_templates": {"verify_code": custom}}
+    subject, text, _ = render_template(ts, "verify_code", "en", VALUES)
+    assert "123456" not in subject and "{code}" not in subject
+    assert "123456" in text
