@@ -199,6 +199,12 @@ async function toggleSource(row: ProcSource, v: boolean) {
     Object.assign(row, await api.sources.update(row.id, { enabled: v }))
   } catch (e) {
     fail(e)
+    // a source without a cost cannot be switched on: open the form on the missing field
+    if (isApiError(e) && e.code === 'cost_required') {
+      openSource(row)
+      srcDlg.enabled = true
+      srcErr.value = { cost: t('procurement.err.cost_required') }
+    }
   }
 }
 async function check(row: ProcSource) {
@@ -265,7 +271,8 @@ async function saveSource() {
     toastOk(t('procurement.done'))
     void loadSources()
   } catch (err) {
-    if (isApiError(err) && te(`procurement.err.${err.code}`)) srcErr.value = { plan: t(`procurement.err.${err.code}`) }
+    if (isApiError(err) && err.code === 'cost_required') srcErr.value = { cost: t('procurement.err.cost_required') }
+    else if (isApiError(err) && te(`procurement.err.${err.code}`)) srcErr.value = { plan: t(`procurement.err.${err.code}`) }
     else toastError(err)
   } finally {
     srcDlg.saving = false
@@ -520,6 +527,7 @@ onMounted(() => jobs.load())
             <el-button v-if="can('void')" type="danger" plain @click="run('void')">{{ t('procurement.act.void') }}</el-button>
           </div>
           <el-alert v-if="detail.charged_possible && detail.state !== 'fulfilled'" type="warning" :closable="false" show-icon :title="t('procurement.job.maybeCharged')" class="gap" />
+          <el-alert v-if="detail.recovering" type="info" :closable="false" show-icon :title="t('procurement.job.recovering')" class="gap" />
           <el-descriptions :column="1" border size="small" class="gap">
             <el-descriptions-item :label="t('procurement.job.state')">
               <el-tag size="small" :type="stateType(detail.state)">{{ stateLabel(detail.state) }}</el-tag>
@@ -564,6 +572,7 @@ onMounted(() => jobs.load())
     <el-dialog v-model="dlg.open" :title="t(`procurement.act.${dlg.action}`)" width="min(520px, 96vw)" destroy-on-close @closed="dlg.code = ''">
       <el-form label-position="top" @submit.prevent="submitDlg">
         <p class="muted small">{{ t(`procurement.hint.${dlg.action}`) }}</p>
+        <el-alert v-if="dlg.action === 'fulfil' && detail?.charged_possible" type="warning" :closable="false" show-icon :title="t('procurement.hint.fulfilMaybeSent')" class="warnbox" />
         <el-form-item v-if="dlg.action === 'fulfil'" :label="t('procurement.job.pasteCode')">
           <el-input v-model="dlg.code" type="textarea" :rows="3" maxlength="512" class="mono" spellcheck="false" autocomplete="off" />
         </el-form-item>
@@ -633,6 +642,9 @@ onMounted(() => jobs.load())
 }
 .attn {
   font-weight: 600;
+}
+.warnbox {
+  margin-bottom: 12px;
 }
 .h {
   font-size: 14px;

@@ -76,6 +76,10 @@ export interface ProcJob {
   next_poll_at: string | null
   manual_by: string | null
   charged_possible: boolean
+  /** a request may have reached the supplier (drives charged_possible) */
+  maybe_sent?: boolean
+  /** a one-off same-key query is pending to find and disable a possibly issued code */
+  recovering?: boolean
   actions: JobAction[]
   created_at: string
   updated_at: string
