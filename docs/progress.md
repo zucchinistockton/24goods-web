@@ -6,6 +6,32 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 **Hand-off 2026-11-15 (session ended early on quota; read this block first).**
 
+- **START HERE (next session).** Work on `feat/v12-procurement-m2` (worktree
+  `.claude/worktrees/agent-af3aa371765135692`, draft PR #2, CI green at `d043908`). Order: (1) finish M2 per
+  spec §10 — check each item against the code first: admin-password confirmation for production suppliers,
+  procurement + `mock_zovocard` in `scripts/dev.sh` and the e2e smoke, manual fulfil/void/switch, cost report,
+  redemption site; (2) while the sandbox lives (until 2026-11-18 10:57) settle the [I] items of §14.3 and get
+  one vendor-sent webhook (redeem a sandbox CDK); (3) security-reviewer + payment-auditor on M2, squash the
+  WIP commit, merge into `feat/v12-procurement`; (4) security-reviewer on PR #3 (email redesign), merge;
+  (5) own PRs: dark mode, Telegram language switch, TOTP 2FA. Local test loop without the full dev stack:
+  `docker start kesiv-dev-pg kesiv-dev-redis`, then pytest with `TEST_DATABASE_URL` on port 55440 and
+  `TEST_REDIS_URL` on 56390 (passwords in `.dev/.secrets`), under `flock .dev/heavy.lock`; stop the two
+  containers afterwards. CI on the new repo: `gh workflow run CI --ref <branch>`.
+- **Demo runs the M2 branch (2026-11-15):** `/opt/24goods-demo` is on local branch `demo-m2`
+  (= `origin/feat/v12-procurement-m2` at `d043908`, remote switched to the new repo), images
+  `goods24-{api,web}:m2-demo` loaded from the CI artifacts of run 43674783330 (`gh run download <run> -n
+  image-api -n image-web`, `docker load`, no local build), migration `0024` applied, `deploy/.env` backup
+  `.env.bak-20261115`. Added: `APP_DB_PROCUREMENT_PASSWORD` (migrate.env) and
+  `APP_ZOVOCARD_SANDBOX_WEBHOOK_SECRET` (api.env); a `zovocard` sandbox supplier row was inserted by SQL. The
+  procurement process is **not** running there (no `env/procurement.env`, no Redis ACL user), so stored
+  events stay queued. Webhook verified through Cloudflare at `https://demo.kesiv.com/api/v1/webhooks/zovocard`:
+  signed -> 200 and stored once, duplicate -> 200 and not stored again, forged -> 401. That was a self-signed
+  test event (`selftest:20261115-1`); a vendor-sent event has not been observed yet. To return the demo to
+  `main`: restore `.env`, check out `main`, load or pull the `main` images.
+- **Production pulls:** `gh auth token | docker login ghcr.io -u zucchinistockton --password-stdin` on c4 works
+  only if that token has `read:packages` (`gh auth refresh -h github.com -s read:packages` on c4). Still no
+  image under the new owner until a push-triggered run on `main` publishes one.
+
 - **Repository moved (2026-11-15):** the old account `arifulcrypto` is suspended (appeal filed, answer
   expected in 3–5 business days). Development continues at **`zucchinistockton/24goods-web`** (private; remote
   `origin`; the dead remote is kept as `old`). Pushed: `main` (`19c7625`), `feat/v12-procurement`,

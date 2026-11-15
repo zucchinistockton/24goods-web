@@ -295,9 +295,10 @@ connection; nothing is deployed there (AGENTS.md §1.7).
   void still answers from the cache, so it reports the issue, not the current CDK status.
 - Issue cost is reported as 0.00 USD: the charge happens at redemption, so the breaker reserve needs the
   per-plan redemption cost (§14.3, still open).
-- Not done: webhook delivery. The console callback is `https://demo.kesiv.com/api/v1/webhooks/zovocard`, but
-  the demo stack is stopped, it runs `main` (the route exists only on the M2 branch), and the sandbox
-  webhook signing secret has not been provided. Polling does not depend on it.
+- Webhook endpoint on the demo (M2 branch deployed there, sandbox signing secret configured): signed event
+  -> 200 and stored once; duplicate -> 200, not stored again; forged signature -> 401. Self-signed test event
+  only; a vendor-sent event is still to be observed (redeem a sandbox CDK), and the procurement process is
+  not running on the demo, so events are stored but not consumed there.
 
 ## 13. Added scope (owner, 2026-11-14)
 
