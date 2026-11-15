@@ -14,7 +14,7 @@ import pytest
 from sqlalchemy import text
 
 from app.devtools.mock_zovocard import OK_KEY, MockZovo, create_mock_zovocard
-from tests.conftest import ALEMBIC_INI, OWNER_PW, _with_db
+from tests.conftest import ALEMBIC_INI, OWNER_PW, PASSWORD, _with_db
 
 URL = "/api/v1/admin/suppliers"
 TOKEN = secrets.token_urlsafe(32)
@@ -111,7 +111,7 @@ async def test_create_list_update_audit(env):
     # same code + env again: conflict; another env is a separate account
     dup = await admin.post(URL, json={"code": "zovocard", "adapter": "zovocard", "label": "x"})
     assert dup.status_code == 409
-    await _create(admin, env="production", label="Live")
+    await _create(admin, env="production", label="Live", current_password=PASSWORD)
     r = await admin.patch(f"{URL}/{row['id']}", json={"enabled": True, "label": "Sandbox"})
     assert r.status_code == 200 and r.json()["enabled"] is True and r.json()["label"] == "Sandbox"
     actions = await env.scalar(
@@ -139,16 +139,49 @@ async def test_validation_and_production_lock(env):
             "label": "x",
             "env": "production",
             "enabled": True,
+            "current_password": PASSWORD,
         },
     )
     assert r.status_code == 409 and r.json()["error"]["code"] == "production_locked"
-    row = await _create(admin, env="production")
+    row = await _create(admin, env="production", current_password=PASSWORD)
     r = await admin.patch(f"{URL}/{row['id']}", json={"enabled": True})
     assert r.status_code == 409
     sandbox = await _create(admin, code="zovocard_other")
     await admin.patch(f"{URL}/{sandbox['id']}", json={"enabled": True})
-    r = await admin.patch(f"{URL}/{sandbox['id']}", json={"env": "production"})
+    r = await admin.patch(
+        f"{URL}/{sandbox['id']}", json={"env": "production", "current_password": PASSWORD}
+    )
     assert r.status_code == 409  # enabled + production through the env switch, too
+
+
+async def test_production_supplier_needs_current_password(env):
+    admin, _ = await env.login("admin")
+    base = {"code": "zovocard", "adapter": "zovocard", "label": "Live", "env": "production"}
+    for body in (base, {**base, "current_password": "incorrect"}):
+        r = await admin.post(URL, json=body)
+        assert r.status_code == 403 and "incorrect" not in r.text
+    assert (await admin.get(URL)).json()["items"] == []
+    row = await _create(admin, env="production", current_password=PASSWORD)
+    assert "current_password" not in row
+    # sandbox needs no password; switching one to production does
+    sb = await _create(admin, code="zovocard_two")
+    r = await admin.patch(f"{URL}/{sb['id']}", json={"env": "production"})
+    assert r.status_code == 403
+    r = await admin.patch(f"{URL}/{sb['id']}", json={"env": "production", "current_password": "x"})
+    assert r.status_code == 403
+    assert (await admin.get(URL)).json()["items"][0]["env"] in ("sandbox", "production")
+    r = await admin.patch(
+        f"{URL}/{sb['id']}", json={"env": "production", "current_password": PASSWORD}
+    )
+    assert r.status_code == 200 and r.json()["env"] == "production"
+    # an unrelated change to a production row needs no password; the password is never audited
+    assert (await admin.patch(f"{URL}/{sb['id']}", json={"label": "L"})).status_code == 200
+    n = await env.scalar(
+        "SELECT count(*) FROM audit_log WHERE action LIKE 'supplier.%' "
+        "AND (after::text LIKE :p OR detail::text LIKE :p)",
+        p=f"%{PASSWORD}%",
+    )
+    assert n == 0
 
 
 async def test_roles_and_cross_tenant_access(env, proc):
@@ -241,7 +274,7 @@ async def test_probe_reports_vendor_failures(env, proc):
     assert report["errors"] == ["ip_not_allowlisted"]
     assert r.json()["supplier"]["health"] == "down"
     # an account without secrets in the procurement env
-    prod = await _create(admin, env="production")
+    prod = await _create(admin, env="production", current_password=PASSWORD)
     r = await admin.post(f"{URL}/{prod['id']}/probe")
     assert r.json()["report"]["errors"] == ["not_configured"]
 

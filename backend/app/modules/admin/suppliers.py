@@ -32,6 +32,7 @@ from app.core.errors import (
 )
 from app.core.ratelimit import enforce
 from app.core.resources import Resources
+from app.core.security import verify_password
 from app.models import SupplierAccount, Tenant, User
 from app.modules.admin.payment_gateways import session_admin
 from app.suppliers.base import clean_detail, supplier_code_problem
@@ -52,6 +53,8 @@ class SupplierIn(BaseModel):
     priority: int = Field(default=100, ge=0, le=10000)
     min_spendable: str = Field(default="0", pattern=AMOUNT_RE)
     enabled: bool = False
+    # required when env=production (review-v12 §10 M2); ignored for sandbox
+    current_password: str | None = Field(default=None, min_length=1, max_length=128, repr=False)
 
 
 class SupplierPatch(BaseModel):
@@ -60,6 +63,7 @@ class SupplierPatch(BaseModel):
     priority: int | None = Field(default=None, ge=0, le=10000)
     min_spendable: str | None = Field(default=None, pattern=AMOUNT_RE)
     enabled: bool | None = None
+    current_password: str | None = Field(default=None, min_length=1, max_length=128, repr=False)
 
 
 def _iso(v: Any) -> str | None:
@@ -125,6 +129,13 @@ def _check_production(res: Resources, env: str, enabled: bool) -> None:
         )
 
 
+async def _require_password(admin: User, password: str | None) -> None:
+    """Same check and error as payment gateways: fresh proof for anything that points real money
+    at a production vendor account."""
+    if not password or not (await verify_password(admin.pw_hash, password))[0]:
+        raise Forbidden("Current password required")
+
+
 async def _get(db: AsyncSession, tenant_id: uuid.UUID, supplier_id: uuid.UUID) -> SupplierAccount:
     row = await db.scalar(
         select(SupplierAccount).where(
@@ -173,6 +184,8 @@ async def create_supplier(
             code="supplier_code",
             extra={"reason": problem},
         )
+    if body.env == "production":
+        await _require_password(admin, body.current_password)
     _check_production(res, body.env, body.enabled)
     row = SupplierAccount(
         id=uuid.uuid4(),
@@ -221,6 +234,9 @@ async def update_supplier(
     row = await _get(db, admin.tenant_id, supplier_id)
     before = _snap(row)
     patch = body.model_dump(exclude_unset=True, exclude_none=True)
+    patch.pop("current_password", None)
+    if patch.get("env") == "production" and row.env != "production":
+        await _require_password(admin, body.current_password)
     env = patch.get("env", row.env)
     enabled = patch.get("enabled", row.enabled)
     _check_production(res, env, enabled)
