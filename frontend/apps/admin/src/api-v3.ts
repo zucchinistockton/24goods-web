@@ -122,6 +122,8 @@ export interface AfterSalesActionBody {
   delivery_text?: string
   /** refund: how the money was returned (provider refund id, tx hash, transfer note); 3-200 chars */
   reference?: string
+  /** refund of an order whose subscription was applied to the buyer's account: cannot be undone */
+  acknowledge_irreversible?: boolean
 }
 
 // ---------------- orders (§6, §7) ----------------

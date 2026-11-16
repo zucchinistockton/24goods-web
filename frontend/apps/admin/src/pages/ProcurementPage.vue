@@ -107,11 +107,13 @@ async function submitDlg() {
   if (!j || acting.value) return
   const reason = dlg.reason.trim()
   const code = dlg.code.trim()
-  if (dlg.action === 'fulfil' && !code) return void (dlg.error = t('procurement.err.codeRequired'))
+  const direct = j.kind === 'direct'
+  if (dlg.action === 'fulfil' && !direct && !code) return void (dlg.error = t('procurement.err.codeRequired'))
+  if (dlg.action === 'fulfil' && direct && reason.length < 12) return void (dlg.error = t('procurement.err.reason_required'))
   if (dlg.action !== 'fulfil' && reason.length < 3) return void (dlg.error = t('procurement.err.reasonRequired'))
   acting.value = dlg.action
   try {
-    if (dlg.action === 'fulfil') await api.jobs.fulfil(j.id, code, reason, j.kind === 'vcc' ? dlg.cardId.trim() || undefined : undefined)
+    if (dlg.action === 'fulfil') await api.jobs.fulfil(j.id, direct ? '' : code, reason, j.kind === 'vcc' ? dlg.cardId.trim() || undefined : undefined)
     else if (dlg.action === 'void') await api.jobs.void(j.id, reason)
     else await api.jobs.fail(j.id, reason)
     dlg.code = '' // the pasted code does not stay in memory after it was sent
@@ -145,7 +147,7 @@ async function searchProducts(q = '') {
   searching.value = true
   try {
     const r = await apiV3.products.list({ q: q || undefined, page: 1, page_size: 50 })
-    const ups = r.items.filter((p) => p.delivery_mode === 'upstream_cdk' || p.delivery_mode === 'upstream_vcc')
+    const ups = r.items.filter((p) => p.delivery_mode === 'upstream_cdk' || p.delivery_mode === 'upstream_vcc' || p.delivery_mode === 'upstream_direct')
     const keep = product.value && !ups.some((p) => p.id === product.value!.id) ? [product.value] : []
     products.value = [...keep, ...ups]
   } catch (e) {
@@ -226,10 +228,14 @@ async function check(row: ProcSource) {
 
 /** A card product's sources take a card product code and amounts instead of a plan. */
 const isCard = computed(() => product.value?.delivery_mode === 'upstream_vcc')
+/** A direct product's sources name the supplier product, the plan and OUR funding card. */
+const isDirect = computed(() => product.value?.delivery_mode === 'upstream_direct')
+const CURRENCY_RE = /^[A-Z]{3}$/
+const CARD_ID_RE = /^[1-9]\d{0,11}$/
 const CARD_CODE_RE = /^[A-Za-z0-9_-]{2,32}$/
 const AMOUNT_RE = /^\d{1,6}(\.\d{1,2})?$/
 const NAME_RE = /^[A-Za-z]{1,32}$/
-const srcDlg = reactive({ open: false, saving: false, id: null as string | null, supplier_id: '', plan: '', country: '', cost: '', priority: 100, enabled: false, product_code: '', init_amount: '', recharge_amount: '', first_name: '', last_name: '' })
+const srcDlg = reactive({ open: false, saving: false, id: null as string | null, supplier_id: '', plan: '', country: '', cost: '', priority: 100, enabled: false, product_code: '', init_amount: '', recharge_amount: '', first_name: '', last_name: '', direct_product: 'gpt', funding_card: '', pay_currency: '' })
 const srcErr = ref<Record<string, string>>({})
 function openSource(row: ProcSource | null) {
   Object.assign(srcDlg, {
@@ -247,6 +253,9 @@ function openSource(row: ProcSource | null) {
     recharge_amount: row?.params.recharge_amount ?? '',
     first_name: row?.params.first_name ?? '',
     last_name: row?.params.last_name ?? '',
+    direct_product: row?.params.product ?? 'gpt',
+    funding_card: row?.params.card_id != null ? String(row.params.card_id) : '',
+    pay_currency: row?.params.payment_currency ?? '',
   })
   srcErr.value = {}
 }
@@ -274,13 +283,27 @@ async function saveSource() {
     if (!PLAN_RE.test(plan)) e.plan = t('procurement.err.plan')
     if (country && !COUNTRY_RE.test(country)) e.country = t('procurement.err.country')
   }
+  const fundingCard = srcDlg.funding_card.trim()
+  const payCurrency = srcDlg.pay_currency.trim().toUpperCase()
+  if (isDirect.value) {
+    if (!CARD_ID_RE.test(fundingCard)) e.funding_card = t('procurement.err.fundingCard')
+    if (payCurrency && !CURRENCY_RE.test(payCurrency)) e.pay_currency = t('procurement.err.currency')
+  }
   if (cost && !COST_RE.test(cost)) e.cost = t('procurement.err.cost')
   srcErr.value = e
   if (Object.keys(e).length) return
   // only the fields that were filled in: the server validates and applies its defaults
   const params: SourceParams = isCard.value
     ? Object.fromEntries(Object.entries(card).filter(([, v]) => v))
-    : country
+    : isDirect.value
+      ? {
+          product: srcDlg.direct_product,
+          plan,
+          card_id: Number(fundingCard),
+          ...(country ? { payment_country: country } : {}),
+          ...(payCurrency ? { payment_currency: payCurrency } : {}),
+        }
+      : country
       ? { plan, payment_country: country }
       : { plan }
   srcDlg.saving = true
@@ -304,7 +327,7 @@ async function saveSource() {
   } catch (err) {
     if (isApiError(err) && err.code === 'cost_required') srcErr.value = { cost: t('procurement.err.cost_required') }
     else if (isApiError(err) && te(`procurement.err.${err.code}`))
-      srcErr.value = { [isCard.value ? 'product_code' : 'plan']: t(`procurement.err.${err.code}`) }
+      srcErr.value = { [isCard.value ? 'product_code' : err.code.startsWith('funding_card') ? 'funding_card' : 'plan']: t(`procurement.err.${err.code}`) }
     else toastError(err)
   } finally {
     srcDlg.saving = false
@@ -454,7 +477,9 @@ onMounted(() => jobs.load())
                   <span class="muted small"> · {{ row.params.init_amount }}<template v-if="row.params.recharge_amount"> + {{ row.params.recharge_amount }}</template> USD</span>
                 </template>
                 <template v-else>
+                  <span v-if="row.kind === 'direct'" class="mono">{{ row.params.product }}/</span>
                   <span class="mono">{{ row.params.plan }}</span>
+                  <span v-if="row.kind === 'direct' && row.params.card_id" class="muted small"> · {{ t('procurement.src.fundingCardShort', { id: row.params.card_id }) }}</span>
                   <span v-if="row.params.payment_country" class="muted small"> · {{ row.params.payment_country }}</span>
                 </template>
               </template>
@@ -564,7 +589,7 @@ onMounted(() => jobs.load())
             <el-button v-if="can('fail')" type="danger" plain @click="run('fail')">{{ t('procurement.act.fail') }}</el-button>
             <el-button v-if="can('void')" type="danger" plain @click="run('void')">{{ t('procurement.act.void') }}</el-button>
           </div>
-          <el-alert v-if="detail.charged_possible && detail.state !== 'fulfilled'" type="warning" :closable="false" show-icon :title="t('procurement.job.maybeCharged')" class="gap" />
+          <el-alert v-if="detail.charged_possible && !['fulfilled', 'voided'].includes(detail.state)" type="warning" :closable="false" show-icon :title="t('procurement.job.maybeCharged')" class="gap" />
           <el-alert v-if="detail.recovering" type="info" :closable="false" show-icon :title="t('procurement.job.recovering')" class="gap" />
           <el-descriptions :column="1" border size="small" class="gap">
             <el-descriptions-item :label="t('procurement.job.state')">
@@ -579,6 +604,8 @@ onMounted(() => jobs.load())
             <el-descriptions-item :label="t('procurement.job.upstream')">
               <span class="mono">{{ detail.upstream_ref ?? '—' }}</span>
               <span v-if="detail.card_mask" class="mono muted"> · {{ detail.card_mask }}</span>
+              <span v-if="detail.account_mask" class="muted"> · {{ detail.account_mask }}</span>
+              <span v-if="detail.kind === 'direct' && detail.plan" class="mono muted"> · {{ detail.plan }}</span>
               <span v-if="detail.upstream_status" class="muted small"> · {{ detail.upstream_status }}</span>
             </el-descriptions-item>
             <el-descriptions-item :label="t('procurement.job.code')">{{ detail.has_code ? t('procurement.job.codeStored') : t('procurement.job.codeNone') }}</el-descriptions-item>
@@ -612,14 +639,15 @@ onMounted(() => jobs.load())
       <el-form label-position="top" @submit.prevent="submitDlg">
         <p class="muted small">{{ t(`procurement.hint.${dlg.action}`) }}</p>
         <el-alert v-if="dlg.action === 'fulfil' && detail?.charged_possible" type="warning" :closable="false" show-icon :title="t('procurement.hint.fulfilMaybeSent')" class="warnbox" />
-        <el-form-item v-if="dlg.action === 'fulfil'" :label="detail?.kind === 'vcc' ? t('procurement.job.pasteCard') : t('procurement.job.pasteCode')">
+        <p v-if="dlg.action === 'fulfil' && detail?.kind === 'direct'" class="muted small">{{ t('procurement.hint.fulfilDirect') }}</p>
+        <el-form-item v-if="dlg.action === 'fulfil' && detail?.kind !== 'direct'" :label="detail?.kind === 'vcc' ? t('procurement.job.pasteCard') : t('procurement.job.pasteCode')">
           <el-input v-model="dlg.code" type="textarea" :rows="3" maxlength="512" class="mono" spellcheck="false" autocomplete="off" :placeholder="detail?.kind === 'vcc' ? '4111111111111111----12/29----123' : ''" />
           <div v-if="detail?.kind === 'vcc'" class="muted small">{{ t('procurement.hint.pasteCard') }}</div>
         </el-form-item>
         <el-form-item v-if="dlg.action === 'fulfil' && detail?.kind === 'vcc'" :label="t('procurement.job.cardIdOptional')">
           <el-input v-model="dlg.cardId" maxlength="20" inputmode="numeric" class="mono" autocomplete="off" />
         </el-form-item>
-        <el-form-item :label="dlg.action === 'fulfil' ? t('procurement.job.reasonOptional') : t('procurement.job.reason')" :error="dlg.error">
+        <el-form-item :label="dlg.action === 'fulfil' && detail?.kind !== 'direct' ? t('procurement.job.reasonOptional') : t('procurement.job.reason')" :error="dlg.error">
           <el-input v-model="dlg.reason" maxlength="200" />
         </el-form-item>
       </el-form>
@@ -656,6 +684,19 @@ onMounted(() => jobs.load())
             </el-form-item>
           </template>
           <template v-else>
+            <el-form-item v-if="isDirect" :label="t('procurement.src.directProduct')">
+              <el-select v-model="srcDlg.direct_product" style="width: 100%">
+                <el-option value="gpt" label="ChatGPT" />
+                <el-option value="claude" label="Claude" />
+                <el-option value="grok" label="Grok" />
+              </el-select>
+            </el-form-item>
+            <el-form-item v-if="isDirect" :label="t('procurement.src.fundingCard')" :error="srcErr.funding_card">
+              <el-input v-model="srcDlg.funding_card" maxlength="12" inputmode="numeric" class="mono" autocomplete="off" />
+            </el-form-item>
+            <el-form-item v-if="isDirect" :label="t('procurement.src.payCurrency')" :error="srcErr.pay_currency">
+              <el-input v-model="srcDlg.pay_currency" maxlength="3" class="mono" placeholder="USD" />
+            </el-form-item>
             <el-form-item :label="t('procurement.src.plan')" :error="srcErr.plan">
               <el-input v-model="srcDlg.plan" maxlength="48" class="mono" spellcheck="false" placeholder="plus" />
             </el-form-item>
@@ -668,7 +709,7 @@ onMounted(() => jobs.load())
           </el-form-item>
           <el-form-item :label="t('suppliers.f.priority')"><el-input-number v-model="srcDlg.priority" :min="0" :max="10000" /></el-form-item>
         </div>
-        <div class="muted small">{{ isCard ? t('procurement.src.cardHint') : t('procurement.src.costHint') }}</div>
+        <div class="muted small">{{ isCard ? t('procurement.src.cardHint') : isDirect ? t('procurement.src.directHint') : t('procurement.src.costHint') }}</div>
         <el-form-item :label="t('suppliers.f.enabled')" class="gap"><el-switch v-model="srcDlg.enabled" /></el-form-item>
       </el-form>
       <template #footer>

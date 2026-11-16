@@ -80,6 +80,26 @@ export const API_ERROR_CODES = [
   'two_factor_expired',
   'two_factor_enabled',
   'two_factor_not_enabled',
+  // v12 M3 direct orders
+  'session_required',
+  'direct_qty_one',
+  'session_too_large',
+  'session_too_short',
+  'session_invalid_format',
+  'session_not_json',
+  'session_access_token_only',
+  'session_missing_session_token',
+  'session_missing_access_token',
+  'session_malformed_access_token',
+  'session_expired',
+  'session_missing_account',
+  'session_account_mismatch',
+  'session_other_account',
+  'session_exists',
+  'direct_unavailable',
+  'direct_buy_now_only',
+  'direct_not_quotable',
+  'direct_not_on_storefront',
 ] as const
 export const CLIENT_ERROR_CODES = ['network', 'server_error', 'timeout', 'unknown'] as const
 export type ContractErrorCode = (typeof API_ERROR_CODES)[number]

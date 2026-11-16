@@ -15,6 +15,7 @@ import { api } from '../api'
 import { useAuthStore } from '../stores/auth'
 import { useSiteStore } from '../stores/site'
 import BuyerInputSheet from './BuyerInputSheet.vue'
+import DirectSessionSheet from './DirectSessionSheet.vue'
 import FeeLines from './FeeLines.vue'
 import ManualPromise from './ManualPromise.vue'
 import PromoField, { type AppliedPromo } from './PromoField.vue'
@@ -47,6 +48,9 @@ const showCreds = ref(false)
 const showInput = ref(false)
 /** The order-information value collected by the §4 popup for this purchase. */
 const inputValue = ref<string | null>(null)
+/** upstream_direct: the pasted account session, in memory only until the order request is sent */
+const sessionValue = ref<string | null>(null)
+const showSession = ref(false)
 
 /**
  * The order-information form config. A summary without the field (an older cached list, a chat
@@ -85,7 +89,9 @@ watch(siteAccessCleared, () => {
 const soldOut = computed(() => (p.value ? isSoldOut(p.value) : false))
 const canSubmit = computed(() => configKnown.value && !soldOut.value && (!hasVariants(base.value) || variant.value !== null))
 const price = computed(() => (p.value ? moneyParts(p.value.price, p.value.currency, locale.value) : null))
-const maxQty = computed(() => (p.value ? maxOrderQty(p.value) : 1))
+/** A direct product is applied to ONE account: one unit, and the account session comes with the order. */
+const isDirect = computed(() => p.value?.delivery_mode === 'upstream_direct')
+const maxQty = computed(() => (p.value && !isDirect.value ? maxOrderQty(p.value) : 1))
 const subtotal = computed(() => (p.value ? (multiplyAmount(p.value.price, qty.value) ?? p.value.price) : '0.00'))
 const discountMinor = computed(() => (promo.value && !promo.value.stale ? promo.value.discount_minor : 0))
 const bd = computed(() => feeBreakdown(subtotal.value, discountMinor.value, site.permille))
@@ -101,6 +107,7 @@ watch(
       variantSel.value = findVariant(props.product, props.variantId ?? null)?.id ?? defaultVariantId(props.product?.variants)
       qty.value = Math.min(Math.max(1, Math.floor(props.qty ?? 1)), maxQty.value)
       inputValue.value = null
+      sessionValue.value = null
       promo.value = null
       void site.loadChannels()
       void resolveConfig()
@@ -134,7 +141,9 @@ async function placeOrder() {
   submitting.value = true
   try {
     // Price is decided by the server; only product id + qty (+ attribution tag) are sent.
-    const order = await api.orders.create(x.id, qty.value, props.src ?? recalledSrc(), inputValue.value, promo.value?.code, variant.value?.id)
+    const session = sessionValue.value
+    sessionValue.value = null // one use: a failed order asks for it again
+    const order = await api.orders.create(x.id, qty.value, props.src ?? recalledSrc(), inputValue.value, promo.value?.code, variant.value?.id, session)
     stashAccessCode(order.id, order.access_code)
     emit('update:show', false)
     await router.push(`/orders/${encodeURIComponent(order.id)}`)
@@ -153,13 +162,23 @@ function begin(guest: boolean) {
     showInput.value = true
     return
   }
+  if (isDirect.value && sessionValue.value === null) {
+    pendingGuest = guest
+    showSession.value = true
+    return
+  }
   void (guest ? continueAsGuest() : placeOrder())
+}
+function sessionConfirmed(v: string) {
+  sessionValue.value = v
+  showSession.value = false
+  void (pendingGuest ? continueAsGuest() : placeOrder())
 }
 let pendingGuest = false
 function inputConfirmed(v: string) {
   inputValue.value = v
   showInput.value = false
-  void (pendingGuest ? continueAsGuest() : placeOrder())
+  begin(pendingGuest) // a direct product asks for the account session next
 }
 
 async function continueAsGuest() {
@@ -188,7 +207,7 @@ async function credsDone() {
 
 <template>
   <van-popup
-    :show="show && !showCreds && !showInput"
+    :show="show && !showCreds && !showInput && !showSession"
     position="bottom"
     round
     closeable
@@ -216,6 +235,7 @@ async function credsDone() {
         </div>
         <van-stepper v-model="qty" :min="1" :max="maxQty" integer :input-width="48" :button-size="36" />
       </div>
+      <p v-if="isDirect" class="muted small sheet-note">{{ t('direct.sheetNote') }}</p>
       <ManualPromise v-if="p.delivery_mode === 'manual'" class="sheet-manual" :eta="p.delivery_eta_hours" compact />
       <p v-if="soldOut" class="muted small sheet-note" role="alert">{{ t('product.outOfStock') }}</p>
       <div v-else-if="resolveFailed" class="sheet-note sheet-retry" role="alert">
@@ -260,6 +280,7 @@ async function credsDone() {
       </template>
     </div>
   </van-popup>
+  <DirectSessionSheet v-model:show="showSession" :product-id="p?.id ?? null" :known="p?.direct_product" @confirm="sessionConfirmed" />
   <BuyerInputSheet v-model:show="showInput" :config="p?.buyer_input ?? null" :initial="inputValue" @confirm="inputConfirmed" />
   <CredentialsSheet :show="showCreds" :credentials="creds" @done="credsDone" />
 </template>
