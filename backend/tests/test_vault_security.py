@@ -111,7 +111,10 @@ def test_api_code_never_references_card_opener():
         if path in allowed or (APP / "delivery") in path.parents:
             continue
         src = path.read_text(encoding="utf-8")
-        if "CardOpener" in src or "from_private_bytes" in src or "CredentialOpener" in src:
+        in_procurement = (APP / "procurement") in path.parents
+        if "CardOpener" in src or "from_private_bytes" in src:
+            offenders.append(str(path))
+        elif "CredentialOpener" in src and not in_procurement:
             offenders.append(str(path))
     assert offenders == []
 

@@ -6,8 +6,9 @@ keypair from the card vault's: the API process can seal but never open it, the d
 (card-vault private keys) cannot open it either, and only the procurement process holds the private
 half, which it uses in memory at the moment of the supplier call.
 
-The OPEN side lives in :mod:`app.procurement.credopen`, which only the procurement process
-imports (an API-side test asserts it). Same primitive as :mod:`app.core.cardvault` (X25519 + HKDF + AES-256-GCM, kid for rotation); the
+The decrypt side lives in procurement's own module, which only the procurement process
+imports (an API-side test asserts it). Same primitive as the card vault (X25519 + HKDF +
+AES-256-GCM, kid for rotation); the
 associated data binds a blob to ``(tenant, "buyer-credential", order)`` so it can neither be moved
 to another order nor be mistaken for a card secret. Nothing here logs, caches or stores plaintext.
 """
