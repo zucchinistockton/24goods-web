@@ -442,6 +442,7 @@ async def buy_now(
     variant_id: uuid.UUID | None = None,
     session: str | None = None,
     cred_sealer: CredentialSealer | None = None,
+    redis: Any = None,
 ) -> tuple[Order, Message | None]:
     product = await get_active_product(db, product_id)
     pricer = await Pricer.load(db, storefront)
@@ -455,11 +456,19 @@ async def buy_now(
     subtotal = unit * qty
     value = normalize_value(product.buyer_input, buyer_input)
     direct = None
+    if product.delivery_mode == "upstream_direct" and storefront is not None:
+        # a reseller storefront never takes a buyer's account session: the supplier secrets and
+        # the funding card belong to the platform
+        raise Validation(
+            "This product is not sold on reseller storefronts", code="direct_not_on_storefront"
+        )
     if product.delivery_mode == "upstream_direct":
         # the buyer's account session: validated and sealed here, kept OUT of buyer_input
         direct = await direct_svc.prepare(
             db,
             cred_sealer,
+            redis,
+            settings.env == "prod",
             product_id=product.id,
             variant_id=variant.id if variant else None,
             qty=qty,

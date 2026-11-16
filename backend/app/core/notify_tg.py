@@ -83,6 +83,8 @@ TEXTS: dict[str, dict[str, str]] = {
         "proc.direct_done": "Job {job}: order {order} was refunded or closed after the supplier "
         "completed the subscription on the buyer's account. It cannot be undone through the "
         "API: decide how to recover it with the supplier",
+        "proc.sessions_overdue": "{n} sealed buyer session(s) outlived their maximum age: the "
+        "procurement is not cleaning up. Direct-order checkout is paused; check procurement",
         "proc.supplier_paused": "Supplier {code} ({env}) is paused for new orders",
         "proc.pause_reason": "Reason: {reason} ({kind})",
         "reminder.title": "Service expiry reminder",
@@ -125,6 +127,8 @@ TEXTS: dict[str, dict[str, str]] = {
         "请在供应商处删除或重试作废",
         "proc.direct_done": "任务 {job}：订单 {order} 在供应商已为买家账号完成订阅后被退款或关闭，"
         "无法通过接口撤销，请决定如何与供应商追偿",
+        "proc.sessions_overdue": "{n} 份买家会话密文超过最长保存时间：采购进程未在清理。"
+        "直充下单已暂停，请检查采购进程",
         "proc.supplier_paused": "供应商 {code}（{env}）已暂停接收新订单",
         "proc.pause_reason": "原因：{reason}（{kind}）",
         "reminder.title": "服务到期提醒",

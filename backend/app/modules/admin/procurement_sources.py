@@ -26,6 +26,7 @@ from app.core.ratelimit import enforce
 from app.core.resources import Resources
 from app.models import Product, ProductVariant, SupplierAccount, SupplierOffer, User
 from app.modules.admin.suppliers import _dec, _iso, platform_admin
+from app.procurement.funding import funding_card_clash
 from app.suppliers.base import OfferSpec
 from app.suppliers.zovocard.direct import direct_spec
 from app.suppliers.zovocard.supplier import cdk_issue_body, vcc_spec
@@ -132,6 +133,32 @@ def _valid_params(kind: str, params: dict[str, Any]) -> bool:
     if kind == "direct":
         return direct_spec(spec) is not None
     return cdk_issue_body(spec) is not None
+
+
+async def _direct_checks(
+    db: AsyncSession,
+    res: Resources,
+    offer_kind: str,
+    params: dict[str, Any],
+    supplier: SupplierAccount,
+    *,
+    enabling: bool,
+) -> None:
+    """Rules of a direct source that need the database / the environment: the funding card is
+    never a card bought for a buyer (H1), and in production a real buyer's session never goes to a
+    sandbox supplier (S-L1)."""
+    if offer_kind != "direct":
+        return
+    if await funding_card_clash(db, supplier.tenant_id, supplier.id, params.get("card_id", 0)):
+        raise Validation(
+            "That card was bought for a buyer: it cannot be a funding card",
+            code="funding_card_invalid",
+        )
+    if enabling and res.settings.env == "prod" and supplier.env == "sandbox":
+        raise Validation(
+            "A sandbox supplier cannot take real buyers' sessions in production",
+            code="sandbox_in_prod",
+        )
 
 
 def _same_vendor_product(
@@ -295,6 +322,7 @@ async def add_source(
         raise Validation("These source parameters cannot be sent to a supplier", code="bad_params")
     existing = await _offers(db, tid, body.product_id, body.variant_id)
     _same_vendor_product(kind, params, [o for o, _ in existing])
+    await _direct_checks(db, res, kind, params, supplier, enabling=body.enabled)
     if len(existing) >= MAX_OFFERS_PER_TARGET:
         raise Validation("Too many sources for this target", code="too_many_sources")
     if any(o.supplier_id == supplier.id and o.params == params for o, _ in existing):
@@ -443,6 +471,9 @@ async def update_source(
             )
         if params != offer.params:
             if offer.kind == "direct":
+                await _direct_checks(
+                    db, res, "direct", params, supplier, enabling=bool(offer.enabled)
+                )
                 _same_vendor_product(
                     "direct",
                     params,
@@ -467,6 +498,10 @@ async def update_source(
         offer.priority = body.priority
     if body.enabled is not None:
         offer.enabled = body.enabled
+        if body.enabled:
+            await _direct_checks(
+                db, res, offer.kind, dict(offer.params or {}), supplier, enabling=True
+            )
     if offer.enabled and (body.enabled or body.clear_cost or body.currency or body.params):
         _require_cost(offer, supplier)  # an enabled source never loses its cost
     try:

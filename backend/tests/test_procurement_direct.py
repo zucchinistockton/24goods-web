@@ -77,6 +77,24 @@ class DUp(Up):
         # the sweeper runs on every pass in tests; the credential PRIVATE key lives only here
         self.ctx.settings = replace(self.ctx.settings, cred_sweep_interval_s=0.0)
         self.ctx.cred_opener = CredentialOpener({CRED_KID: CRED_PRIV})
+        # the console's calls into procurement (hand-fulfil guard) go to the real internal app
+        import httpx
+
+        from app.procurement.internal import create_procurement_app
+
+        self._old = (self.env.res.settings, self.env.res.procurement)
+        self.env.res.settings = self._old[0].model_copy(
+            update={"procurement_token": self.ctx.settings.procurement_token}
+        )
+        self.env.res.procurement = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=create_procurement_app(self.ctx)),
+            base_url="http://procurement",
+        )
+
+    async def close(self) -> None:
+        await self.env.res.procurement.aclose()
+        self.env.res.settings, self.env.res.procurement = self._old
+        await super().close()
 
     async def supplier(self, supplier, **kw):
         sid, oid = await super().supplier(supplier, **kw)
@@ -148,8 +166,9 @@ async def _refund_delivered(env, buyer, order):
     admin, _ = await env.login("admin")
     r = await admin.post(
         f"/api/v1/admin/after-sales/{t.json()['id']}/action",
-        json={"action": "refund", "note": "refunded", "reference": "REF-" + uuid.uuid4().hex[:8]},
-    )
+        json={"action": "refund", "note": "refunded", "reference": "REF-" + uuid.uuid4().hex[:8],
+              "acknowledge_irreversible": True},
+    )  # fmt: skip
     assert r.status_code == 200, r.text
     return admin
 
@@ -461,13 +480,23 @@ async def test_api_role_cannot_read_the_sealed_session_back(env, dup):
         "SELECT * FROM procurement_credentials",
         "SELECT kid FROM procurement_credentials",
         "SELECT length(blob) FROM procurement_credentials",
-        "DELETE FROM procurement_credentials",
         "UPDATE procurement_credentials SET email_masked = 'x'",
     ):
         async with env.api_session() as db:
             with pytest.raises(DBAPIError) as exc:
                 await db.execute(text(sql))
             assert "permission denied" in str(exc.value).lower(), sql
+    # DELETE is a backstop only (migration 0030): a fresh row survives it, one past 6 h does not
+    async with env.api_session() as db:
+        gone = (await db.execute(text("DELETE FROM procurement_credentials"))).rowcount
+        await db.commit()
+    assert gone == 0 and await _creds(env, order) == 1
+    await _sql(env, "UPDATE procurement_credentials SET created_at = now() - interval '7 hours'")
+    async with env.api_session() as db:
+        gone = (await db.execute(text("DELETE FROM procurement_credentials"))).rowcount
+        await db.commit()
+    assert gone == 1 and await _creds(env, order) == 0
+    _b2, order = await dup.paid_direct(claude_session(marker))  # a fresh one for the rest
     async with env.api_session() as db:  # the non-secret columns ARE readable (the buyer's view)
         rows = (
             await db.execute(
@@ -678,6 +707,14 @@ async def test_hand_fulfil_is_admin_only_needs_a_reason_and_leaves_a_critical_ro
     r = await agent.post(f"{JOBS}/{job.id}/fulfil", json={"reason": "I did it at the supplier"})
     assert r.status_code == 403
     admin, _ = await env.login("admin")
+    # M4: the supplier's order is still moving: a hand fulfil would subscribe the account twice
+    r = await admin.post(f"{JOBS}/{job.id}/fulfil", json={"reason": "subscribed by hand, sure"})
+    assert r.status_code == 409 and r.json()["error"]["code"] == "order_in_flight"
+    vendor.direct_end = "declined"  # the vendor gave up on it: now staff may take over
+    for _ in range(3):
+        await _settle(dup, 1)
+    job = await _job(dup, order)
+    assert job.state == "needs_manual"
     for body, code in (({}, "reason_required"), ({"reason": "short"}, "reason_required"),
                        ({"code": "AAAA-BBBB", "reason": "x" * 20}, "direct_no_code")):  # fmt: skip
         r = await admin.post(f"{JOBS}/{job.id}/fulfil", json=body)
@@ -1049,7 +1086,7 @@ async def test_migration_0029_up_and_down(services):
         )
         assert await q(
             "SELECT count(*) FROM pg_policies WHERE tablename = 'procurement_credentials' "
-            "AND policyname = 'tenant_isolation'"
+            "AND policyname = 'tenant_select'"
         ) == 1  # fmt: skip
         for col, want in (("blob", False), ("kid", False), ("email_masked", True),
                           ("order_id", True)):  # fmt: skip
@@ -1059,10 +1096,16 @@ async def test_migration_0029_up_and_down(services):
             )
             assert got is want, col
         assert await q("SELECT has_table_privilege('app_api', 'procurement_credentials', 'INSERT')")
-        for priv in ("UPDATE", "DELETE"):
-            assert not await q(
-                "SELECT has_table_privilege('app_api', 'procurement_credentials', $1)", priv
-            )
+        assert not await q(
+            "SELECT has_table_privilege('app_api', 'procurement_credentials', 'UPDATE')"
+        )
+        assert await q(  # the age-bounded backstop of 0030
+            "SELECT has_table_privilege('app_api', 'procurement_credentials', 'DELETE')"
+        )
+        assert await q(
+            "SELECT count(*) FROM pg_policies WHERE tablename = 'procurement_credentials' "
+            "AND policyname = 'api_expired_delete'"
+        ) == 1  # fmt: skip
         for priv in ("INSERT", "UPDATE"):
             assert not await q(
                 "SELECT has_table_privilege('app_procurement', 'procurement_credentials', $1)",
@@ -1079,6 +1122,10 @@ async def test_migration_0029_up_and_down(services):
         assert "upstream_direct" in await q(
             "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
             "WHERE conname = 'orders_delivery_mode_check'"
+        )
+        await alembic("0029_procurement_direct", down=True)
+        assert not await q(  # 0030 undone: the API can no longer delete at all
+            "SELECT has_table_privilege('app_api', 'procurement_credentials', 'DELETE')"
         )
         await alembic("0028_procurement_vcc", down=True)
         assert await q("SELECT to_regclass('procurement_credentials') IS NULL")

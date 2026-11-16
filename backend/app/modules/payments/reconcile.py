@@ -299,6 +299,7 @@ async def run(res: Resources) -> int:
             await alert_dead_jobs(res, db, tid, now)
             await alert_procurement_jobs(res, db, tid, now)
             await alert_supplier_breakers(res, db, tid)
+            await purge_overdue_sessions(res, db, tid)
             refs = list(
                 await db.scalars(
                     select(PaymentAttempt.local_ref)
@@ -589,6 +590,50 @@ async def alert_procurement_jobs(
             once=(f"procurement_job:{jid}:{state}", 30 * 86400),
         )
     return len(rows)
+
+
+SESSIONS_OVERDUE_KEY = "proc:sessions-overdue"
+
+
+async def purge_overdue_sessions(res: Resources, db: AsyncSession, tid: uuid.UUID) -> int:
+    """Database backstop for the deletion of sealed buyer sessions (upstream_direct): procurement
+    deletes them at a terminal state / after its maximum age, and the API role may delete the ones
+    older than 6 h (migration 0030). Finding any means procurement is not doing its job: checkout of
+    direct products is paused for an hour (503 ``direct_unavailable``) and staff are alerted."""
+    from sqlalchemy import text as sql_text
+
+    from app.core import notify_tg
+
+    out = await db.execute(
+        sql_text(
+            "DELETE FROM procurement_credentials WHERE tenant_id = :t "
+            "AND created_at < now() - interval '6 hours'"
+        ),
+        {"t": tid},
+    )
+    n = int(out.rowcount or 0)  # type: ignore[attr-defined]
+    if n:
+        from app.core.audit import audit
+
+        await audit(
+            db,
+            tenant_id=tid,
+            action="procurement.sessions_overdue",
+            target="procurement_credentials",
+            detail={"deleted": n},
+            severity="critical",
+        )
+        await res.redis.set(SESSIONS_OVERDUE_KEY, "1", ex=3600)
+        notify_tg.notify_bg(
+            res,
+            tid,
+            "payment_review",
+            [notify_tg.T("proc.sessions_overdue", n=str(n))],
+            link=notify_tg.admin_link(res, "orders"),
+            once=(f"procurement:sessions_overdue:{tid}", 3600),
+        )
+    await db.commit()
+    return n
 
 
 async def alert_supplier_breakers(res: Resources, db: AsyncSession, tid: uuid.UUID) -> int:

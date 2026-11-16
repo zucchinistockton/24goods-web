@@ -164,6 +164,13 @@ EOF
 # Procurement + the ZovoCard simulator (review-v12 M2). Idempotent: also called by `up` for dev
 # directories created before procurement existed (adds only what is missing).
 write_procurement_env() {
+  # the buyer-credential keypair of upstream_direct (dev directories made before it existed)
+  if [[ ! -f "$KEYS/cred_public_keys.json" ]]; then
+    local ckid
+    ckid=$(cd "$ROOT/backend" && "$PY" -m app.devtools.keygen --out-dir "$KEYS" --cred-only \
+      | sed -n 's/^APP_CRED_ACTIVE_KID=//p')
+    grep -q ^APP_CRED_ACTIVE_KID= "$KEYS/secrets.env" || echo "APP_CRED_ACTIVE_KID=$ckid" >> "$KEYS/secrets.env"
+  fi
   # shellcheck disable=SC1091
   source "$KEYS/secrets.env"
   local app_owner redis_pw pg redis token db_proc whsec
@@ -184,6 +191,13 @@ APP_PROCUREMENT_URL=http://127.0.0.1:$PROCUREMENT_PORT
 APP_PROCUREMENT_TOKEN=$token
 APP_ZOVOCARD_SANDBOX_WEBHOOK_SECRET=$whsec
 EOF
+  grep -q ^APP_CRED_PUBLIC_KEYS_FILE= "$ENVD/api.env" || cat >> "$ENVD/api.env" <<EOF
+APP_CRED_PUBLIC_KEYS_FILE=$KEYS/cred_public_keys.json
+APP_CRED_ACTIVE_KID=$APP_CRED_ACTIVE_KID
+EOF
+  if [[ -f "$ENVD/procurement.env" ]] && ! grep -q ^APP_CRED_PRIVATE_KEYS_FILE= "$ENVD/procurement.env"; then
+    echo "APP_CRED_PRIVATE_KEYS_FILE=$KEYS/cred_private_keys.json" >> "$ENVD/procurement.env"
+  fi
   grep -q ^APP_ZOVOCARD_SANDBOX_WEBHOOK_SECRET= "$ENVD/seed.env" \
     || echo "APP_ZOVOCARD_SANDBOX_WEBHOOK_SECRET=$whsec" >> "$ENVD/seed.env"
   [[ -f "$ENVD/procurement.env" ]] || cat > "$ENVD/procurement.env" <<EOF
@@ -198,6 +212,7 @@ APP_VAULT_PUBLIC_KEYS_FILE=$KEYS/vault_public_keys.json
 APP_VAULT_ACTIVE_KID=$APP_VAULT_ACTIVE_KID
 APP_VAULT_FINGERPRINT_KEY=$APP_VAULT_FINGERPRINT_KEY
 # the "sandbox" supplier of a dev stack is the ZovoCard simulator (dev/test only)
+APP_CRED_PRIVATE_KEYS_FILE=$KEYS/cred_private_keys.json
 ZOVOCARD_SANDBOX_APP_ID=mock
 ZOVOCARD_SANDBOX_APP_SECRET=sk_mock_ok
 ZOVOCARD_SANDBOX_BASE_URL=http://127.0.0.1:$MOCKZOVO_PORT/openapi/v1

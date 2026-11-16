@@ -69,7 +69,11 @@ async def target_available(
 
 
 async def direct_target_product(
-    db: AsyncSession, product_id: uuid.UUID, variant_id: uuid.UUID | None
+    db: AsyncSession,
+    product_id: uuid.UUID,
+    variant_id: uuid.UUID | None,
+    *,
+    exclude_sandbox: bool = False,
 ) -> str:
     """The ONE vendor product (``gpt`` / ``claude`` / ``grok``) the enabled direct sources of this
     target buy, which decides what kind of account session checkout asks for. No usable source, or
@@ -87,6 +91,7 @@ async def direct_target_product(
             match,
             SupplierOffer.kind == "direct",
             *_usable(),
+            *((SupplierAccount.env != "sandbox",) if exclude_sandbox else ()),
         )
     )
     products = {str((params or {}).get("product")) for _pid, _vid, params in rows.all()}

@@ -358,7 +358,10 @@ async def act(
             if order.kind != "goods" or order.status not in (*ELIGIBLE, *UNDELIVERED):
                 raise InvalidState("This order cannot be refunded")
             assert reference is not None
-            await refund_order(db, order, staff, ip, reference, note, source="after_sales")
+            await refund_order(
+                db, order, staff, ip, reference, note, source="after_sales",
+                ack_irreversible=body.acknowledge_irreversible,
+            )  # fmt: skip
             event = "after_sales_refunded"
         elif body.action == "reject":
             event = "after_sales_rejected"
@@ -429,11 +432,21 @@ async def refund_order(
     note: str | None,
     *,
     source: str,
+    ack_irreversible: bool = False,
 ) -> None:
     """The one refund routine (after-sales and refund-before-delivery). Staff call it AFTER
     returning the money out-of-band; ``reference`` records how (v8 B). Order -> refunded plus
     a balanced reversal ledger transaction (sum is zero), once. The caller holds the order
     row lock and commits."""
+    if order.delivery_mode == "upstream_direct" and not ack_irreversible:
+        from app.procurement.engine import direct_completed
+
+        if await direct_completed(db, order):
+            raise Validation(
+                "The supplier already subscribed the buyer's account and cannot undo it: "
+                "acknowledge that this refund is a loss before sending it",
+                code="direct_refund_ack_required",
+            )
     before = snapshot(order)
     prev = order.status
     reverse_ledger = True

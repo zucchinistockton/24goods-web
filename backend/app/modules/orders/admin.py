@@ -648,6 +648,7 @@ async def refund_undelivered(
     note: str | None,
     agent: User,
     ip: str | None,
+    ack_irreversible: bool = False,
 ) -> tuple[Order, Message | None]:
     """v8 A.3: refund a paid-but-undelivered goods order (admin only, see the router). Same
     routine and reference rule as after-sales refunds."""
@@ -655,7 +656,9 @@ async def refund_undelivered(
     order = await lock_order(db, order_id, agent.tenant_id)
     if order.kind != "goods" or order.status not in aftersales_svc.UNDELIVERED:
         raise InvalidState("Only a paid, undelivered order can be refunded here")
-    await aftersales_svc.refund_order(db, order, agent, ip, ref, note, source="admin")
+    await aftersales_svc.refund_order(
+        db, order, agent, ip, ref, note, source="admin", ack_irreversible=ack_irreversible
+    )
     msg = await post_system(
         db,
         tenant_id=order.tenant_id,

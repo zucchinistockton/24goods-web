@@ -7,6 +7,9 @@ BK=${BACKUP_DIR:-/opt/kesiv/backups}
 D=${DEPLOY_DIR:-/opt/kesiv/deploy}
 RECIPIENTS=${BACKUP_RECIPIENTS:-/opt/kesiv/backup-recipients.txt}
 VAULT_RECIPIENTS=${BACKUP_VAULT_RECIPIENTS:-/opt/kesiv/backup-vault-recipients.txt}
+# the buyer-credential private key (upstream_direct) has its OWN recipients: whoever can restore card
+# secrets must not automatically be able to open buyers' account sessions
+CRED_RECIPIENTS=${BACKUP_CRED_RECIPIENTS:-/opt/kesiv/backup-cred-recipients.txt}
 GATEWAY_STATE=${BACKUP_GATEWAY_STATE:-required} # required | disabled (only when no real USDT gateway)
 for cmd in age docker flock sha256sum tar; do command -v "$cmd" >/dev/null; done
 [[ -s "$RECIPIENTS" && -s "$VAULT_RECIPIENTS" && -f "$D/.env" ]]
@@ -46,12 +49,17 @@ if [[ "$GATEWAY_STATE" == required ]]; then
 fi
 # Vault private KEKs (and the buyer-credential private key of upstream_direct) use a separate
 # recovery recipient/access policy.
-VKEYS=(secrets/vault_private_keys.json)
-[[ -f "$D/secrets/cred_private_keys.json" ]] && VKEYS+=(secrets/cred_private_keys.json)
 tar -C "$D" --exclude=secrets/vault_private_keys.json --exclude=secrets/cred_private_keys.json \
   -czf - .env env secrets docker-compose.yml docker-compose.prod.yml \
   | age -R "$RECIPIENTS" > "$STAGE/config.tgz.age"
-tar -C "$D" -czf - "${VKEYS[@]}" | age -R "$VAULT_RECIPIENTS" > "$STAGE/vault-keys.tgz.age"
+tar -C "$D" -czf - secrets/vault_private_keys.json | age -R "$VAULT_RECIPIENTS" > "$STAGE/vault-keys.tgz.age"
+if [[ -f "$D/secrets/cred_private_keys.json" ]]; then
+  if [[ ! -s "$CRED_RECIPIENTS" ]]; then
+    echo "WARNING: $CRED_RECIPIENTS missing: the credential key is sealed to the VAULT recipients" >&2
+    CRED_RECIPIENTS=$VAULT_RECIPIENTS
+  fi
+  tar -C "$D" -czf - secrets/cred_private_keys.json | age -R "$CRED_RECIPIENTS" > "$STAGE/cred-keys.tgz.age"
+fi
 "${DC[@]}" exec -T postgres psql -U postgres -d goods24 -Atc 'SELECT version_num FROM alembic_version' > "$STAGE/schema.txt"
 "${DC[@]}" images --format json > "$STAGE/images.json"
 printf 'format=24goods-backup-v2\ncreated_at=%s\ngateway_state=%s\nconsistency=writers-fenced\n' "$(date -u +%FT%TZ)" "$GATEWAY_STATE" > "$STAGE/metadata.txt"

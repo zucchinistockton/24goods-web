@@ -464,6 +464,20 @@ async def close_order_jobs(
 UNDELIVERED_ORDER = ("paid", "manual_review")  # nothing handed over yet
 
 
+async def direct_completed(db: AsyncSession, order: Order) -> bool:
+    """Any ``direct`` job of the order whose supplier subscription COMPLETED (fulfilled)."""
+    return bool(
+        await db.scalar(
+            select(func.count(ProcurementJob.id)).where(
+                ProcurementJob.tenant_id == order.tenant_id,
+                ProcurementJob.order_id == order.id,
+                ProcurementJob.kind == "direct",
+                ProcurementJob.state == "fulfilled",
+            )
+        )
+    )
+
+
 async def _direct_refunded(
     db: AsyncSession,
     job: ProcurementJob,
@@ -1966,6 +1980,43 @@ async def process_job(ctx: ProcurementContext, job_id: uuid.UUID, tenant_id: uui
         except Exception as exc:
             log.error("post-job balance refresh failed error=%s", type(exc).__name__)
     return True
+
+
+async def direct_order_state(
+    ctx: ProcurementContext, tenant_id: uuid.UUID, job_id: uuid.UUID
+) -> dict[str, str | None]:
+    """READ-ONLY state of a direct job's supplier order for the console (hand fulfil, M4): the
+    recorded order, else the vendor's order list searched for our request id. ``state`` is one of
+    ``not_sent`` | ``completed`` | ``pending`` | ``failed`` | ``not_found`` | ``unknown``."""
+    async with tenant_session(ctx.maker, tenant_id) as db:
+        job = await db.scalar(
+            select(ProcurementJob).where(
+                ProcurementJob.id == job_id, ProcurementJob.tenant_id == tenant_id
+            )
+        )
+        if job is None:
+            raise LookupError("job")
+        if job.kind != "direct" or job.offer_id is None or not (job.maybe_sent or job.upstream_ref):
+            return {"state": "not_sent", "upstream_ref": job.upstream_ref}
+        offer = await _offer_any(db, job)
+        spec = _spec(job, offer, "query", ctx.settings.direct_quote_tolerance) if offer else None
+        await db.rollback()
+    if offer is None or spec is None:
+        return {"state": "unknown", "upstream_ref": job.upstream_ref}
+    try:
+        res = await engine_supplier(ctx, offer.ref).query(spec)
+    except Exception as exc:
+        log.error("direct order read failed error=%s", type(exc).__name__)
+        return {"state": "unknown", "upstream_ref": job.upstream_ref}
+    state = {
+        Outcome.OK: "completed",
+        Outcome.ACCEPTED_PENDING: "pending",
+        Outcome.FATAL: "failed",
+        Outcome.UNAVAILABLE: "not_found",
+    }.get(res.outcome, "unknown")
+    if res.outcome is Outcome.FATAL and res.error_code in ("order_mismatch", "plan_mismatch"):
+        state = "unknown"
+    return {"state": state, "upstream_ref": res.upstream_ref or job.upstream_ref}
 
 
 async def due_jobs(ctx: ProcurementContext, limit: int = 20) -> list[tuple[uuid.UUID, uuid.UUID]]:

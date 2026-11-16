@@ -11,11 +11,13 @@ Nothing in this module logs, audits or returns the session; ``DirectSeal`` hides
 
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import insert, select
+from sqlalchemy import func, insert, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,6 +29,8 @@ from app.modules.catalog import upstream
 from app.modules.common.modes import MAX_DIRECT_QTY
 from app.suppliers.direct_credential import CredentialError, validate_credential
 
+log = logging.getLogger("app.orders.direct")
+
 
 @dataclass(frozen=True)
 class DirectSeal:
@@ -37,9 +41,28 @@ class DirectSeal:
     text: str = field(repr=False)
 
 
+STALL_MARGIN = timedelta(minutes=30)  # past the 6 h ceiling before checkout is paused
+MAX_AGE = timedelta(hours=6)
+
+
+async def procurement_stalled(db: AsyncSession, redis: Any) -> bool:
+    """The oldest sealed session is older than its ceiling plus a margin, or the API's own backstop
+    purge found overdue ones lately (its marker in Redis)."""
+    if redis is not None:
+        try:
+            if await redis.get("proc:sessions-overdue"):
+                return True
+        except Exception as exc:  # Redis down: the database check still runs
+            log.warning("sessions-overdue marker unreadable error=%s", type(exc).__name__)
+    oldest = await db.scalar(select(func.min(ProcurementCredential.created_at)))
+    return oldest is not None and datetime.now(timezone.utc) - oldest > MAX_AGE + STALL_MARGIN
+
+
 async def prepare(
     db: AsyncSession,
     sealer: CredentialSealer | None,
+    redis: Any = None,
+    prod: bool = False,
     *,
     product_id: uuid.UUID,
     variant_id: uuid.UUID | None,
@@ -58,7 +81,12 @@ async def prepare(
         raise Validation("The account session is required", code="session_required")
     if sealer is None:
         raise Unavailable("This product cannot be bought right now", code="direct_unavailable")
-    vendor_product = await upstream.direct_target_product(db, product_id, variant_id)
+    if await procurement_stalled(db, redis):
+        # procurement is evidently not cleaning up sealed sessions: keep no new ones (S-M1c)
+        raise Unavailable("This product cannot be bought right now", code="direct_unavailable")
+    vendor_product = await upstream.direct_target_product(
+        db, product_id, variant_id, exclude_sandbox=prod
+    )
     try:
         checked = validate_credential(vendor_product, session)
     except CredentialError as exc:
@@ -174,6 +202,21 @@ async def resupply(
         checked = validate_credential(vendor_product, session)
     except CredentialError as exc:
         raise Validation("The account session cannot be used", code=f"session_{exc.code}") from None
+    first_mask = await db.scalar(
+        select(ProcurementJob.account_mask)
+        .where(
+            ProcurementJob.tenant_id == order.tenant_id,
+            ProcurementJob.order_id == order.id,
+            ProcurementJob.account_mask.is_not(None),
+        )
+        .limit(1)
+    )
+    if first_mask and checked.email_masked and first_mask != checked.email_masked:
+        # the subscription goes to the account the order was first checked against
+        raise Conflict(
+            "This session belongs to another account than the first one",
+            code="session_other_account",
+        )
     await store(
         db, sealer, order, DirectSeal(vendor_product, checked.email_masked, checked.canonical)
     )

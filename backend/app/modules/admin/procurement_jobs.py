@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, insert, select, update
@@ -34,7 +35,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import audit
 from app.core.cardvault import CardContext
 from app.core.deps import Page, client_ip, get_db, get_page, get_res, require_admin, require_staff
-from app.core.errors import Conflict, Forbidden, InvalidState, NotFound, Validation
+from app.core.errors import Conflict, Forbidden, InvalidState, NotFound, Unavailable, Validation
 from app.core.ratelimit import enforce
 from app.core.resources import Resources
 from app.models import (
@@ -547,7 +548,18 @@ async def fulfil_manually(
     job becomes ``fulfilled`` through the same ``procure.fulfilled`` event as an automatic one."""
     await enforce(res.redis, RATE[0], str(staff.id), RATE[1], RATE[2])
     ip = client_ip(request)
-    job = await _lock(db, staff.tenant_id, job_id)
+    tid, is_admin = staff.tenant_id, staff.role == "admin"  # (a rollback expires `staff`)
+    pre = await db.scalar(
+        select(ProcurementJob.kind).where(
+            ProcurementJob.id == job_id, ProcurementJob.tenant_id == tid
+        )
+    )
+    if pre == "direct" and is_admin:
+        # hand-fulfilling a job whose supplier order is still moving would double-subscribe:
+        # read the order first (the procurement process asks the vendor; fail closed) (M4).
+        # the SELECT above holds no lock, so the open transaction blocks nobody
+        await _refuse_if_order_in_flight(res, tid, job_id)
+    job = await _lock(db, tid, job_id)
     direct = job.kind == "direct"
     if direct:
         # the supplier does the work for a direct job: staff ATTEST that they did it by hand at the
@@ -703,6 +715,34 @@ async def fulfil_manually(
     view = await _view_of(db, job)
     await db.commit()
     return view
+
+
+async def _refuse_if_order_in_flight(res: Resources, tid: uuid.UUID, job_id: uuid.UUID) -> None:
+    token = res.settings.procurement_token
+    if len(token) < 32:
+        raise Unavailable("The procurement service is not configured", code="procurement_off")
+    try:
+        resp = await res.procurement.post(
+            "/internal/direct-order",
+            json={"tenant_id": str(tid), "job_id": str(job_id)},
+            headers={"X-Internal-Token": token},
+        )
+    except httpx.HTTPError:
+        raise Unavailable(
+            "The procurement service is unreachable", code="procurement_unreachable"
+        ) from None
+    if resp.status_code == 404:
+        raise NotFound("Job not found")
+    if resp.status_code != 200:
+        raise Unavailable("The supplier order could not be read", code="procurement_unreachable")
+    state = str(resp.json().get("state"))
+    if state in ("pending", "unknown"):
+        raise Conflict(
+            "The supplier's order is still in progress (or unreadable): cancel it first with "
+            "void, or wait; hand-fulfilling now could subscribe the account twice",
+            code="order_in_flight",
+            extra={"order_state": state},
+        )
 
 
 async def _direct_text(db: AsyncSession, job: ProcurementJob) -> str:
