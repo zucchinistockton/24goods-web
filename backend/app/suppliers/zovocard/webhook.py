@@ -64,6 +64,16 @@ def verify_signature(raw: bytes, headers: Mapping[str, str], secret: str) -> boo
     return hmac.compare_digest(signature(raw, secret), given)
 
 
+OTP_FIELDS = ("otp", "code", "verification_code")  # one list for the dedup MAC and the forwarder
+
+
+def first_otp(data: Mapping[str, Any]) -> Any:
+    for k in OTP_FIELDS:
+        if data.get(k):
+            return data[k]
+    return None
+
+
 def mask_pan(value: Any) -> str:
     digits = re.sub(r"\D", "", str(value or ""))
     if len(digits) < 12:
@@ -123,14 +133,20 @@ def normalise(data: Mapping[str, Any], secret: str) -> SupplierEvent:
     elif event == "card_transaction":
         dedup = _key(event, data.get("auth_id"), data.get("type"), data.get("status"))
     elif event == "card_operation":
-        dedup = _key(event, data.get("operation"), data.get("operation_id"), data.get("status"))
+        # delete has no operation id: the card id keeps two cards' events apart (F11)
+        dedup = _key(
+            event,
+            data.get("operation"),
+            data.get("operation_id") or f"card{data.get('card_id')}",
+            data.get("status"),
+        )
     elif event == "card_fee":
         dedup = _key(event, data.get("auth_id"), data.get("fee_type"))
     else:  # card_3ds_otp: the OTP never becomes part of a stored key
         if data.get("matrix_id"):
             dedup = _key(event, data["matrix_id"])
         else:
-            otp = str(data.get("otp") or data.get("code") or data.get("verification_code") or "")
+            otp = str(first_otp(data) or "")
             mac = hmac.new(
                 secret.encode(), (mask_pan(data.get("card_number")) + "|" + otp).encode(), "sha256"
             ).hexdigest()[:32]

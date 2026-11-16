@@ -30,6 +30,7 @@ from app.core.audit import audit
 from app.models import Order, ProcurementJob
 from app.modules.common.views import REVEALABLE
 from app.modules.realtime.publish import publish, user_channel
+from app.suppliers.zovocard.webhook import first_otp
 
 log = logging.getLogger("app.card_otp")
 
@@ -46,7 +47,7 @@ def extract_otp(item: Mapping[str, Any]) -> tuple[str, str] | None:
     """``(card_id, otp)`` of a ``card_3ds_otp`` item, or ``None`` (malformed: dropped silently)."""
     if item.get("event") != "card_3ds_otp":
         return None
-    card, otp = item.get("card_id"), item.get("otp")
+    card, otp = item.get("card_id"), first_otp(item)
     if isinstance(card, bool) or not isinstance(card, (int, str)) or str(card) == "":
         return None
     if not isinstance(otp, str) or not _OTP_RE.fullmatch(otp.strip()):

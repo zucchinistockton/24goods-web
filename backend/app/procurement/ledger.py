@@ -97,20 +97,16 @@ async def record_rows(
         if abs(r.amount) >= MAX_ABS:
             continue
         job_id = None
-        link = (
-            r.card_id
-            if r.type in CARD_TYPES
-            else r.ref_id
-            if r.type.startswith(LINK_TYPE_PREFIX)
-            else None
-        )
+        # any row that names a card links by card id (F9); gpt_direct rows by their order ref
+        card_row = r.card_id is not None
+        link = r.card_id if card_row else r.ref_id if r.type.startswith(LINK_TYPE_PREFIX) else None
         if link:
             job_id = await db.scalar(
                 select(ProcurementJob.id).where(
                     ProcurementJob.tenant_id == tenant_id,
                     ProcurementJob.supplier_id == supplier_id,
                     ProcurementJob.upstream_ref == link,
-                    *((ProcurementJob.kind == "vcc",) if r.type in CARD_TYPES else ()),
+                    *((ProcurementJob.kind == "vcc",) if card_row else ()),
                 )
             )
         inserted = await db.scalar(
@@ -182,7 +178,6 @@ async def link_rows(db: AsyncSession, tenant_id: uuid.UUID, supplier_id: uuid.UU
             SupplierLedgerEntry.supplier_id == supplier_id,
             SupplierLedgerEntry.job_id.is_(None),
             SupplierLedgerEntry.card_id.is_not(None),
-            SupplierLedgerEntry.type.in_(sorted(CARD_TYPES)),
             card_job.is_not(None),
         )
         .values(job_id=card_job)

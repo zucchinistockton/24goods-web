@@ -385,3 +385,217 @@ async def test_pasting_another_card_than_the_vendors_is_flagged(env, vup):
     )
     assert vendor_mask in detail and "424242****4242" in detail and "4242424242424242" not in detail
     assert r.json()["card_mask"] == "424242****4242"
+
+
+# ------------------------------------------------------------------ F9 / F10 / F11 / S4
+
+
+async def test_any_ledger_row_naming_a_card_links_to_its_job(env, vup):
+    from app.procurement import ledger
+    from app.procurement.service import SupplierRef
+
+    vendor = MockZovo()
+    sid, _ = await _zovo(vup, vendor, OPEN)
+    buyer, order = await vup.paid_order()
+    await _deliver(env, vup, order, buyer)
+    job = await _job(vup, order)
+    vendor.balance_logs.insert(
+        0,
+        {"id": 7777, "created_at": "2026-11-16T10:00:00Z", "amount": -0.5, "type": "card_penalty",
+         "ref_id": 5, "card_id": int(job.upstream_ref), "card_number": "4111111111111111"},
+    )  # fmt: skip
+    ref = SupplierRef(sid, env.tenant_id, "zovocard", "zovocard", "sandbox", "ok")
+    await ledger.backfill(vup.ctx, ref, "USD")
+    rows = await _rows(env, "SELECT type, job_id FROM supplier_ledger WHERE external_id = '7777'")
+    assert [(r.type, r.job_id) for r in rows] == [("card_penalty", job.id)]
+
+
+def test_card_operation_dedup_keeps_cards_apart_and_otp_fields_agree():
+    from app.modules.orders.card_otp import extract_otp
+    from app.suppliers.zovocard.webhook import normalise
+
+    sec = "s" * 32
+    one = {"event": "card_operation", "operation": "delete", "status": "COMPLETE", "card_id": 1}
+    two = {**one, "card_id": 2}
+    assert normalise(one, sec).dedup_key != normalise(two, sec).dedup_key
+    assert normalise(one, sec).dedup_key == normalise(dict(one), sec).dedup_key
+    for field in ("otp", "code", "verification_code"):
+        ev = {"event": "card_3ds_otp", "card_id": 9, field: "Ab12Cd"}
+        assert extract_otp(ev) == ("9", "Ab12Cd")  # the forwarder reads what the MAC reads
+        assert normalise(ev, sec).dedup_key.startswith("card_3ds_otp:")
+        assert "Ab12Cd" not in normalise(ev, sec).dedup_key
+
+
+async def test_card_otp_endpoint_is_empty_until_the_order_is_delivered(env, vup):
+    vendor = MockZovo()
+    await _zovo(vup, vendor, OPEN)
+    buyer, order = await vup.paid_order()
+    await vup.run()  # bought and sealed; delivery has not run: the order is still paid
+    await env.s.redis.set(
+        f"otp3ds:{order['id']}:1", '{"otp": "Zz9", "card": "x", "unit": 1}', ex=60
+    )
+    r = await buyer.get(f"/api/v1/orders/{order['id']}/card-otp")
+    assert r.status_code == 200 and r.json()["items"] == []
+
+
+# ------------------------------------------------------------------ card webhooks: forged / foreign
+
+
+async def _post_op(env, body: dict, secret: str | None = None):
+    from tests.test_procurement_m2 import WEBHOOK_SECRET, _signed
+
+    env.res.settings = env.res.settings.model_copy(
+        update={"zovocard_sandbox_webhook_secret": WEBHOOK_SECRET}
+    )
+    raw, h = _signed(body, secret or WEBHOOK_SECRET)
+    return await env.client(csrf=False).post("/api/v1/webhooks/zovocard", content=raw, headers=h)
+
+
+def _op(card_id: str, status: str = "COMPLETE") -> dict:
+    return {"event": "card_operation", "operation": "recharge", "operation_id": "R9",
+            "card_id": int(card_id), "status": status}  # fmt: skip
+
+
+async def test_forged_card_operation_is_refused_and_stores_nothing(env, vup):
+    await _zovo(vup, MockZovo(), OPEN)
+    r = await _post_op(env, _op("5"), secret="whsec_wrong_" + "b" * 32)
+    assert r.status_code == 401 and r.content == b""
+    assert await env.scalar("SELECT count(*) FROM supplier_events") == 0
+
+
+async def test_card_operation_for_another_suppliers_or_tenants_card_changes_nothing(env, vup):
+    from tests.test_procurement_v12 import _insert_supplier
+
+    vendor = MockZovo()
+    vendor.recharge_pending_next = 99
+    await _zovo(vup, vendor, WITH_RECHARGE, code="zovocard_b")  # the job's supplier
+    # the webhook is attributed to the account coded "zovocard", which holds no such card
+    await _zovo(vup, MockZovo(), OPEN, code="zovocard", priority=50)
+    _buyer, order = await vup.paid_order()
+    await vup.run()
+    job = await _job(vup, order)
+    assert job.state == "accepted_pending"
+    before = (job.upstream_status, job.next_poll_at)
+    # a foreign tenant's job that happens to hold the same card id
+    foreign = await _insert_supplier(env, env.other_tenant_id)
+    from tests.test_procurement_jobs import _foreign_job
+
+    fj = await _foreign_job(env)
+    await _sql(
+        env,
+        "UPDATE procurement_jobs SET kind = 'vcc', upstream_ref = :r, supplier_id = :s, "
+        "state = 'accepted_pending' WHERE id = :j",
+        r=job.upstream_ref,
+        s=foreign,
+        j=fj,
+    )
+    assert (await _post_op(env, _op(job.upstream_ref))).status_code == 200
+    await vup.run()
+    job = await _job(vup, order)
+    assert (job.upstream_status, job.next_poll_at) == before  # not this supplier's card
+    status = await env.scalar("SELECT upstream_status FROM procurement_jobs WHERE id = :j", j=fj)
+    assert status is None  # nor the other tenant's
+    assert await env.scalar("SELECT count(*) FROM supplier_events WHERE processed_at IS NULL") == 0
+
+
+# ---------------------------------------------------------------- L6 and staff actions on card jobs
+
+# ------------------------------------------------------------------ L6 and staff actions on card jobs
+
+
+async def test_cdk_webhook_under_a_live_lease_does_not_pull_the_poll_forward(env, up):
+    from app.procurement.engine import process_outbox_one
+    from tests.test_procurement_m2 import LosingMock
+
+    mock = LosingMock("zovocard", pending=True)
+    await up.supplier(mock, code="zovocard")
+    _buyer, order = await up.paid_order()
+    await up.run()
+    (job,) = await up.jobs(order["id"])
+    assert job.state == "accepted_pending" and job.upstream_ref
+    hour = "now() + interval '1 hour'"
+    await _sql(
+        env,
+        f"UPDATE procurement_jobs SET lease_until = {hour}, next_poll_at = {hour}",  # noqa: S608
+    )
+    (job,) = await up.jobs(order["id"])
+    due = job.next_poll_at
+    ev = {"type": "cdk.consumed", "event_id": "cdk.consumed:42", "cdk_id": int(
+        job.upstream_ref.split(":")[-1] if job.upstream_ref.isdigit() else 0
+    ) or job.upstream_ref, "cdk_status": "consumed"}  # fmt: skip
+    ev["cdk_id"] = job.upstream_ref
+    assert (await _post_op(env, ev)).status_code == 200
+    while await process_outbox_one(up.ctx):
+        pass
+    (job,) = await up.jobs(order["id"])
+    assert job.next_poll_at == due  # a live lease is never overtaken (L6)
+    assert job.upstream_status == "consumed"
+    # without a lease the same kind of hint makes the job due now
+    await _sql(env, "UPDATE procurement_jobs SET lease_until = NULL")
+    ev2 = {**ev, "event_id": "cdk.reserved:43", "type": "cdk.reserved", "cdk_status": "reserved"}
+    assert (await _post_op(env, ev2)).status_code == 200
+    while await process_outbox_one(up.ctx):
+        pass
+    (job,) = await up.jobs(order["id"])
+    assert job.next_poll_at < due
+
+
+async def test_staff_actions_on_card_jobs_never_buy_a_second_card(env, vup):
+    vendor = MockZovo()
+    await _zovo(vup, vendor, {**OPEN, "recharge_amount": "5"})  # amount_below_min: needs staff
+    _buyer, order = await vup.paid_order()
+    await vup.run()
+    job = await _job(vup, order)
+    assert job.state == "needs_manual" and job.upstream_ref and vendor.card_opens == 1
+    admin, _ = await env.login("admin")
+    url = f"{JOBS}/{job.id}"
+    detail = (await admin.get(url)).json()
+    assert {"requery", "retry", "void"} <= set(detail["actions"]) and "switch" not in detail[
+        "actions"
+    ]
+    r = await admin.post(f"{url}/switch", json={})
+    assert r.status_code == 409 and r.json()["error"]["code"] == "maybe_charged"
+    for action in ("retry", "requery"):
+        r = await admin.post(f"{url}/{action}", json={})
+        assert r.status_code == 200, r.text
+        await vup.run()
+        job = await _job(vup, order)
+        assert job.state == "needs_manual" and vendor.card_opens == 1  # same card, never a new one
+    assert len(_posts(vendor, "/cards/open")) == 1
+
+
+async def test_staff_actions_on_a_pending_card_job(env, vup):
+    vendor = MockZovo()
+    vendor.recharge_pending_next = 99
+    await _zovo(vup, vendor, WITH_RECHARGE)
+    _buyer, order = await vup.paid_order()
+    await vup.run()
+    job = await _job(vup, order)
+    assert job.state == "accepted_pending"
+    admin, _ = await env.login("admin")
+    url = f"{JOBS}/{job.id}"
+    assert "switch" not in (await admin.get(url)).json()["actions"]
+    assert (await admin.post(f"{url}/switch", json={})).status_code == 409
+    assert (await admin.post(f"{url}/retry", json={})).status_code == 409  # only from needs_manual
+    await _sql(env, "UPDATE procurement_jobs SET lease_until = NULL")
+    assert (await admin.post(f"{url}/requery", json={})).status_code == 200
+    await vup.run()
+    assert vendor.card_opens == 1 and vendor.card_recharges == 1
+
+
+async def test_a_queued_card_job_can_be_switched_but_never_opened_by_the_action(env, vup):
+    from app.procurement.engine import process_outbox_one
+
+    vendor = MockZovo()
+    await _zovo(vup, vendor, OPEN)
+    _buyer, order = await vup.paid_order()
+    while await process_outbox_one(vup.ctx):
+        pass
+    job = await _job(vup, order)
+    assert job.state == "queued"
+    admin, _ = await env.login("admin")
+    detail = (await admin.get(f"{JOBS}/{job.id}")).json()
+    assert "switch" in detail["actions"] and detail["card_mask"] is None
+    r = await admin.post(f"{JOBS}/{job.id}/switch", json={})
+    assert r.status_code == 409 and r.json()["error"]["code"] == "no_other_source"
+    assert vendor.card_opens == 0

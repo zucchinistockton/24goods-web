@@ -11,6 +11,7 @@ from app.core.resources import Resources
 from app.core.storefront import Storefront, get_storefront
 from app.models import User
 from app.modules.challenges import service as challenge_service
+from app.modules.common.views import REVEALABLE
 from app.modules.orders import cancel as cancel_svc
 from app.modules.orders import card_otp, service
 from app.modules.orders import expedite as expedite_svc
@@ -144,7 +145,10 @@ async def card_otp_codes(
     await db.commit()
     if order.delivery_mode != "upstream_vcc":
         raise NotFound("Order not found")
-    items = await card_otp.pending_for(res.redis, order.id)
+    if order.status not in REVEALABLE:  # a code is only ever shown once the card is the buyer's
+        items: list = []
+    else:
+        items = await card_otp.pending_for(res.redis, order.id)
     return JSONResponse(
         {"items": items}, headers={"Cache-Control": "no-store", "Pragma": "no-cache"}
     )
