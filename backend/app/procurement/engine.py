@@ -386,12 +386,71 @@ async def close_order_jobs(
     if order.delivery_mode not in UPSTREAM_MODES:
         return 0
     jobs = await lock_job_set(db, order.tenant_id, order.id, nowait=True)
+    undelivered = order.status in UNDELIVERED_ORDER
     n = 0
     for job in jobs:
         if job.state in CLOSABLE:
             await close_job(db, job, reason, actor_id=actor_id, actor_role=actor_role, ip=ip)
             n += 1
+        elif job.state == "fulfilled" and undelivered:
+            # a code bound but never handed over (N5): never leave it valid at the supplier
+            await _void_fulfilled(db, job, reason, actor_id, actor_role, ip)
+            n += 1
     return n
+
+
+UNDELIVERED_ORDER = ("paid", "manual_review")  # nothing handed over yet
+
+
+async def _void_fulfilled(
+    db: AsyncSession,
+    job: ProcurementJob,
+    reason: str,
+    actor_id: uuid.UUID | None,
+    actor_role: str,
+    ip: str | None,
+) -> None:
+    """``fulfilled`` but undelivered unit of a refunded order: disable the code at the supplier
+    (``void_pending``; ``voided`` at once when there is nothing to disable) and void the sealed
+    ``card_stock`` row. Delivered units are never touched here (after-sales handles them)."""
+    job.error_code = clean_detail(reason)
+    if job.upstream_ref and job.offer_id is not None:
+        job.step, job.attempts, job.next_poll_at = "void", 0, utcnow()
+        to = "void_pending"
+    else:
+        job.step, job.next_poll_at = "done", None
+        to = "voided"
+    await _transition(
+        db, job, to, reason, severity="warning", actor_id=actor_id, actor_role=actor_role, ip=ip
+    )
+    # after the transition: the database only lets the API void a sold code of a job in a void
+    # state (card_stock_guard, migration 0027)
+    if job.card_stock_ids:
+        voided = await db.execute(
+            update(CardStock)
+            .where(
+                CardStock.tenant_id == job.tenant_id,
+                CardStock.id.in_(list(job.card_stock_ids)),
+                CardStock.status != "void",
+            )
+            .values(
+                status="void",
+                void_reason=clean_detail(f"procurement_void:{reason}", 64),
+                voided_at=utcnow(),
+                voided_by=actor_id,
+            )
+        )
+        await audit(
+            db,
+            tenant_id=job.tenant_id,
+            action="procurement.cards_voided",
+            actor_id=actor_id,
+            actor_role=actor_role,
+            target=f"procurement_job:{job.id}",
+            detail={"cards": int(voided.rowcount or 0), "order_id": str(job.order_id)},  # type: ignore[attr-defined]
+            severity="warning",
+            ip=ip,
+        )
 
 
 # ------------------------------------------------------------------ job creation

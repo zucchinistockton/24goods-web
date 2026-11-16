@@ -1126,3 +1126,44 @@ async def test_m5_missing_request_hash(env, up):
     await up.run()
     job = await _job(up, fresh)
     assert job.state == "fulfilled" and job.request_hash
+
+
+async def test_n5_refund_voids_a_fulfilled_but_undelivered_unit(env, up):
+    mock = MockSupplier("mock_a")
+    await up.supplier(mock)
+    _buyer, order = await up.paid_order()
+    await up.run()  # fulfilled; delivery has not run yet
+    job = await _job(up, order)
+    assert job.state == "fulfilled" and len(mock.charged) == 1
+    assert await _order_status(env, order) == "paid" and await _cards(env, order) == 1
+    r = await _refund(env, order)
+    assert r.status_code == 200, r.text
+    job = await _job(up, order)
+    assert job.state == "void_pending" and job.step == "void"
+    assert await env.scalar(
+        "SELECT count(*) FROM card_stock WHERE order_id = :o AND status = 'void'",
+        o=uuid.UUID(order["id"]),
+    ) == 1  # fmt: skip
+    await up.make_due()
+    for _ in range(2):
+        await up.run()
+    job = await _job(up, order)
+    assert job.state == "voided" and job.upstream_status == "disabled" and not mock.charged
+    assert await env.scalar(
+        "SELECT count(*) FROM audit_log WHERE action = 'procurement.cards_voided'"
+    ) == 1  # fmt: skip
+    await env.drain()
+    assert await _order_status(env, order) == "refunded"
+
+
+async def test_n5_refund_leaves_a_delivered_unit_alone(env, up):
+    mock = MockSupplier("mock_a")
+    await up.supplier(mock)
+    buyer, order = await up.paid_order()
+    await up.run()
+    assert await env.drain() >= 1
+    assert await _order_status(env, order) == "delivered"
+    r = await _refund(env, order)
+    assert r.status_code in (200, 409, 422), r.text
+    job = await _job(up, order)
+    assert job.state == "fulfilled" and len(mock.charged) == 1
