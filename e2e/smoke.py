@@ -1381,6 +1381,68 @@ def v12_procurement(
     )
     step("procurement upstream_vcc: card bought, sealed, revealed; console shows the mask only")
 
+    # ---- review-v12 M3 part 2: an upstream_direct order (the supplier subscribes the BUYER's
+    # own account with the session the buyer supplies at checkout; sealed, never readable by the API)
+    pd = admin.j(
+        "POST",
+        "admin/products",
+        json={
+            "title_i18n": {"en": f"Claude Pro {tag}", "zh-CN": f"Claude Pro {tag}"},
+            "price": "25.00",
+            "floor_price": "0",
+            "currency": "CNY",
+            "delivery_mode": "upstream_direct",
+            "category": category,
+            "status": "active",
+        },
+    )
+    check(pd["delivery_separator"] == "----", "a direct product must reveal plan----account----order")
+    src_d = admin.j(
+        "POST",
+        "admin/procurement/sources",
+        expect=201,
+        json={
+            "product_id": pd["id"],
+            "supplier_id": sup["id"],
+            "params": {"product": "claude", "plan": "pro", "card_id": 1},
+            "cost_estimate": "21.15",
+            "priority": 10,
+            "enabled": True,
+        },
+    )
+    chk = admin.j("POST", f"admin/procurement/sources/{src_d['id']}/check")
+    check(chk["available"], f"direct source not available: {chk}")
+    marker = "E2ESESS" + uuid.uuid4().hex[:10].upper()
+    session = f"sk-ant-sid01-{marker}-" + "A" * 40
+    no_session = buyer.req(
+        "POST", "orders", json={"product_id": pd["id"], "qty": 1}, expect=422
+    )
+    check(
+        no_session.json()["error"]["code"] == "session_required",
+        "a direct product needs the account session at checkout",
+    )
+    od = buyer.j("POST", "orders", json={"product_id": pd["id"], "qty": 1, "session": session})
+    check(od["buyer_input"] is None, "the session must not be kept as plaintext buyer input")
+    pay_with_simulator(buyer, od["id"])
+    done = wait_status(buyer, od["id"], {"delivered", "manual_review"}, timeout=240)
+    check(done["status"] == "delivered", f"direct order ended in {done['status']}")
+    text = buyer.req("POST", f"orders/{od['id']}/reveal").json()["secrets"]
+    check(
+        len(text) == 1 and re.fullmatch(r"claude/pro----b\*\*\*@example\.test----\d+", text[0]),
+        f"the delivery must be plan----masked account----supplier order, got {text}",
+    )
+    jobs = admin.j("GET", "admin/procurement/jobs", params={"order_id": od["id"]})["items"]
+    check(len(jobs) == 1 and jobs[0]["state"] == "fulfilled", f"direct job {jobs}")
+    dv = json.dumps(admin.j("GET", f"admin/procurement/jobs/{jobs[0]['id']}"))
+    check(
+        jobs[0]["kind"] == "direct"
+        and jobs[0]["account_mask"] == "b***@example.test"
+        and marker not in dv
+        and marker not in json.dumps(admin.j("GET", f"admin/orders/{od['id']}")),
+        "the console must show the masked account only, never the session",
+    )
+    step("procurement upstream_direct: session sealed, order 202 -> completed, masked delivery")
+
     # ---- webhooks: duplicate delivery is stored once, a forged signature is refused
     def received() -> int:
         page = admin.j(

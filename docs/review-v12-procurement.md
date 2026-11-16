@@ -1,6 +1,6 @@
 # review-v12 — multi-supplier procurement and upstream fulfilment
 
-Status: **M1 built** (branch `feat/v12-procurement-m1`), M2/M3 not started. ADR-038. Migration `0023_procurement`.
+Status: **M1, M2 and M3 (`upstream_vcc` §17, `upstream_direct` §18) built**. ADR-038. Migration `0023_procurement`.
 First supplier: ZovoCard. Vendor docs (git-ignored, the repo is public):
 `docs/research/zovocard/zovocard-{openapi,cards,cdk}.md` — section numbers below (`§`) refer to
 `zovocard-openapi.md` unless marked `cdk§`.
@@ -729,3 +729,183 @@ New fields / codes: job `error_code` `card_mismatch`, `void_failed`, `card_not_a
   refund/close path (no automatic expiry).
 * `upstream_direct`, the frontend (buyer card view with copy buttons + 3DS panel, console card-source form), and the
   production egress allowlist (§14.4) remain.
+
+## 18. M3 part 2 — `upstream_direct` (the supplier subscribes the BUYER's own account)
+
+Migration `0029_procurement_direct`; tests `backend/tests/test_procurement_direct.py` (+ the `upstream_direct`
+step of `e2e/smoke.py`). Frontend: not built, the API it needs is below. Everything M2 / §16 / §17 established
+applies unchanged (order-status check in every executing mode, `maybe_sent`, same-key replay, `request_hash`,
+replay age, recovery, reference recorded on every answer, never re-POST a known order, void failure =
+`needs_manual` `void_failed`, fail-closed cost, both breakers, production supplier writes gated by
+`APP_PROCUREMENT_ALLOW_PRODUCTION_WRITES`). The vendor flow is documented in `zovocard-openapi.md` §6.18.
+
+### 18.1 The buyer credential (AGENTS.md §1.1 level of care)
+
+An account session (a ChatGPT session text is about 37 KB) is a live credential for the buyer's account.
+
+* **Separate keypair.** `python -m app.devtools.keygen` now also writes `cred_public_keys.json` (-> API) and
+  `cred_private_keys.json` (-> procurement ONLY, 0400) and `APP_CRED_ACTIVE_KID` in `secrets.env`. It is NOT the
+  card vault's pair: delivery (vault private keys) cannot open it, the API (public keys only) cannot open either.
+  Same primitive as the vault (`app/core/credvault.py`: X25519 + HKDF + AES-256-GCM, `kid` for rotation); the
+  AAD binds a blob to `(tenant, "buyer-credential", order)`, so it cannot be moved to another order or mistaken
+  for a card secret. `ProcurementSettings` still refuses `APP_VAULT_PRIVATE_KEYS_FILE`; the credential private key
+  is `APP_CRED_PRIVATE_KEYS_FILE`, a different variable.
+* **Where it lives.** Table `procurement_credentials` (FORCE RLS, `tenant_isolation`, UNIQUE `order_id`,
+  `blob` 64 B-140 kB, plus the non-secret `product` / `email_masked` / `kid` / `created_at`). Grants:
+  `app_api` INSERT and column-SELECT of `id, tenant_id, order_id, product, email_masked, created_at` only (a
+  `SELECT blob`, `SELECT *`, `UPDATE` or `DELETE` as `app_api` fails with "permission denied": tested);
+  `app_procurement` SELECT + DELETE (no INSERT / UPDATE); `app_delivery` nothing. The scan / sweep policies of
+  `app_procurement` apply to UNPINNED sessions only (the sweeper); a pinned session sees only its own tenant.
+* **Checkout.** `POST /orders` for an `upstream_direct` product REQUIRES `session`; the API validates it
+  (`app/suppliers/direct_credential.py`: size <= 64 KiB by bytes, no control characters, the GPT session check of
+  §15, `sk-ant-` shape for Claude, an `eyJ...` / `sso=` cookie for Grok), seals it at once with the procurement
+  PUBLIC key inside the order's transaction and never stores, logs, audits, or echoes it. `orders.buyer_input`
+  (plaintext, visible to staff) is NOT used and stays empty. A 422 for an over-long field never echoes the input.
+* **Use.** The engine opens the blob in memory at the moment of the supplier call (`_open_credential`: key held
+  by this process only), hands it to the adapter in `JobSpec.credential` (`repr` hidden), the adapter sends it to
+  the vendor (preflight and order POST) and it goes nowhere else: not a job column, not Redis, not the outbox,
+  not an audit row, not a log line, not an exception message, not an admin response, not a job view.
+* **Deletion.** The engine deletes the row in the same transaction as the `fulfilled` transition; the sweeper
+  (every `APP_CRED_SWEEP_INTERVAL_S`, default 30 s, also staff actions which run as `app_api` and cannot delete)
+  removes it when every direct job of the order is terminal (`fulfilled`/`failed`/`voided`), when the order is no
+  longer `pending_payment`/`paid`/`manual_review`, and in any case after `APP_CRED_MAX_AGE_S` (default 6 h, the
+  same bound as a same-key replay). `needs_manual` keeps it (a retry may need it) until the max age.
+* **Re-supply.** A session that expired or was rejected: the owner `POST /orders/{ref}/direct-session` (only a
+  `paid` / `manual_review` direct order that holds no session; 409 `session_exists` otherwise); staff then retry.
+* **Production gate.** The preflight carries the buyer's session, so it obeys the production-write gate like a
+  write (`read_only_post`): with writes disabled nothing leaves the process (tested).
+
+### 18.2 Adapter (`suppliers/zovocard/direct.py` + `supplier.py`)
+
+* **Enum lock.** `params.product` is REQUIRED and one of `gpt|claude|grok` (the three literals the vendor
+  documents; the §5 table's `x` is not an order product in the vendor docs and is not accepted). The vendor
+  silently turns an unknown `product` into `gpt` and charges it, so anything else is refused server side: by
+  `direct_spec()` before every call, and by the console (`bad_params` / schema 422). `plan` is the registry key
+  (no `*_renew`, no `credit*`); Claude / Grok are pinned to `US` / `USD` and sent explicitly; GPT may name a
+  `payment_country` + `payment_currency` pair. `card_id` (a card of OUR vendor account the supplier pays with,
+  `POST /gpt-direct/orders` requires one) is an offer parameter chosen by staff; `no_auto_card_switch: true`.
+  All direct sources of one target must buy the same vendor product (`mixed_products`): checkout asks for one
+  kind of session.
+* **Availability.** The registry/`plans` rule of §5 (strict identity), plus a USD cost estimate (Claude/Grok:
+  `checkout_amount_minor` + service fee + the plan's buffer; GPT: the plan formula, USD plans only) so a source
+  can be enabled without `cost_estimate` once checked (`cost_known`).
+* **Walk.** `submit`: a job that knows its order id only READS it. Otherwise `validate_credential` ->
+  `POST /gpt-direct/preflight` (read-only upstream, no key) -> stop on `quote_error` / `plan_already_active` ->
+  `POST /gpt-direct/orders` under the job key with `client_request_id = pj<job hex>` (the vendor also dedups on it;
+  a second protection) -> `202` = `accepted_pending` with the order id recorded (and the masked account). A
+  `GPT_PRICE_UNCONFIRMED` (stale / used token, new price version) re-quotes ONCE inline under the same key (the
+  refusal is definite). `query` is READ-ONLY: the order by id, else the order list searched for our
+  `client_request_id`; nothing found = `UNAVAILABLE`, after which the engine resubmits under the SAME key (the
+  vendor de-duplicates twice). `GET /gpt-direct/orders/{id}`: `completed` = OK; `queued`, `running`,
+  `awaiting_card`, `funding_pending`, ... and any unknown status = pending (never success); `declined`,
+  `failed_precharge`, `cancelled`, ... = FATAL `order_<status>` with the reference kept (needs_manual, order held).
+* **Void.** A COMPLETED subscription cannot be undone through the API: `void` answers FATAL `order_completed` (the
+  engine ends in `needs_manual` `void_failed` + critical audit + a staff alert, `proc.direct_done`). Only an order
+  that has not started paying (`queued`/`awaiting_card`/`funding_pending`) is cancelled
+  (`POST /gpt-direct/orders/{id}/cancel`, 409 = too late = FATAL `order_not_cancellable`); one already paying is
+  waited out (`void_waiting`, the usual poll budget). The vendor's `cancel-renewal` is not used.
+* **Error table.** Added: `GPT_DIRECT_ORDER_REJECTED` = AMBIGUOUS (read the order first, never a blind new one),
+  `SESSION_REQUIRED` = FATAL. Existing rows cover the rest (`GPT_SESSION_INVALID`, `CLAUDE_SESSION_INVALID`,
+  `GPT_PLAN_ALREADY_ACTIVE`, `PRECHECK_REJECTED`, `INSUFFICIENT_BALANCE` (supplier stop), `DIRECT_PRODUCT_DISABLED`,
+  `GPT_PREFLIGHT_RATE_LIMITED`...).
+
+### 18.3 State machine (one job per order, quantity 1)
+
+```
+paid -> procure.requested -> job queued -> [credential check: sealed row present, key loaded, product matches]
+   -> [precheck: availability, fresh] -> submitting (maybe_sent = true, committed first)
+   -> preflight + POST /gpt-direct/orders  (202)      -> accepted_pending (order id recorded)
+   -> GET /gpt-direct/orders/{id} polled at 15 s ... 15 min:
+        completed -> fulfilled (delivery text sealed into card_stock like a code; credential deleted; procure.fulfilled)
+        declined / failed_precharge / cancelled -> needs_manual order_<status>  (order held, never re-created)
+        still pending after APP_DIRECT_PENDING_MAX_S (default 2 h) -> needs_manual pending_too_long
+   ambiguous POST (timeout, 5xx) -> reconcile by READS (order list by client_request_id) -> found: continue;
+        not found: resubmit under the SAME key + request id (fresh preflight token)
+   no session (never sealed / expired / unreadable key / product mismatch) -> needs_manual credential_missing |
+        credential_unreadable | credential_mismatch  BEFORE maybe_sent is set (nothing was sent)
+refund / close, order still pending upstream  -> failed(recover) -> read the order -> cancel -> voided (or void_failed)
+refund / close AFTER completion               -> job stays fulfilled, error_code refunded_after_success,
+        critical audit procurement.direct_refunded_after_success + staff alert; nothing is undone automatically
+```
+
+Delivery: nothing secret exists, so the "delivery" is ONE short text `<product>/<plan>----<masked account>----<supplier
+order id>` sealed into `card_stock` as `sold` (like a CDK code; `card_fingerprint` of the vendor order, no
+`lookup_fp`) and shown by the existing `POST /orders/{ref}/reveal` -> `secrets[0]` / `cards[0].code`. The product's
+separator is forced to `----` and `delivery_format` defaults to `Plan----Account----Supplier order`. A refusal that
+arrives before the order (preflight, credential) never clears `maybe_sent` of a job that may have sent earlier
+(`Lease.prior_send`). Cost: booked once per vendor balance-log row (`gpt_direct*` rows link by the order id, the
+ledger of §6 unchanged). The balance breaker reserves every IN-FLIGHT direct order (`kind` any, not fulfilled),
+unlike a fulfilled one which was paid at order time.
+
+### 18.4 API the buyer app and the console need
+
+Buyer (`/api/v1`):
+
+| Route | Notes |
+|---|---|
+| `POST /orders` with an `upstream_direct` product | body adds `session` (string, up to 64 KiB of text; JSON body up to about 70 kB); `qty` must be 1 |
+| `GET /orders/{ref}/direct` | NEW. Owner only (404 otherwise and for other modes), `no-store`, 60/min. `{"order_id", "account" (masked e-mail or null), "plan" ("claude/pro"), "state" (job state or null)}` |
+| `POST /orders/{ref}/direct-session` | NEW. `{"session"}`; owner, `paid`/`manual_review` direct order without a stored session; 5/h |
+| `POST /orders/{ref}/reveal` | unchanged; `secrets[0]` is the delivery text |
+| cart `POST /checkout`, chat quotes | refuse a direct product: `direct_buy_now_only` (cart lines also show `unavailable_reason: direct_buy_now_only`), `direct_not_quotable` |
+
+Errors of `POST /orders` (422 unless noted): `session_required`, `direct_qty_one`, `session_too_large`,
+`session_too_short`, `session_invalid_format`, `session_not_json`, `session_access_token_only`,
+`session_missing_session_token`, `session_missing_access_token`, `session_malformed_access_token`,
+`session_expired`, `session_missing_account`, `session_account_mismatch`; 409 `out_of_stock` (no usable source);
+503 `direct_unavailable` (no credential public key configured). Offer the UI the same checks before submit; the
+server is the truth. The buyer page should say plainly what the session is used for and that it is deleted when
+the order ends.
+
+Console (admin, staff):
+
+| Route | Change |
+|---|---|
+| `POST /admin/products`, `PATCH .../{id}` | `delivery_mode` accepts `upstream_direct` (separator `----` forced) |
+| `POST /admin/procurement/sources`, `PATCH .../{id}` | direct `params`: `product` (REQUIRED, `gpt|claude|grok`), `plan`, `card_id` (int), optional `payment_country` + `payment_currency` (GPT only). Errors `bad_params`, `mixed_products`, `cost_required` |
+| `GET /admin/procurement/jobs`, `/{id}` | `kind = "direct"`; new fields `account_mask` (masked e-mail), `plan` (`product/plan`), `preflight_expires_at`; `upstream_ref` = vendor order id; never the session. Error codes: `credential_missing`, `credential_unreadable`, `credential_mismatch`, `credential_<reason>`, `plan_already_active`, `quote_error`, `order_declined`, `order_failed_precharge`, `order_cancelled`, `order_not_found`, `order_mismatch`, `plan_mismatch`, `malformed_order`, `malformed_preflight`, `pending_too_long`, `void_failed`, `refunded_after_success` |
+| `.../retry`, `/requery`, `/fail`, `/void`, `/switch` | unchanged semantics. `retry` of a held order whose session is gone needs the buyer's `direct-session` first |
+| `POST /admin/procurement/jobs/{id}/fulfil` | direct job: ADMIN only (403 otherwise), NO `code` (422 `direct_no_code`), `reason` of 12+ characters REQUIRED (422 `reason_required`); marks the job done after the subscription was done by hand at the supplier; seals the delivery text; critical audit `procurement.direct_manual_fulfil` (who, why, order, supplier reference) |
+
+### 18.5 Settings, env and deploy
+
+New: API `APP_CRED_PUBLIC_KEYS_FILE` (or `APP_CRED_PUBLIC_KEYS`), `APP_CRED_ACTIVE_KID`; procurement
+`APP_CRED_PRIVATE_KEYS_FILE`, `APP_CRED_MAX_AGE_S` (21600), `APP_CRED_SWEEP_INTERVAL_S` (30),
+`APP_DIRECT_PENDING_MAX_S` (7200). `deploy/bootstrap.sh` wires them for a new stack (compose secrets
+`cred_public_keys` -> api, `cred_private_keys` -> procurement only; `backup.sh` puts the private key with the vault
+keys under the vault recipients). **An already-bootstrapped stack** (no restart of delivery needed):
+
+1. `docker compose run --rm --no-deps --entrypoint python -v "$PWD/secrets:/keys" api -m app.devtools.keygen --out-dir /keys --cred-only`
+   (writes `secrets/cred_public_keys.json` 0644 and `secrets/cred_private_keys.json` 0600; prints
+   `APP_CRED_ACTIVE_KID=...`; never use `--force` on the vault files). `chown` the private file to the container uid
+   and `chmod 0400` it, as for `vault_private_keys.json`.
+2. Add to `deploy/env/api.env`: `APP_CRED_PUBLIC_KEYS_FILE=/run/secrets/cred_public_keys` and
+   `APP_CRED_ACTIVE_KID=<printed kid>`; to `deploy/env/procurement.env`:
+   `APP_CRED_PRIVATE_KEYS_FILE=/run/secrets/cred_private_keys`.
+3. In `docker-compose.yml`: top-level secrets `cred_public_keys` / `cred_private_keys` (files above), `api` gets
+   `cred_public_keys`, `procurement` gets `cred_private_keys` (and keeps `vault_public_keys`).
+4. `alembic upgrade head` (the `migrate` service), then recreate `api` and `procurement`. Add the private key to the
+   vault-recipient backup. Rotation: generate a new pair, keep the old private key in the file until the sweeper has
+   emptied the table (max 6 h), switch `APP_CRED_ACTIVE_KID` and the public file, then drop the old key.
+
+### 18.6 Left open
+
+* The vendor order **list** shape (`client_request_id` per row) and the order **detail** fields (`status`, `plan`,
+  `account_email`, `final_amount_minor`) are read as documented/seen in the 202 body; not verified in the real
+  sandbox (the vendor's direct orders were not run: the sandbox account lapsed). The reconcile does not depend on
+  the list: a miss falls back to the same-key resubmit, which the vendor de-duplicates by key and by
+  `client_request_id`. **Confirm both against the first sandbox direct order**, including whether the Idempotency-Key
+  is compared with the (changing) preflight token on a replay (`IDEMPOTENCY_CONFLICT` would be FATAL and flagged).
+* The funding **card** is a staff-chosen `card_id` per source; there is no card pool, no usage cap handling
+  (`CARD_CAPACITY_REACHED`... arrive as `INVALID_REQUEST`/`GPT_DIRECT_ORDER_REJECTED` and need staff) and no automatic
+  switch (`no_auto_card_switch: true`).
+* `cancel-renewal` (auto-renewal of the bought subscription) is not called: the vendor cancels once itself on
+  success; a `pending`/`warning` renewal status is not surfaced yet. Subscription terms must say that.
+* Credits (`credit*`) and renew-binding (`*_renew`) plans are refused; `x` is not an order product.
+* Reseller-tenant products: the supplier secrets belong to the platform; a reseller direct product is not designed.
+* Frontend: buyer session paste box with the offline checks, masked-account / plan panel
+  (`GET /orders/{ref}/direct`), re-supply form, console direct-source form (`product`, `plan`, `card_id`) and the
+  job view fields above. `scripts/dev.sh` does not yet generate the credential pair for the dev stack.
+* The `1/6 h` credential lifetime is a pragmatic bound; a USDT order that is paid after it needs the buyer to
+  re-supply (staff see `credential_missing`).
+

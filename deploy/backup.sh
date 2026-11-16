@@ -44,10 +44,14 @@ archive_volume goods24_uploads | age -R "$RECIPIENTS" > "$STAGE/uploads.tgz.age"
 if [[ "$GATEWAY_STATE" == required ]]; then
   archive_volume goods24_bepusdt_data | age -R "$RECIPIENTS" > "$STAGE/bepusdt.tgz.age"
 fi
-# Vault private KEKs use a separate recovery recipient/access policy.
-tar -C "$D" --exclude=secrets/vault_private_keys.json -czf - .env env secrets docker-compose.yml docker-compose.prod.yml \
+# Vault private KEKs (and the buyer-credential private key of upstream_direct) use a separate
+# recovery recipient/access policy.
+VKEYS=(secrets/vault_private_keys.json)
+[[ -f "$D/secrets/cred_private_keys.json" ]] && VKEYS+=(secrets/cred_private_keys.json)
+tar -C "$D" --exclude=secrets/vault_private_keys.json --exclude=secrets/cred_private_keys.json \
+  -czf - .env env secrets docker-compose.yml docker-compose.prod.yml \
   | age -R "$RECIPIENTS" > "$STAGE/config.tgz.age"
-tar -C "$D" -czf - secrets/vault_private_keys.json | age -R "$VAULT_RECIPIENTS" > "$STAGE/vault-keys.tgz.age"
+tar -C "$D" -czf - "${VKEYS[@]}" | age -R "$VAULT_RECIPIENTS" > "$STAGE/vault-keys.tgz.age"
 "${DC[@]}" exec -T postgres psql -U postgres -d goods24 -Atc 'SELECT version_num FROM alembic_version' > "$STAGE/schema.txt"
 "${DC[@]}" images --format json > "$STAGE/images.json"
 printf 'format=24goods-backup-v2\ncreated_at=%s\ngateway_state=%s\nconsistency=writers-fenced\n' "$(date -u +%FT%TZ)" "$GATEWAY_STATE" > "$STAGE/metadata.txt"

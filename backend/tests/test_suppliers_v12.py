@@ -73,6 +73,9 @@ EXPECTED: dict[tuple[int | None, str | None], tuple[Outcome, bool]] = {
     (None, "PRECHECK_REJECTED"): (Outcome.FATAL, False),
     (None, "GPT_PLAN_ALREADY_ACTIVE"): (Outcome.FATAL, False),
     (None, "GPT_PRICE_UNCONFIRMED"): (Outcome.RETRYABLE, False),
+    # M3 part 2 (direct): read the order first, never create another blindly (vendor 6.18.9)
+    (None, "GPT_DIRECT_ORDER_REJECTED"): (Outcome.AMBIGUOUS, False),
+    (None, "SESSION_REQUIRED"): (Outcome.FATAL, False),
     (None, "GPT_SESSION_INVALID"): (Outcome.FATAL, False),
     (None, "CLAUDE_SESSION_INVALID"): (Outcome.FATAL, False),
     (None, "GPT_CREDIT_REQUIRES_SUBSCRIPTION"): (Outcome.FATAL, False),
@@ -114,6 +117,8 @@ STATUS_FOR = {
     "ACCOUNT_UNAVAILABLE": 401,
     "product_policy_outdated": 409,
     "IDEMPOTENCY_CONFLICT": 409,
+    "GPT_DIRECT_ORDER_REJECTED": 400,
+    "SESSION_REQUIRED": 400,
     "CDK_DISABLE_REJECTED": 409,
     "GPT_PREFLIGHT_RATE_LIMITED": 429,
     "ORDER_NOT_FOUND": 404,

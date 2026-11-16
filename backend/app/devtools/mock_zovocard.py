@@ -986,9 +986,11 @@ async def _main() -> None:
         raise SystemExit("mock_zovocard only runs with APP_ENV=dev|test")
     host = os.environ.get("APP_MOCKZOVO_HOST", "127.0.0.1")
     port = int(os.environ.get("APP_MOCKZOVO_PORT", "8005"))
+    scenarios = os.environ.get("APP_MOCKZOVO_SCENARIOS", "") == "1"
     state = MockZovo(
-        scenarios=os.environ.get("APP_MOCKZOVO_SCENARIOS", "") == "1",
+        scenarios=scenarios,
         result_404=os.environ.get("APP_MOCKZOVO_RESULT_404", "") == "1",
+        direct_polls=2 if scenarios else 3,  # the E2E smoke waits for the order: keep it short
     )
     server = uvicorn.Server(
         uvicorn.Config(
