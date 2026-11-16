@@ -38,6 +38,12 @@ class ProcurementSettings:
     vault_public_keys_file: str = ""
     vault_active_kid: str = ""
     vault_fingerprint_key: str = ""
+    # buyer-credential PRIVATE keys for upstream_direct (review-v12 §18): the only process that may
+    # open a buyer's account session. NOT the card vault's keys (that stays refused above).
+    cred_private_keys_file: str = ""
+    # a sealed credential is deleted after this many seconds in any case (default 6 h, the same
+    # bound as a same-key replay): a session text is a live credential for the buyer's account
+    cred_max_age_s: float = 21600.0
     # engine (review-v12 §3, §6)
     jobs_poll_s: float = 2.0
     job_lease_s: float = 120.0

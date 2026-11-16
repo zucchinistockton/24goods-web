@@ -9,6 +9,7 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.cardvault import CardSealer
+from app.core.credvault import CredentialOpener
 from app.procurement.config import ProcurementSettings
 
 
@@ -23,6 +24,8 @@ class ProcurementContext:
     http: httpx.AsyncClient | None = None
     # seal-only vault (public key + fingerprint key); None = the engine refuses to fulfil
     sealer: CardSealer | None = None
+    # buyer-credential opener (upstream_direct): the ONLY place a buyer's session is decrypted
+    cred_opener: CredentialOpener | None = None
     # tests: build suppliers from a factory (SupplierRef -> Supplier) instead of the registry
     supplier_factory: Callable[[Any], Any] | None = None
     # engine: one supplier instance per (adapter, code, env), closed on shutdown

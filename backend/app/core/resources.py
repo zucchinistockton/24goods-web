@@ -10,11 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.core.cardvault import CardSealer
 from app.core.config import Settings
+from app.core.credvault import CredentialSealer
 from app.core.db import make_engine, make_sessionmaker
 from app.core.redis import make_redis
 from app.core.security import SessionStore
 from app.core.tenancy import TenantResolver
-from app.core.vaultkeys import build_sealer
+from app.core.vaultkeys import build_credential_sealer, build_sealer
 from app.modules.realtime.hub import RealtimeHub
 from app.payments.bepusdt import BepusdtClient, BepusdtConfig
 from app.payments.zpay import ZPayClient, ZPayConfig
@@ -35,6 +36,8 @@ class Resources:
     http: httpx.AsyncClient
     hub: RealtimeHub
     procurement: httpx.AsyncClient
+    # buyer-credential sealer (upstream_direct); None = not configured
+    cred_sealer: CredentialSealer | None = None
 
     async def close(self) -> None:
         await self.hub.stop()
@@ -104,4 +107,5 @@ def build_resources(
         http=http,
         hub=RealtimeHub(redis),
         procurement=procurement,
+        cred_sealer=build_credential_sealer(settings),
     )

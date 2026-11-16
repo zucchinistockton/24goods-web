@@ -75,6 +75,11 @@ class Settings(BaseSettings):
     vault_public_keys_file: str = ""
     vault_active_kid: str = ""
     vault_fingerprint_key: str = ""  # base64, >= 32 bytes
+    # --- buyer-credential keypair for upstream_direct (PUBLIC half only; review-v12 §18) ---
+    # a DIFFERENT keypair from the card vault's: only the procurement process holds the private key
+    cred_public_keys: str = ""  # JSON {kid: base64 raw X25519 public key}
+    cred_public_keys_file: str = ""
+    cred_active_kid: str = ""
     quote_hmac_key: str = ""  # base64, >= 32 bytes
     pow_key: str = ""  # base64, >= 32 bytes: signs proof-of-work challenges
     settings_key: str = ""  # base64, 32 bytes: AES-256-GCM key for tenant_secrets (api only)

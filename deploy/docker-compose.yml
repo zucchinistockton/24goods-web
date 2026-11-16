@@ -103,7 +103,8 @@ services:
     command: ["python", "-m", "app.serve"]
     env_file: [env/api.env]
     volumes: [uploads:/data/uploads]
-    secrets: [vault_public_keys]          # public key only: can seal, cannot open
+    # public keys only: can seal, cannot open (card vault + the buyer-credential keypair)
+    secrets: [vault_public_keys, cred_public_keys]
     networks:
       edge: {}
       backend: {}
@@ -127,7 +128,9 @@ services:
     profiles: [procurement, demo]         # demo/CI: runs against the mockzovo simulator below
     command: ["python", "-m", "app.procurement"]
     env_file: [env/procurement.env]       # supplier API secrets live ONLY here
-    secrets: [vault_public_keys]          # public key only: can seal (M2), cannot open
+    # card vault: public key only (seals). Buyer credentials (upstream_direct): the PRIVATE half,
+    # a different keypair from the card vault's; only this container can open a buyer's session
+    secrets: [vault_public_keys, cred_private_keys]
     networks:
       backend:
         ipv4_address: 10.89.11.30         # == APP_PROCUREMENT_HOST: the internal API binds here only
@@ -256,5 +259,9 @@ secrets:
     file: ./secrets/vault_public_keys.json
   vault_private_keys:
     file: ./secrets/vault_private_keys.json
+  cred_public_keys:
+    file: ./secrets/cred_public_keys.json
+  cred_private_keys:
+    file: ./secrets/cred_private_keys.json
   redis_acl:
     file: ./secrets/users.acl
