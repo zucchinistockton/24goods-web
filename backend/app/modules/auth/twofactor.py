@@ -28,14 +28,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import suspend, totp
 from app.core.audit import audit
 from app.core.config import Settings
-from app.core.errors import ApiError
-from app.core.ratelimit import blocked, enforce, hit, ident_hash
+from app.core.errors import ApiError, RateLimited
+from app.core.ratelimit import (
+    blocked,
+    enforce,
+    hit,
+    ident_hash,
+    release,
+    reserve,
+)
 from app.core.security import verify_password
 from app.models import User, UserTotp
 
 PENDING_TTL_S = 300
 PENDING_ATTEMPTS = 5  # wrong codes per pending token before it is destroyed
 USER_FAILURES = (10, 3600)  # wrong second factors per account, whatever the IP
+MINT_LIMIT = (10, 600)  # pending tokens per account
 VERIFY_LIMIT = (10, 600)  # code checks per signed-in user (enable / disable / regenerate)
 # the password step's limits (auth/service.py); a wrong second factor counts against the same keys
 IP_FAILURES = (5, 60)
@@ -350,6 +358,8 @@ def _pending_key(token: str) -> str:
 
 async def start_pending(redis: Redis, user: User, keys: LimiterKeys) -> str:
     """A single-use token that stands for "the password was right" for five minutes."""
+    # a known password must not buy an unlimited supply of tokens (each carries five guesses)
+    await enforce(redis, "2fa:mint", str(user.id), *MINT_LIMIT)
     token = secrets.token_urlsafe(32)
     data = {
         "uid": str(user.id),
@@ -383,7 +393,6 @@ async def complete_login(
     uid = uuid.UUID(data["uid"])
     await blocked(redis, "loginfail:pair", data["pair_key"], *PAIR_FAILURES)
     await blocked(redis, "loginfail:email", data["email_key"], *EMAIL_FAILURES)
-    await blocked(redis, "2fa:fail:user", str(uid), *USER_FAILURES)
     tries = await redis.incr(key + ":n")
     await redis.expire(key + ":n", PENDING_TTL_S)
     if int(tries) > PENDING_ATTEMPTS:
@@ -394,6 +403,11 @@ async def complete_login(
         await redis.delete(key, key + ":n")
         raise TwoFactorExpired("Sign in again")
     await suspend.enforce(db, user)
+    # Count the guess BEFORE checking it (given back on success): parallel requests cannot all
+    # pass a read-only check and overshoot the per-account budget.
+    fits, reset = await reserve(redis, "2fa:fail:user", str(uid), 1, *USER_FAILURES)
+    if not fits:
+        raise RateLimited(retry_after=reset)
     row = await _row(db, user, lock=True)
     kind = None
     if row is not None and row.confirmed_at is not None:
@@ -403,7 +417,6 @@ async def complete_login(
             ("loginfail:ip", ip_key, IP_FAILURES),
             ("loginfail:pair", data["pair_key"], PAIR_FAILURES),
             ("loginfail:email", data["email_key"], EMAIL_FAILURES),
-            ("2fa:fail:user", str(uid), USER_FAILURES),
         ):
             await hit(redis, name, ident, limit, window)
         await audit(
@@ -420,6 +433,7 @@ async def complete_login(
         raise TwoFactorInvalid("The code is not valid")
     # single use: the token dies before the session exists
     await redis.delete(key, key + ":n")
+    await release(redis, "2fa:fail:user", str(uid), 1, USER_FAILURES[1])
     left = None
     if kind == "recovery":
         left = await db.scalar(

@@ -18,7 +18,7 @@ from collections.abc import Coroutine
 from typing import Any, Literal
 
 from redis.asyncio import Redis
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import apitoken, mailer
@@ -30,7 +30,7 @@ from app.core.features import FeatureDisabled
 from app.core.ratelimit import count, enforce, hit, ident_hash
 from app.core.resources import Resources
 from app.core.security import hash_password
-from app.models import User
+from app.models import User, UserTotp
 from app.modules.auth.schemas import INSTANT_DOMAIN
 
 log = logging.getLogger("app.auth.codes")
@@ -246,6 +246,12 @@ async def reset_password(
         raise InvalidCode("The verification code is invalid or expired")
     user.pw_hash = await hash_password(new_password)
     await apitoken.revoke_user_tokens(db, user.tenant_id, user.id)
+    if not user.email_verified:
+        # whoever registered this address never proved they own it: a second factor they
+        # enrolled must not lock the real owner out (same rule as the Google link)
+        await db.execute(
+            delete(UserTotp).where(UserTotp.user_id == user.id, UserTotp.tenant_id == tenant_id)
+        )
     user.email_verified = True
     await audit(
         db,

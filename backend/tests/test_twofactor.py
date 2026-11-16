@@ -221,6 +221,9 @@ async def test_admin_reset_and_tenant_isolation(env):
     admin, a = await env.login("admin")
     r = await admin.post(f"/api/v1/admin/users/{a.id}/2fa/reset")
     assert r.status_code == 403
+    peer = await env.user("admin")
+    r = await admin.post(f"/api/v1/admin/users/{peer.id}/2fa/reset")
+    assert r.status_code == 403  # an admin's second factor is not resettable from a session
     r = await admin.post(f"/api/v1/admin/users/{u.id}/2fa/reset")
     assert r.status_code == 200 and r.json() == {
         "id": str(u.id),
@@ -282,4 +285,69 @@ async def test_google_takeover_of_an_unverified_account_drops_its_second_factor(
     c, r = await _google_callback(env, _claims(), monkeypatch)
     assert r.status_code == 302 and "#" not in r.headers["location"]
     assert (await c.get("/api/v1/auth/me")).status_code == 200
+    assert await env.scalar("SELECT count(*) FROM user_totp") == 0
+
+
+async def test_guess_budget_is_counted_before_the_check_and_tokens_are_capped(env):
+    from app.core.errors import RateLimited
+    from app.core.ratelimit import window_key
+    from app.modules.auth import twofactor
+
+    _, u, secret, _ = await enrol(env)
+    keys = twofactor.limiter_keys(env.tenant_id, "tf@example.com", None)
+    # ten failures used up for this account: even the right code is refused, and not consumed
+    await env.res.redis.set(
+        window_key("2fa:fail:user", str(u.id), twofactor.USER_FAILURES[1])[0],
+        twofactor.USER_FAILURES[0],
+        ex=60,
+    )
+    token = await twofactor.start_pending(env.res.redis, u, keys)
+    async with env.api_session() as db:
+        try:
+            await twofactor.complete_login(
+                db, env.res.redis, env.res.settings, env.tenant_id, token, code(secret, 1), None
+            )
+            raise AssertionError("accepted over the budget")
+        except RateLimited:
+            pass
+    # a correct code gives its reserved unit back
+    await env.res.redis.flushdb()
+    token = await twofactor.start_pending(env.res.redis, u, keys)
+    async with env.api_session() as db:
+        await twofactor.complete_login(
+            db, env.res.redis, env.res.settings, env.tenant_id, token, code(secret, 1), None
+        )
+    key = window_key("2fa:fail:user", str(u.id), twofactor.USER_FAILURES[1])[0]
+    assert int(await env.res.redis.get(key) or 0) == 0
+    # pending tokens per account are capped
+    await env.res.redis.flushdb()
+    for _ in range(twofactor.MINT_LIMIT[0]):
+        await twofactor.start_pending(env.res.redis, u, keys)
+    try:
+        await twofactor.start_pending(env.res.redis, u, keys)
+        raise AssertionError("minted over the cap")
+    except RateLimited:
+        pass
+
+
+async def test_password_reset_of_an_unverified_account_drops_its_second_factor(env):
+    from app.modules.auth import codes
+
+    await enrol(env, email="victim@example.com")  # a squatter on an address they never proved
+    assert (
+        await env.scalar("SELECT email_verified FROM users WHERE email='victim@example.com'")
+        is False
+    )
+
+    async def yes(*a, **k):
+        return True
+
+    orig, codes.verify = codes.verify, yes
+    try:
+        async with env.api_session() as db:
+            await codes.reset_password(
+                db, env.res, env.tenant_id, "victim@example.com", "000000", "a-new-password-1", None
+            )
+    finally:
+        codes.verify = orig
     assert await env.scalar("SELECT count(*) FROM user_totp") == 0

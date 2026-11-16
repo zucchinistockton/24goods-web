@@ -177,7 +177,12 @@ async def reset_two_factor(
         raise NotFound("User not found")
     if user.id == staff.id:
         raise Forbidden("Use your own account settings to turn two-factor login off")
+    if user.role == "admin":
+        # one admin session must not be able to strip another admin's second factor; a locked-out
+        # admin is reset at the database level (docs/architecture.md ADR-039)
+        raise Forbidden("An admin's two-factor login cannot be reset here")
     uid = user.id
+    await apitoken.revoke_user_tokens(db, user.tenant_id, user.id)
     removed = await twofactor.reset_by_staff(db, staff, user, client_ip(request))
     await res.sessions.revoke_user_sessions(uid)
     return {"id": str(uid), "two_factor": False, "removed": removed}
