@@ -48,14 +48,15 @@ from app.suppliers.zovocard.client import sanitize_error_code
 
 log = logging.getLogger("app.procurement.redeem")
 
-MAX_BODY = 24 * 1024
+# a real ChatGPT session text is ~37 KB (measured 2026-11-16) and grows when JSON-escaped
+MAX_BODY = 96 * 1024
 BODY_DEADLINE_S = 10.0  # whole request body
 STEPS = ("preview", "preflight", "redeem", "result")
 DEVICE_RE = re.compile(r"^[A-Za-z0-9._-]{8,64}$")
 CODE_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 TOKEN_RE = re.compile(r"^[A-Za-z0-9._~+/=:-]{8,512}$")
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,80}$")
-SESSION_MAX = 16384
+SESSION_MAX = 65536
 _CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _ISO_RE = re.compile(r"^[0-9T:.+\-Z ]{1,40}$")
 _COUNTRY_RE = re.compile(r"^[A-Z]{2}$")
@@ -205,7 +206,10 @@ def shape_redeem(data: Any) -> dict[str, Any]:
     order = _dict(d.get("order"))
     status = _s(order.get("status") or d.get("status"))
     return {
-        "order_id": _s(order.get("order_id") or d.get("id") or d.get("order_id"), 80),
+        # the vendor nests it as data.order.id (verified in the sandbox 2026-11-16)
+        "order_id": _s(
+            order.get("order_id") or order.get("id") or d.get("id") or d.get("order_id"), 80
+        ),
         "status": status,
         "stage": _s(order.get("stage") or d.get("stage")),
         "terminal": status in TERMINAL,

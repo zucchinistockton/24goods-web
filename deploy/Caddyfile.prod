@@ -171,7 +171,7 @@
 	}
 	encode zstd gzip
 	request_body {
-		max_size 32KB
+		max_size 128KB
 	}
 
 	@redeem_api path /redeem/preview /redeem/preflight /redeem/redeem /redeem/result

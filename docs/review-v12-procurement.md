@@ -240,6 +240,8 @@ style-src 'self'; img-src 'self' data:; connect-src 'self'; ...`, strips `Cookie
 proxy, forwards only the four paths below and answers any other `/redeem/*` with 404. Same origin, so the proxy
 sends **no CORS headers** and refuses a POST whose `Origin` differs from `Host` (403 `forbidden`).
 
+**Verified against the vendor sandbox (2026-11-16, through `redeem.kesiv.com`, real session text) [V].** Preview and preflight field names as listed below; redeem answers `data.order.{id,status,...}` plus `data.events[]` (the order id is `data.order.id`); a real ChatGPT session text is about 37 KB. The result shape is still unverified (the sandbox answers 404).
+
 **Which supplier.** The proxy cannot tell cheaply and safely which environment issued a code (card rows hold
 sealed secrets; `app_procurement` cannot read them). It uses the **single enabled ZovoCard supplier of the
 platform tenant** (a reseller's supplier is never used); if none or more than one `(code, env)` is enabled
@@ -247,7 +249,7 @@ the answer is `unavailable`. `APP_REDEEM_SUPPLIER_ENV=sandbox|production` pins o
 enabled. The vendor base is derived from that supplier's `BASE_URL` (`scheme://host/api/v1/cdk`); no API key
 is sent (the vendor's public steps need none) and https is required outside dev/test.
 
-**Conventions.** JSON in, JSON out; POST bodies need `Content-Type: application/json`, at most 24 KiB, only the
+**Conventions.** JSON in, JSON out; POST bodies need `Content-Type: application/json`, at most 96 KiB, only the
 listed keys (unknown keys = `invalid_request`). Every response has `Cache-Control: no-store`; no cookies are
 ever set. Success: `{"data": {...}}` (only the fields below, everything else from the vendor is dropped).
 Failure: `{"error": {"code": "<code>", "message": "<fixed English text>"}}`; localise by `code`. Never put the
@@ -257,7 +259,7 @@ code or the credential in a URL; keep `redemption_token` for 15 min (the vendor 
 | Step | Request | `data` on success |
 |---|---|---|
 | `POST /redeem/preview` | `{"code": "<CDK>"}`; `[A-Za-z0-9._:-]{8,128}` | `redemption_token`, `expires_at` (ISO), `plan`, `plan_flow`, `funding_cap_minor` (int, 0 = none) |
-| `POST /redeem/preflight` | `{"redemption_token", "credential": {"mode": "session", "session": "<ChatGPT session text, 8..16384 chars, no control chars>"}}` | `preflight_token` (**null for Grok/Claude codes**), `preflight_expires_at`, `payment_country` (e.g. `PH`), `payment_currency`, `subscription_recovery_required` (bool) |
+| `POST /redeem/preflight` | `{"redemption_token", "credential": {"mode": "session", "session": "<ChatGPT session text, 8..65536 chars (a real one is about 37 KB), no control chars>"}}` | `preflight_token` (**null for Grok/Claude codes**), `preflight_expires_at`, `payment_country` (e.g. `PH`), `payment_currency`, `subscription_recovery_required` (bool) |
 | `POST /redeem/redeem` | `{"redemption_token", "client_request_id": "[A-Za-z0-9._:-]{1,80}", "preflight_token"?, "credential"?}`; at least one of `preflight_token` (GPT/X) or `credential` (Grok/Claude, same account as preflight) | `order_id`, `status`, `stage`, `terminal` (bool). Success means *accepted*, not paid: poll result |
 | `POST /redeem/result {"redemption_token"}` (POST only: a token never travels in a URL on our side; `GET` answers 405) | | `order_id`, `status`, `stage`, `cdk_status`, `terminal`, `events[]` (`type`, `status`, `at`; at most 50). `404 not_found` is normal for a while (and always in the vendor sandbox); keep polling every 3-5 s up to ~2 min, then show "check later" |
 
@@ -269,7 +271,7 @@ code or the credential in a URL; keep `redemption_token` for 15 min (the vendor 
 | `forbidden` | 403 | cross-origin request |
 | `not_found` | 404 | result not available (yet); also unknown path |
 | `method_not_allowed` | 405 | wrong method |
-| `payload_too_large` | 413 | body over 24 KiB |
+| `payload_too_large` | 413 | body over 96 KiB |
 | `code_unavailable` | 422 | unknown, disabled, used or wrongly-scoped code (one code: no oracle) |
 | `credential_invalid` | 422 | the session was not accepted; ask for a fresh one |
 | `account_ineligible` | 422 | the account cannot take this plan (e.g. plan already active) |
