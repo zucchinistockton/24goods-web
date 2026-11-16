@@ -163,10 +163,21 @@ class Result:
     retry_after: timedelta | None = None
     supplier_stop: bool = False  # account-level refusal: open the supplier breaker
     card_mask: str | None = None  # vcc: masked card number (never the full one)
+    # direct: masked account e-mail the supplier's preflight reported, and the token's expiry
+    account_mask: str | None = None
+    preflight_expires_at: datetime | None = None
+    funding_mask: str | None = None  # availability only; never recorded on a job
+    # direct: short machine summary of the vendor order (``status:fee_status``), shown to staff
+    detail: str | None = None
 
     @classmethod
     def from_error(
-        cls, exc: SupplierError, *, upstream_ref: str | None = None, card_mask: str | None = None
+        cls,
+        exc: SupplierError,
+        *,
+        upstream_ref: str | None = None,
+        card_mask: str | None = None,
+        account_mask: str | None = None,
     ) -> Result:
         return cls(
             outcome=exc.outcome,
@@ -175,6 +186,7 @@ class Result:
             supplier_stop=exc.supplier_stop,
             upstream_ref=upstream_ref,
             card_mask=card_mask,
+            account_mask=account_mask,
         )
 
 
@@ -215,6 +227,9 @@ class Availability:
     reason: str | None = None  # machine string when unavailable
     cost_estimate: Money | None = None
     checked_at: datetime | None = None
+    # direct: masked number of the funding card (first 6 + last 4), so the caller can refuse a card
+    # that was bought for a buyer
+    funding_mask: str | None = None
 
 
 @dataclass(frozen=True)
@@ -226,6 +241,14 @@ class JobSpec:
     idempotency_key: str
     offer: OfferSpec
     upstream_ref: str | None = None
+    # upstream_direct ONLY: the buyer's account session, opened in memory by the engine for this one
+    # call. A live credential: hidden from ``repr``, never logged, never copied anywhere.
+    credential: str | None = field(default=None, repr=False)
+    # direct: the masked account the job's FIRST preflight reported (a later one must match),
+    # the most the order may cost (USD, offer cost x (1 + tolerance)) and that tolerance
+    account_mask: str | None = None
+    cost_bound: Money | None = None
+    quote_tolerance: Decimal = Decimal("0.10")
 
     def __post_init__(self) -> None:
         if not IDEMPOTENCY_KEY_RE.fullmatch(self.idempotency_key):

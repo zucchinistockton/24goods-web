@@ -32,6 +32,9 @@ class ActionIn(BaseModel):
     reference: str | None = Field(None, max_length=200)
     # auto_card replace: which delivered cards to void and replace (default: all of the order)
     card_ids: list[uuid.UUID] | None = Field(None, max_length=100)
+    # refund of an upstream_direct order whose subscription COMPLETED: the supplier cannot undo it,
+    # so the admin must say they know (422 direct_refund_ack_required otherwise)
+    acknowledge_irreversible: bool = False
 
 
 class RefundIn(BaseModel):
@@ -39,6 +42,7 @@ class RefundIn(BaseModel):
 
     reference: str = Field(min_length=3, max_length=200)
     note: str | None = Field(None, max_length=2000)
+    acknowledge_irreversible: bool = False  # see ActionIn
 
     @field_validator("reference")
     @classmethod

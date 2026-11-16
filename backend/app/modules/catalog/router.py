@@ -7,10 +7,12 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import Page, get_db, get_lang, get_page, get_res, get_tenant_id
+from app.core.errors import OutOfStock
 from app.core.resources import Resources
 from app.core.storefront import Storefront, get_storefront
 from app.modules.catalog import service
 from app.modules.catalog.categories import enabled_categories, public_view
+from app.modules.catalog.upstream import direct_target_product
 
 router = APIRouter(tags=["catalog"])
 
@@ -70,7 +72,15 @@ async def product(
     db: AsyncSession = Depends(get_db),
     sf: Storefront | None = Depends(get_storefront),
 ) -> dict:
-    return await service.product_detail(db, lang, product_id, tenant_id, sf)
+    out = await service.product_detail(db, lang, product_id, tenant_id, sf)
+    if out.get("delivery_mode") == "upstream_direct":
+        # which kind of account the buyer must connect (gpt / claude / grok); None = not known
+        # (variants with their own sources, or nothing usable): the page then explains generically
+        try:
+            out["direct_product"] = await direct_target_product(db, product_id, None)
+        except OutOfStock:
+            out["direct_product"] = None
+    return out
 
 
 @router.get("/support/status")

@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, insert, select, update
@@ -34,7 +35,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import audit
 from app.core.cardvault import CardContext
 from app.core.deps import Page, client_ip, get_db, get_page, get_res, require_admin, require_staff
-from app.core.errors import Conflict, Forbidden, InvalidState, NotFound, Validation
+from app.core.errors import Conflict, Forbidden, InvalidState, NotFound, Unavailable, Validation
 from app.core.ratelimit import enforce
 from app.core.resources import Resources
 from app.models import (
@@ -44,6 +45,7 @@ from app.models import (
     ProcurementJob,
     SupplierAccount,
     SupplierLedgerEntry,
+    SupplierOffer,
     User,
 )
 from app.modules.admin.suppliers import _dec, _iso
@@ -87,7 +89,8 @@ class ReasonIn(BaseModel):
 
 
 class FulfilIn(BaseModel):
-    code: str = Field(min_length=4, max_length=256, repr=False)
+    # a CDK code / a card; a direct job takes NO code (the supplier did the work, staff attest it)
+    code: str | None = Field(default=None, min_length=4, max_length=256, repr=False)
     # a card job: the supplier's card id when staff know it; it becomes the dedup fingerprint input
     # exactly as in the engine path, so the UNIQUE catches an engine / hand overlap
     card_id: str | None = Field(default=None, pattern=r"^[0-9]{1,20}$")
@@ -130,6 +133,7 @@ def _job_view(
     j: ProcurementJob,
     order_no: str | None,
     sup: tuple[str, str, bool] | None,
+    plan: str | None = None,
 ) -> dict[str, Any]:
     return {
         "id": str(j.id),
@@ -148,6 +152,10 @@ def _job_view(
         "upstream_ref": j.upstream_ref,
         "upstream_status": j.upstream_status,
         "card_mask": j.card_mask,  # first 6 + last 4 only; the card itself is sealed
+        # upstream_direct: the MASKED account e-mail and the plan only, never the buyer's session
+        "account_mask": j.account_mask,
+        "plan": plan,
+        "preflight_expires_at": _iso(j.preflight_expires_at),
         "card_id": j.upstream_ref
         if j.kind == "vcc"
         else None,  # the supplier's card id (not secret)
@@ -180,7 +188,19 @@ async def _view_of(db: AsyncSession, j: ProcurementJob) -> dict[str, Any]:
             )
         ).first()
         sup = (r.code, r.env, r.enabled) if r else None
-    return _job_view(j, order_no, sup)
+    return _job_view(j, order_no, sup, await _plan_of(db, j))
+
+
+async def _plan_of(db: AsyncSession, j: ProcurementJob) -> str | None:
+    """``<product>/<plan>`` of a direct job's source (offer parameters carry no secret)."""
+    if j.kind != "direct" or j.offer_id is None:
+        return None
+    params = await db.scalar(
+        select(SupplierOffer.params).where(
+            SupplierOffer.id == j.offer_id, SupplierOffer.tenant_id == j.tenant_id
+        )
+    )
+    return f"{params.get('product')}/{params.get('plan')}" if params else None
 
 
 # ------------------------------------------------------------------ reads
@@ -203,9 +223,10 @@ async def list_jobs(
     total = await db.scalar(select(func.count(ProcurementJob.id)).where(*where)) or 0
     rows = (
         await db.execute(
-            select(ProcurementJob, Order.order_no, SupplierAccount)
+            select(ProcurementJob, Order.order_no, SupplierAccount, SupplierOffer.params)
             .join(Order, Order.id == ProcurementJob.order_id)
             .outerjoin(SupplierAccount, SupplierAccount.id == ProcurementJob.supplier_id)
+            .outerjoin(SupplierOffer, SupplierOffer.id == ProcurementJob.offer_id)
             .where(*where, Order.tenant_id == tid)
             .order_by(ProcurementJob.created_at.desc(), ProcurementJob.id)
             .limit(page.page_size)
@@ -222,7 +243,13 @@ async def list_jobs(
         ).all()
     )
     items = [
-        _job_view(j, no, (s.code, s.env, s.enabled) if s is not None else None) for j, no, s in rows
+        _job_view(
+            j,
+            no,
+            (s.code, s.env, s.enabled) if s is not None else None,
+            f"{prm.get('product')}/{prm.get('plan')}" if j.kind == "direct" and prm else None,
+        )
+        for j, no, s, prm in rows
     ]
     out = page.wrap(items, int(total))
     out["counts"] = {k: int(counts.get(k, 0)) for k in STATES}
@@ -521,10 +548,35 @@ async def fulfil_manually(
     job becomes ``fulfilled`` through the same ``procure.fulfilled`` event as an automatic one."""
     await enforce(res.redis, RATE[0], str(staff.id), RATE[1], RATE[2])
     ip = client_ip(request)
-    code = body.code.strip()
-    if not (4 <= len(code) <= 256) or not code.isprintable():
-        raise Validation("That is not a valid code", code="bad_code")
-    job = await _lock(db, staff.tenant_id, job_id)
+    tid, is_admin = staff.tenant_id, staff.role == "admin"  # (a rollback expires `staff`)
+    pre = await db.scalar(
+        select(ProcurementJob.kind).where(
+            ProcurementJob.id == job_id, ProcurementJob.tenant_id == tid
+        )
+    )
+    if pre == "direct" and is_admin:
+        # hand-fulfilling a job whose supplier order is still moving would double-subscribe:
+        # read the order first (the procurement process asks the vendor; fail closed) (M4).
+        # the SELECT above holds no lock, so the open transaction blocks nobody
+        await _refuse_if_order_in_flight(res, tid, job_id)
+    job = await _lock(db, tid, job_id)
+    direct = job.kind == "direct"
+    if direct:
+        # the supplier does the work for a direct job: staff ATTEST that they did it by hand at the
+        # supplier. No code is pasted; the buyer's delivery is the plan / masked account / order.
+        if staff.role != "admin":
+            raise Forbidden("Only an admin can mark a direct job done by hand")
+        if body.code:
+            raise Validation("A direct job takes no code", code="direct_no_code")
+        if len((body.reason or "").strip()) < 12:
+            raise Validation(
+                "Say what you did at the supplier (at least 12 characters)", code="reason_required"
+            )
+        code = await _direct_text(db, job)
+    else:
+        code = (body.code or "").strip()
+        if not (4 <= len(code) <= 256) or not code.isprintable():
+            raise Validation("That is not a valid code", code="bad_code")
     mask = None
     last4 = ""
     if job.kind == "vcc":
@@ -578,9 +630,15 @@ async def fulfil_manually(
                 body.card_id or job.upstream_ref or f"manual:{order.id}:{job.unit_no}:{last4}",
             )
             if job.kind == "vcc"
+            else sealer.card_fingerprint(
+                tid, f"direct:{job.supplier_id or 'manual'}:{job.upstream_ref or order.id}"
+            )
+            if direct
             else sealer.fingerprint(tid, code)
         ),
-        "lookup_fp": None if job.kind == "vcc" else sealer.lookup_fingerprint(tid, code),
+        "lookup_fp": None
+        if job.kind in ("vcc", "direct")
+        else sealer.lookup_fingerprint(tid, code),
         "kid": sealer.active_kid,
         "status": "sold",
         "order_id": order.id,
@@ -627,6 +685,26 @@ async def fulfil_manually(
                 ip=ip,
             )
         job.card_mask = mask
+    if direct:
+        await audit(  # a hand-fulfilled direct order: who attested, why, and what the supplier held
+            db,
+            tenant_id=job.tenant_id,
+            action="procurement.direct_manual_fulfil",
+            actor_id=staff.id,
+            actor_role=staff.role,
+            target=f"procurement_job:{job.id}",
+            detail={
+                "order_id": str(job.order_id),
+                "reason": clean_detail(body.reason or "", 120),
+                "upstream_ref": clean_detail(job.upstream_ref or ""),
+                "supplier_may_hold_order": bool(job.maybe_sent or job.upstream_ref),
+            },
+            severity="critical",
+            ip=ip,
+        )
+    if mask is not None and body.card_id and not job.upstream_ref:
+        # the vendor card id staff named is recorded, so a funding card can never be this card
+        job.upstream_ref = body.card_id
     job.manual_by = staff.id
     job.error_code, job.step, job.next_poll_at = None, "done", None
     recovering = _schedule_recovery(job)  # the supplier's own code, if any, is disabled
@@ -640,6 +718,41 @@ async def fulfil_manually(
     view = await _view_of(db, job)
     await db.commit()
     return view
+
+
+async def _refuse_if_order_in_flight(res: Resources, tid: uuid.UUID, job_id: uuid.UUID) -> None:
+    token = res.settings.procurement_token
+    if len(token) < 32:
+        raise Unavailable("The procurement service is not configured", code="procurement_off")
+    try:
+        resp = await res.procurement.post(
+            "/internal/direct-order",
+            json={"tenant_id": str(tid), "job_id": str(job_id)},
+            headers={"X-Internal-Token": token},
+        )
+    except httpx.HTTPError:
+        raise Unavailable(
+            "The procurement service is unreachable", code="procurement_unreachable"
+        ) from None
+    if resp.status_code == 404:
+        raise NotFound("Job not found")
+    if resp.status_code != 200:
+        raise Unavailable("The supplier order could not be read", code="procurement_unreachable")
+    state = str(resp.json().get("state"))
+    if state in ("pending", "unknown"):
+        raise Conflict(
+            "The supplier's order is still in progress (or unreadable): cancel it first with "
+            "void, or wait; hand-fulfilling now could subscribe the account twice",
+            code="order_in_flight",
+            extra={"order_state": state},
+        )
+
+
+async def _direct_text(db: AsyncSession, job: ProcurementJob) -> str:
+    """The buyer-facing delivery of a hand-fulfilled direct job: plan, masked account, order."""
+    plan = await _plan_of(db, job)
+    ref = job.upstream_ref or f"manual-{job.id.hex[:8]}"
+    return CARD_FIELD_SEP.join((plan or "direct", job.account_mask or "-", ref))
 
 
 @router.post("/{job_id}/void")

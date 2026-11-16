@@ -44,9 +44,10 @@ export interface User {
 
 /** `upstream_cdk` (review-v12): a code bought from a supplier per order; instant for the buyer. */
 /** `upstream_vcc` (review-v12 M3): a virtual card bought from a supplier per order. */
-export type DeliveryMode = 'auto_card' | 'manual' | 'upstream_cdk' | 'upstream_vcc'
+/** `upstream_direct` (review-v12 M3): the supplier subscribes the buyer's own account. */
+export type DeliveryMode = 'auto_card' | 'manual' | 'upstream_cdk' | 'upstream_vcc' | 'upstream_direct'
 /** Code deliveries the buyer reveals at once (local pool or supplier), as opposed to staff delivery. */
-export const isInstantMode = (m: DeliveryMode | undefined | null): boolean => m === 'auto_card' || m === 'upstream_cdk' || m === 'upstream_vcc'
+export const isInstantMode = (m: DeliveryMode | undefined | null): boolean => m === 'auto_card' || m === 'upstream_cdk' || m === 'upstream_vcc' || m === 'upstream_direct'
 
 /** v11 W1: a purchasable SKU of a product (buyer view; prices already include the storefront markup). */
 export interface ProductVariant {
@@ -81,6 +82,8 @@ export interface ProductSummary {
   delivery_eta_hours?: number | null
   /** Order-information form (null = off). Lists carry it too, so quick buy asks for it (issue 49 B). */
   buyer_input?: BuyerInputConfig | null
+  /** v12 M3: for `upstream_direct` products, which account the buyer connects (detail only). */
+  direct_product?: DirectProduct | null
   /** v11 W1: active variants (sorted). When non-empty, `price` is the lowest and `stock` the sum. */
   has_variants?: boolean
   variants?: ProductVariant[]
@@ -942,4 +945,15 @@ export interface CardOtp {
 }
 export interface CardOtpEvent extends CardOtp {
   order_id: string
+}
+
+/** v12 M3: which account a direct product is applied to. */
+export type DirectProduct = 'gpt' | 'claude' | 'grok'
+/** `GET /orders/{ref}/direct`: what the buyer may see of a direct order (never the session). */
+export interface DirectOrderInfo {
+  order_id: string
+  /** masked e-mail of the account, once the supplier has checked it */
+  account: string | null
+  plan: string | null
+  state: string | null
 }

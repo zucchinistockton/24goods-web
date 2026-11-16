@@ -226,6 +226,13 @@ async def _cost_known(supplier: Supplier, spec: OfferSpec, currency: str) -> boo
     return money is not None and money.currency == currency
 
 
+async def _mask_clash(ctx: ProcurementContext, tenant_id: uuid.UUID, mask: str | None) -> bool:
+    from app.procurement.funding import funding_mask_clash
+
+    async with tenant_session(ctx.maker, tenant_id) as db:
+        return await funding_mask_clash(db, tenant_id, mask)
+
+
 async def refresh_offers(ctx: ProcurementContext, ref: SupplierRef) -> int:
     """Availability check of every enabled offer of one supplier (GET only). The storefront shows
     an upstream variant in stock only while its last check passed (review-v12 §4)."""
@@ -260,6 +267,12 @@ async def refresh_offers(ctx: ProcurementContext, ref: SupplierRef) -> int:
                     ctx.settings.probe_timeout_s,
                 )
                 results[oid] = av.available is True
+                if (
+                    results[oid]
+                    and kind == "direct"
+                    and await _mask_clash(ctx, ref.tenant_id, av.funding_mask)
+                ):
+                    results[oid] = False
                 known[oid] = await _cost_known(supplier, spec, currency or "USD")
             except Exception:  # an unknown answer is "not available"
                 results[oid] = False
@@ -322,6 +335,8 @@ async def check_offer(
                 ctx.settings.probe_timeout_s,
             )
             ok, reason = av.available is True, (None if av.available is True else av.reason)
+            if ok and row.kind == "direct" and await _mask_clash(ctx, tenant_id, av.funding_mask):
+                ok, reason = False, "funding_card_invalid"
             cost_known = await _cost_known(
                 supplier,
                 OfferSpec(kind=row.kind, params=dict(row.params or {})),

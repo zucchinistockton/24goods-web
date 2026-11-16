@@ -34,6 +34,7 @@ import { cancelPending, payCheckout, payOrder } from '../lib/orderActions'
 import { dropAccessCode, readAccessCode } from '../lib/attribution'
 import { openSupport as support } from '../lib/support'
 import CardOtpPanel from '../components/CardOtpPanel.vue'
+import DirectOrderPanel from '../components/DirectOrderPanel.vue'
 import { useRealtimeStore } from '../stores/realtime'
 import { useSiteStore } from '../stores/site'
 import { confirm, showImagePreview, showSuccessToast, showToast, toastError } from '../ui'
@@ -465,6 +466,10 @@ function gotCode() {
           <van-button size="small" round plain class="tap" @click="saveAccessCode">{{ t('cred.save') }}</van-button>
           <van-button size="small" round plain class="tap" @click="gotCode">{{ t('lookup.gotIt') }}</van-button>
         </div>
+      </section>
+
+      <section v-if="order.delivery_mode === 'upstream_direct' && ['paid', 'manual_review', 'delivered', 'completed'].includes(order.status)" class="section card pad">
+        <DirectOrderPanel :order-id="order.id" :product-id="order.product_id" :can-resupply="['paid', 'manual_review'].includes(order.status)" />
       </section>
 
       <section v-if="order.can_reveal || secrets.length || order.manual_delivery || ['delivered', 'completed'].includes(order.status)" class="section card pad">

@@ -35,6 +35,8 @@ from app.suppliers.base import (
     dec,
     job_idempotency_key,
 )
+from app.suppliers.direct_credential import CredentialError, mask_email, validate_credential
+from app.suppliers.zovocard import direct as dr
 from app.suppliers.zovocard.client import ZovoClient
 from app.suppliers.zovocard.webhook import mask_pan, parse_webhook
 
@@ -302,10 +304,15 @@ class ZovoCardSupplier:
         the plan currency is USD. Otherwise ``None``: the per-offer configured cost applies."""
         if offer.kind == "vcc":
             return await self._vcc_cost(offer)
+        if offer.kind == "direct":
+            return await self._direct_cost(offer)
         product = offer.params.get("product", "gpt")
         key = offer.params.get("plan")
         if product not in DIRECT_PRODUCTS or not isinstance(key, str):
             return None
+        return await self._plan_cost(product, key)
+
+    async def _plan_cost(self, product: str, key: str) -> Money | None:
         catalog = await self.plans(product)
         entry = catalog.registry.get(key)
         plan = catalog.plans.get(entry.acc_plan_key if entry and entry.acc_plan_key else key)
@@ -351,7 +358,9 @@ class ZovoCardSupplier:
         now = datetime.now(timezone.utc)
         if offer.kind == "vcc":
             return await self._vcc_availability(offer, now, fresh=fresh)
-        if offer.kind not in ("cdk", "direct"):
+        if offer.kind == "direct":
+            return await self._direct_availability(offer, now, fresh=fresh)
+        if offer.kind != "cdk":
             return Availability(False, "kind_not_supported_m1", checked_at=now)
         product = offer.params.get("product", "gpt")
         key = offer.params.get("plan")
@@ -433,6 +442,8 @@ class ZovoCardSupplier:
         open -> optional recharge -> reveal, every step under its own fixed key)."""
         if job.offer.kind == "vcc":
             return await self._vcc_run(job)
+        if job.offer.kind == "direct":
+            return await self._direct_run(job)
         body = cdk_issue_body(job.offer)
         if body is None:
             return Result(Outcome.FATAL, error_code="invalid_offer")
@@ -453,10 +464,14 @@ class ZovoCardSupplier:
         Vendor §4 / A.1: a request that already succeeded is answered from the idempotency
         cache (``Idempotent-Replayed: true``, same codes); one that failed or never arrived is
         executed now, exactly once; one still running answers 409 (AMBIGUOUS again). Every path
-        ends with at most one issued code per key. [I] The vendor list (``GET /gpt-direct/cdks``)
+        ends with at most one issued code per key. (A ``direct`` job is reconciled by READS only,
+        :meth:`_direct_query`: it never re-POSTs here.) [I] The vendor list
+        (``GET /gpt-direct/cdks``)
         is not used: it is not documented to expose the idempotency key, so it cannot correlate
         a code with a job (spec §14.3, to confirm in the sandbox).
         """
+        if job.offer.kind == "direct":
+            return await self._direct_query(job)
         return await self.submit(job)
 
     async def void(self, job: JobSpec) -> Result:
@@ -467,6 +482,8 @@ class ZovoCardSupplier:
             return Result(Outcome.FATAL, error_code="invalid_upstream_ref")
         if job.offer.kind == "vcc":
             return await self._vcc_void(job, ref)
+        if job.offer.kind == "direct":
+            return await self._direct_void(job, ref)
         try:
             resp = await self.client.request(
                 "POST",
@@ -714,6 +731,391 @@ class ZovoCardSupplier:
             )
         return Result(Outcome.OK, upstream_ref=card_id)
 
+    # ---- upstream_direct (M3 part 2): preflight -> POST /gpt-direct/orders (202) -> GET order
+    async def _direct_cost(self, offer: OfferSpec) -> Money | None:
+        """Wallet cost of one direct order, in USD or ``None`` (the offer's configured cost then
+        applies). Claude / Grok are constant USD prices: the registry's ``checkout_amount_minor``
+        plus the service fee (plus the plan's balance buffer when it names one). A GPT plan uses
+        the plan formula of ``redemption_cost`` (USD plans only)."""
+        spec = dr.direct_spec(offer)
+        if spec is None:
+            return None
+        if spec.product == "gpt":
+            return await self._plan_cost("gpt", spec.plan)
+        catalog = await self.plans(spec.product)
+        entry = catalog.registry.get(spec.plan)
+        if (
+            entry is None
+            or entry.checkout_currency != "USD"
+            or entry.checkout_amount_minor is None
+            or entry.checkout_amount_minor < 0
+        ):
+            return None
+        plan = catalog.plans.get(entry.acc_plan_key or "")
+        bps = _int_or_none(plan.get("balanceBufferBps")) if isinstance(plan, Mapping) else None
+        base = Decimal(entry.checkout_amount_minor)
+        minor = base + (base * (bps or 0) / 10000).to_integral_value()
+        minor += Decimal(entry.service_fee_usd_minor or 0)
+        return Money((minor / 100).quantize(Decimal("0.01")), "USD")
+
+    async def _direct_availability(
+        self, offer: OfferSpec, now: datetime, *, fresh: bool = False
+    ) -> Availability:
+        spec = dr.direct_spec(offer)
+        if spec is None:
+            return Availability(False, "invalid_offer", checked_at=now)
+        try:
+            catalog = await self.plans(spec.product, fresh=fresh)
+        except SupplierError as exc:
+            return Availability(False, exc.reason, checked_at=now)
+        if not is_purchasable(catalog, spec.plan):
+            return Availability(False, "not_purchasable", checked_at=now)
+        try:
+            cost = await self._direct_cost(offer)
+        except SupplierError:
+            cost = None
+        problem, mask = await self._funding_card_problem(spec, cost)
+        if problem is not None:
+            return Availability(
+                False, problem, cost_estimate=cost, checked_at=now, funding_mask=mask
+            )
+        return Availability(True, cost_estimate=cost, checked_at=now, funding_mask=mask)
+
+    async def _funding_card_problem(
+        self, spec: dr.DirectSpec, cost: Money | None
+    ) -> tuple[str | None, str | None]:
+        """The funding card must be OURS (``GET /cards/{id}`` answers for our account only: a
+        404 means it is not ours), ACTIVE, hold at least the order's cost (USD) and have capacity
+        left under the vendor's usage cap (``GET /gpt-direct/cards/{id}/usage``, [I] shape: an
+        unreadable answer does not block). The PAN / CVV in the card read are dropped at once."""
+        try:
+            resp = await self.client.get(f"/cards/{spec.card_id}")
+        except SupplierError as exc:
+            return ("funding_card_invalid" if exc.status in (400, 404) else exc.reason), None
+        detail = parse_card_detail(resp.data)
+        if detail is None:
+            return "funding_card_invalid", None
+        mask = detail.mask
+        enough = cost is None or detail.available >= cost.amount
+        try:
+            usage = await self.client.get(
+                f"/gpt-direct/cards/{spec.card_id}/usage", params={"product": spec.product}
+            )
+            remaining, waiting, usage_status = dr.usage_state(usage.data, spec.plan)
+        except SupplierError:
+            remaining, waiting, usage_status = None, False, None
+        if usage_status is not None and usage_status != "ACTIVE":
+            return "funding_card_invalid", mask  # e.g. DELETED
+        return dr.funding_card_problem(detail.status, enough, remaining, waiting), mask
+
+    async def _preflight(self, spec: dr.DirectSpec, credential: str) -> dr.Preflight | Result:
+        """``POST /gpt-direct/preflight``: validates the credential and quotes (read-only upstream;
+        token valid 10 min, single use). A failure here is a READ failure: nothing was bought."""
+        body = dr.preflight_body(spec, credential)
+        try:
+            resp = await self.client.request(
+                "POST",
+                "/gpt-direct/preflight",
+                json_body=body,
+                read_only_post=True,
+                endpoint="direct.preflight",
+            )
+        except SupplierError as exc:
+            return Result.from_error(exc)
+        finally:
+            body.clear()
+        pf = dr.parse_preflight(resp.data, parse_time)
+        if pf is None:
+            return Result(Outcome.RETRYABLE, error_code="malformed_preflight")
+        return pf
+
+    async def _direct_run(self, job: JobSpec) -> Result:
+        """Preflight, then ONE order POST under the job's key; afterwards only reads.
+
+        * the recorded order id answers everything: a job that knows its order NEVER POSTs again;
+        * the buyer's session comes in ``job.credential`` (opened in memory by the engine for this
+          one call); it is sent to the vendor and goes nowhere else, not even into an exception;
+        * a refused price (``GPT_PRICE_UNCONFIRMED``) re-quotes ONCE inline under the same key: the
+          refusal is definite (nothing executed), and the retry gets a fresh single-use token;
+        * a ``202`` is ACCEPTED_PENDING, never success (the order is only queued)."""
+        spec = dr.direct_spec(job.offer)
+        if spec is None:
+            return Result(Outcome.FATAL, error_code="invalid_offer")
+        ref = job.upstream_ref if job.upstream_ref and job.upstream_ref.isdigit() else None
+        rid = dr.client_request_id(job.job_id)
+        if ref is not None:
+            return await self._direct_status(spec, ref, rid, None, job.account_mask)
+        if not job.credential:
+            return Result(Outcome.FATAL, error_code="credential_missing")
+        try:
+            checked = validate_credential(spec.product, job.credential)
+        except CredentialError as exc:
+            return Result(Outcome.FATAL, error_code=f"credential_{exc.code}")
+        mask: str | None = None
+        expires: datetime | None = None
+        for attempt in (1, 2):
+            pf = await self._preflight(spec, checked.canonical)
+            if isinstance(pf, Result):
+                return pf
+            mask, expires = pf.account_mask or mask, pf.expires_at or expires
+            seen: dict[str, Any] = {"account_mask": mask, "preflight_expires_at": expires}
+            if pf.quote_error:  # the vendor: do not create an order while quote_error is set
+                return Result(Outcome.RETRYABLE, error_code="quote_error", **seen)
+            if job.account_mask and pf.account_mask and job.account_mask != pf.account_mask:
+                # the session belongs to ANOTHER account than the first one (re-supplied)
+                return Result(Outcome.FATAL, error_code="session_other_account", **seen)
+            if pf.current_plan == spec.plan:
+                return Result(Outcome.FATAL, error_code="plan_already_active", **seen)
+            blocked = _account_problem(pf)
+            if blocked is not None:  # support can explain these; nothing is sent
+                return Result(Outcome.FATAL, error_code=blocked, **seen)
+            over = await self._quote_problem(spec, pf, job)
+            if over is not None:
+                return Result(Outcome.FATAL, error_code=over, **seen)
+            try:
+                version = (await self.plans(spec.product, fresh=attempt > 1)).version
+            except SupplierError:
+                version = None
+            body = dr.order_body(
+                spec,
+                credential=checked.canonical,
+                preflight_token=pf.token,
+                request_id=rid,
+                pricing_version=version,
+            )
+            try:
+                resp = await self.client.request(
+                    "POST",
+                    "/gpt-direct/orders",
+                    json_body=body,
+                    idempotency_key=job.idempotency_key,
+                    endpoint="direct.order",
+                )
+            except SupplierError as exc:
+                if exc.error_code == "GPT_PRICE_UNCONFIRMED" and attempt == 1:
+                    continue  # re-quote once: the answer is "not executed", the key stays
+                return Result.from_error(exc, account_mask=mask)
+            finally:
+                body.clear()
+            return await self._direct_created(spec, resp.data, rid, seen)
+        return Result(Outcome.RETRYABLE, error_code="GPT_PRICE_UNCONFIRMED", account_mask=mask)
+
+    async def _quote_problem(
+        self, spec: dr.DirectSpec, pf: dr.Preflight, job: JobSpec
+    ) -> str | None:
+        """Use the preflight quote (the price the buyer's account is actually charged): refuse
+        before any order when it is above what the offer allows. A USD quote (Claude / Grok, and
+        USD GPT regions) is compared with ``job.cost_bound`` (offer cost x (1 + tolerance)), or,
+        without one, the catalogue's own USD cost x (1 + tolerance). A non-USD quote (a GPT plan in
+        PHP...) cannot be compared with a USD budget: it is compared, in its own currency, with the
+        plan's ``maxAmountMinor`` (else ``expectedAmountMinor`` x (1 + tolerance))."""
+        quote = pf.quotes.get(spec.plan)
+        catalog = await self.plans(spec.product)
+        entry = catalog.registry.get(spec.plan)
+        if quote is None:
+            if (
+                spec.product in dr.USD_PRODUCTS
+                and entry
+                and entry.checkout_amount_minor is not None
+            ):
+                quote = (entry.checkout_amount_minor, entry.checkout_currency or "USD", 2)
+            elif self.env == "sandbox":
+                # [V] the sandbox never quotes (``quotes: null``): the budget cannot be checked
+                # against a price that does not exist; the offer's cost bound stays the ceiling
+                return None
+            else:
+                return "quote_missing"  # production: no price, no bound check, no order
+        minor, currency, exp = quote
+        amount = Decimal(minor).scaleb(-exp)
+        tol = Decimal(1) + job.quote_tolerance
+        if currency == "USD":
+            bound = job.cost_bound
+            if bound is None:
+                est = await self._direct_cost(job.offer)
+                bound = Money(est.amount * tol, "USD") if est else None
+            if bound is None or bound.currency != "USD":
+                return "quote_unbounded"
+            return "quote_over_bound" if amount > bound.amount else None
+        plan = catalog.plans.get(entry.acc_plan_key or "") if entry else None
+        if not isinstance(plan, Mapping) or str(plan.get("currency", "")).upper() != currency:
+            return "quote_currency_mismatch"
+        ceiling = _int_or_none(plan.get("maxAmountMinor"))
+        if ceiling is None:
+            expected = _int_or_none(plan.get("expectedAmountMinor"))
+            ceiling = int(Decimal(expected) * tol) if expected is not None else None
+        if ceiling is None:
+            return "quote_unbounded"
+        return "quote_over_bound" if minor > ceiling else None
+
+    async def _direct_created(
+        self, spec: dr.DirectSpec, data: Any, rid: str, seen: dict[str, Any]
+    ) -> Result:
+        """The 2xx answer of ``POST /orders``: record the reference on EVERY path that has one."""
+        ref = dr.order_id_of(data)
+        if ref is None:
+            # something may exist (the request was accepted) but we cannot read its id: the lookup
+            # by client_request_id finds it; never a blind second order
+            return Result(Outcome.AMBIGUOUS, error_code="malformed_order", **seen)
+        crid = data.get("client_request_id") if isinstance(data, Mapping) else None
+        if isinstance(crid, str) and crid != rid:
+            return Result(Outcome.AMBIGUOUS, error_code="order_mismatch", **seen)
+        status = data.get("status") if isinstance(data, Mapping) else None
+        phase = dr.order_phase(status)
+        if phase == "failed":
+            return Result(
+                Outcome.FATAL, error_code=f"order_{clean_status(status)}", upstream_ref=ref, **seen
+            )
+        if phase == "done":
+            return await self._direct_status(spec, ref, rid, seen.get("account_mask"), None)
+        return Result(Outcome.ACCEPTED_PENDING, upstream_ref=ref, **seen)
+
+    async def _direct_status(
+        self,
+        spec: dr.DirectSpec,
+        ref: str,
+        rid: str,
+        mask_hint: str | None,
+        account_mask: str | None = None,
+    ) -> Result:
+        """``GET /gpt-direct/orders/{id}`` -> a Result. Pure read; the reference rides on EVERY
+        answer, so the job never forgets an order the vendor holds."""
+        try:
+            resp = await self.client.get(f"/gpt-direct/orders/{ref}")
+        except SupplierError as exc:
+            if exc.status == 404:  # the order we recorded is gone at the vendor
+                return Result(Outcome.UNAVAILABLE, error_code="order_not_found", upstream_ref=ref)
+            return Result.from_error(exc, upstream_ref=ref, account_mask=mask_hint)
+        order = resp.data.get("order") if isinstance(resp.data, Mapping) else None
+        if not isinstance(order, Mapping):
+            return Result(Outcome.AMBIGUOUS, error_code="malformed_order", upstream_ref=ref)
+        oid = dr.order_id_of(order)
+        crid = order.get("client_request_id")
+        if (oid is not None and oid != ref) or (isinstance(crid, str) and crid != rid):
+            return Result(Outcome.AMBIGUOUS, error_code="order_mismatch", upstream_ref=ref)
+        mask = mask_email(order.get("account_email")) or mask_hint
+        plan = order.get("plan")
+        if isinstance(plan, str) and plan != spec.plan:
+            return Result(Outcome.FATAL, error_code="plan_mismatch", upstream_ref=ref)
+        status = order.get("status")
+        phase = dr.order_phase(status)
+        detail = _order_detail(order)
+        if phase == "done" and not (
+            isinstance(crid, str)
+            and crid == rid
+            and isinstance(plan, str)
+            and plan == spec.plan
+            and not (account_mask and mask and account_mask != mask)
+        ):
+            # a COMPLETED order is only delivered when it provably is OUR order for this plan
+            # and this account: the request id and plan must be present and equal
+            return Result(
+                Outcome.FATAL, error_code="order_mismatch", upstream_ref=ref, detail=detail
+            )
+        if phase == "failed":
+            return Result(
+                Outcome.FATAL,
+                error_code=f"order_{clean_status(status)}",
+                upstream_ref=ref,
+                account_mask=mask,
+                detail=detail,
+            )
+        if phase == "pending":
+            return Result(
+                Outcome.ACCEPTED_PENDING, upstream_ref=ref, account_mask=mask, detail=detail
+            )
+        return Result(
+            Outcome.OK,
+            upstream_ref=ref,
+            account_mask=mask,
+            detail=detail,
+            secrets=(dr.delivery_text(spec, mask, ref),),  # plan, masked account, order: no secret
+            cost=_order_cost(order),
+        )
+
+    async def _direct_query(self, job: JobSpec) -> Result:
+        """Reconcile by READS only (never a POST): the recorded order, else the vendor's order list
+        searched for our ``client_request_id``. Nothing found = UNAVAILABLE: the engine then
+        resubmits under the SAME key, which the vendor de-duplicates twice (key and request id)."""
+        spec = dr.direct_spec(job.offer)
+        if spec is None:
+            return Result(Outcome.FATAL, error_code="invalid_offer")
+        rid = dr.client_request_id(job.job_id)
+        if job.upstream_ref and job.upstream_ref.isdigit():
+            return await self._direct_status(spec, job.upstream_ref, rid, None, job.account_mask)
+        seen_rows = 0
+        for page in range(1, ORDER_LIST_MAX_PAGES + 1):
+            try:
+                resp = await self.client.get(
+                    "/gpt-direct/orders", params={"page": str(page), "page_size": "100"}
+                )
+            except SupplierError as exc:
+                return Result.from_error(exc)
+            rows = resp.data.get("list") if isinstance(resp.data, Mapping) else None
+            if not isinstance(rows, list):
+                return Result(Outcome.AMBIGUOUS, error_code="malformed_order_list")
+            seen_rows += len(rows)
+            total = resp.data.get("total") if isinstance(resp.data, Mapping) else None
+            for item in rows:
+                if isinstance(item, Mapping) and item.get("client_request_id") == rid:
+                    found = dr.order_id_of(item)
+                    if found is None:
+                        return Result(Outcome.AMBIGUOUS, error_code="malformed_order")
+                    return await self._direct_status(spec, found, rid, None, job.account_mask)
+            # page until the vendor says there is no more (``total`` rows seen, or a short page)
+            if isinstance(total, int) and not isinstance(total, bool):
+                done = not rows or seen_rows >= total
+            else:
+                done = len(rows) < 100
+            if done:
+                return Result(Outcome.UNAVAILABLE, error_code="order_not_found")
+        # the list is longer than we are willing to read: "not found" would be a guess
+        return Result(Outcome.AMBIGUOUS, error_code="order_list_too_long")
+
+    async def _direct_void(self, job: JobSpec, ref: str) -> Result:
+        """What "void" means for a direct order. A subscription that COMPLETED cannot be undone by
+        the API (FATAL ``order_completed``: the engine ends in ``needs_manual`` ``void_failed`` with
+        a critical audit row and a staff alert; a refund of the buyer is then a staff decision).
+        Only an order that has not started paying (queued / awaiting_card / funding_pending) can be
+        cancelled (``POST .../cancel``, 409 = too late); one already paying is waited out."""
+        try:
+            resp = await self.client.get(f"/gpt-direct/orders/{ref}")
+        except SupplierError as exc:
+            return Result.from_error(exc, upstream_ref=ref)
+        order = resp.data.get("order") if isinstance(resp.data, Mapping) else None
+        if not isinstance(order, Mapping):
+            return Result(Outcome.AMBIGUOUS, error_code="malformed_order", upstream_ref=ref)
+        status = str(order.get("status") or "").strip().lower()
+        detail = _order_detail(order)
+        fee = str(order.get("service_fee_status") or "").strip().lower()
+        if status in dr.NOT_CHARGED and fee in dr.NOTHING_HELD_FEE:
+            return Result(Outcome.OK, upstream_ref=ref, detail=detail)  # nothing to undo
+        if status in dr.FAILED:
+            # declined / unknown failure, or a cancel whose fee is not confirmed released: money
+            # may be held, so it stays visible to staff (status and fee in the job view)
+            return Result(
+                Outcome.FATAL, error_code="order_failure_unconfirmed", upstream_ref=ref,
+                detail=detail,
+            )  # fmt: skip
+        if status in dr.DONE:
+            return Result(
+                Outcome.FATAL, error_code="order_completed", upstream_ref=ref, detail=detail
+            )
+        if status not in dr.CANCELLABLE or job.step == "delete_pending":
+            return Result(Outcome.ACCEPTED_PENDING, error_code="void_waiting", upstream_ref=ref)
+        try:
+            await self.client.request(
+                "POST",
+                f"/gpt-direct/orders/{ref}/cancel",
+                json_body={},
+                idempotency_key=job.idempotency_key,
+                endpoint="direct.cancel",
+            )
+        except SupplierError as exc:
+            if exc.status == 409:  # payment already started: too late to cancel
+                return Result(Outcome.FATAL, error_code="order_not_cancellable", upstream_ref=ref)
+            return Result.from_error(exc, upstream_ref=ref)
+        return Result(Outcome.OK, upstream_ref=ref)
+
     def verify_webhook(self, raw: bytes, headers: Mapping[str, str]) -> list[SupplierEvent]:
         if not self.webhook_secret:
             raise WebhookRejected("no webhook secret configured")
@@ -898,3 +1300,47 @@ def parse_card_detail(data: Any) -> CardDetail | None:
 
 def _recharge_rows(data: Any) -> list[Mapping[str, Any]]:
     return [r for r in (data if isinstance(data, list) else []) if isinstance(r, Mapping)]
+
+
+# ---------------------------------------------------------------- upstream_direct helpers
+def clean_status(value: object) -> str:
+    """A vendor order status reduced to ``[a-z0-9_]{1,24}`` for an error code (never free text)."""
+    return re.sub(r"[^a-z0-9_]", "_", str(value or "unknown").strip().lower())[:24] or "unknown"
+
+
+def _order_cost(order: Mapping[str, Any]) -> Money | None:
+    """Estimate of what the order cost, in USD only (the ledger rows stay the truth)."""
+    if str(order.get("currency") or "").upper() != "USD":
+        return None
+    for key in ("final_amount_minor", "quoted_amount_minor"):
+        v = order.get(key)
+        if isinstance(v, int) and not isinstance(v, bool) and v >= 0:
+            return Money((Decimal(v) / 100).quantize(Decimal("0.01")), "USD")
+    return None
+
+
+ORDER_LIST_MAX_PAGES = 50  # 5000 orders: beyond that a "not found" would be a guess
+
+
+def _order_detail(order: Mapping[str, Any]) -> str:
+    """``status:fee_status[:funding]`` of a vendor order for staff (machine alphabet, 32 chars)."""
+    parts = [
+        clean_status(order.get("status")),
+        clean_status(order.get("service_fee_status") or "-"),
+    ]
+    if order.get("funding_hold_status"):
+        parts.append(clean_status(order.get("funding_hold_status")))
+    return ":".join(parts)[:32]
+
+
+def _account_problem(pf: dr.Preflight) -> str | None:
+    """The preflight says this account cannot take the order now [V]: refused before any send."""
+    if pf.blocking_reason:
+        return "preflight_blocked"
+    if pf.can_purchase_at is not None and pf.can_purchase_at > datetime.now(timezone.utc):
+        return "purchase_not_yet"
+    if pf.recovery_required:
+        return "subscription_recovery_required"
+    if pf.has_active:
+        return "subscription_active"
+    return None

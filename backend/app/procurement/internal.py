@@ -20,7 +20,7 @@ from starlette.routing import Route
 
 from app.core.errors import error_body
 from app.core.ratelimit import hit
-from app.procurement import service
+from app.procurement import engine, service
 from app.procurement.context import ProcurementContext
 
 log = logging.getLogger("app.procurement.internal")
@@ -94,8 +94,31 @@ def create_procurement_app(ctx: ProcurementContext) -> Starlette:
             return _err(404, "not_found", "Supplier not found")
         return JSONResponse({"report": report.as_dict()}, headers=NO_STORE)
 
+    async def direct_order(request: Request) -> JSONResponse:
+        """Read-only state of a direct job's supplier order (the console's hand-fulfil guard)."""
+        if not _token_ok(request):
+            return _err(401, "unauthorized", "Bad internal token")
+        body = await request.body()
+        if len(body) > MAX_BODY:
+            return _err(422, "validation", "body too large")
+        try:
+            data = json.loads(body)
+            tenant_id = uuid.UUID(str(data["tenant_id"]))
+            job_id = uuid.UUID(str(data["job_id"]))
+        except (ValueError, KeyError, TypeError):
+            return _err(422, "validation", "tenant_id and job_id (UUID) are required")
+        allowed, reset = await hit(ctx.redis, "proc:direct-order", str(job_id), 20, 600)
+        if not allowed:
+            return _err(429, "rate_limited", "Too many reads", {"Retry-After": str(reset)})
+        try:
+            out = await engine.direct_order_state(ctx, tenant_id, job_id)
+        except LookupError:
+            return _err(404, "not_found", "Job not found")
+        return JSONResponse(out, headers=NO_STORE)
+
     return Starlette(
         routes=[
+            Route("/internal/direct-order", direct_order, methods=["POST"]),
             Route("/healthz", healthz),
             Route("/internal/probe", probe, methods=["POST"]),
             Route("/internal/check-offer", check_offer, methods=["POST"]),

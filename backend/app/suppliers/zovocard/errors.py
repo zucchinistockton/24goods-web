@@ -103,6 +103,9 @@ TABLE: dict[tuple[int | None, str | None], Rule] = {
     # needs a fresh preflight: the M2/M3 engine re-preflights and resubmits under the SAME
     # idempotency key for that step (review-v12 §5) [I]
     (None, "GPT_PRICE_UNCONFIRMED"): _RETRY,
+    # vendor 6.18.9: "read the order or its events before deciding; never blindly create another"
+    (None, "GPT_DIRECT_ORDER_REJECTED"): _AMBIG,
+    (None, "SESSION_REQUIRED"): _FATAL,
     (None, "GPT_SESSION_INVALID"): _FATAL,
     (None, "CLAUDE_SESSION_INVALID"): _FATAL,
     (None, "GPT_CREDIT_REQUIRES_SUBSCRIPTION"): _FATAL,

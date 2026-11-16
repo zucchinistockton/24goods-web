@@ -73,6 +73,9 @@ EXPECTED: dict[tuple[int | None, str | None], tuple[Outcome, bool]] = {
     (None, "PRECHECK_REJECTED"): (Outcome.FATAL, False),
     (None, "GPT_PLAN_ALREADY_ACTIVE"): (Outcome.FATAL, False),
     (None, "GPT_PRICE_UNCONFIRMED"): (Outcome.RETRYABLE, False),
+    # M3 part 2 (direct): read the order first, never create another blindly (vendor 6.18.9)
+    (None, "GPT_DIRECT_ORDER_REJECTED"): (Outcome.AMBIGUOUS, False),
+    (None, "SESSION_REQUIRED"): (Outcome.FATAL, False),
     (None, "GPT_SESSION_INVALID"): (Outcome.FATAL, False),
     (None, "CLAUDE_SESSION_INVALID"): (Outcome.FATAL, False),
     (None, "GPT_CREDIT_REQUIRES_SUBSCRIPTION"): (Outcome.FATAL, False),
@@ -114,6 +117,8 @@ STATUS_FOR = {
     "ACCOUNT_UNAVAILABLE": 401,
     "product_policy_outdated": 409,
     "IDEMPOTENCY_CONFLICT": 409,
+    "GPT_DIRECT_ORDER_REJECTED": 400,
+    "SESSION_REQUIRED": 400,
     "CDK_DISABLE_REJECTED": 409,
     "GPT_PREFLIGHT_RATE_LIMITED": 429,
     "ORDER_NOT_FOUND": 404,
@@ -575,15 +580,21 @@ async def test_probe_degraded_when_direct_permission_missing():
 
 
 async def test_availability_via_adapter():
-    s = _supplier()
+    mock = MockZovo()
+    mock.add_funding_card(7, available=500.0)  # the funding card of the direct offers below
+    s = _supplier(mock)
     assert (await s.availability(OfferSpec("cdk", {"product": "gpt", "plan": "plus"}))).available
     for plan in ("pro_20x", "pro_5x_renew", "credit250", "nope"):
         a = await s.availability(OfferSpec("cdk", {"product": "gpt", "plan": plan}))
         assert not a.available and a.reason == "not_purchasable", plan
-    direct = await s.availability(OfferSpec("direct", {"product": "claude", "plan": "pro"}))
+    direct = await s.availability(
+        OfferSpec("direct", {"product": "claude", "plan": "pro", "card_id": 7})
+    )
     assert direct.available
     # the acc_plan_key is not a registry key
-    bad = await s.availability(OfferSpec("direct", {"product": "claude", "plan": "claude_pro"}))
+    bad = await s.availability(
+        OfferSpec("direct", {"product": "claude", "plan": "claude_pro", "card_id": 7})
+    )
     assert not bad.available
     assert not (await s.availability(OfferSpec("cdk", {"product": "grok", "plan": "x"}))).available
     assert not (await s.availability(OfferSpec("vcc", {}))).available

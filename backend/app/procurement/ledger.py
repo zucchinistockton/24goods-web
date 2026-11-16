@@ -38,6 +38,13 @@ LINK_TYPE_PREFIX = "gpt_direct"  # ref_id of these rows is the CDK / direct orde
 CARD_TYPES = CARD_ROW_TYPES
 
 
+def ref_kind(row_type: str) -> str:
+    """Which job kind a ``gpt_direct*`` row belongs to: the vendor's CDK rows (``gpt_direct_cdk``)
+    carry a CDK id, every other ``gpt_direct`` row a direct ORDER id. The two id spaces overlap,
+    so a row only ever links to a job of its own kind (M5)."""
+    return "cdk" if "cdk" in row_type.lower() else "direct"
+
+
 MAX_ABS = Decimal("1000000000000")
 BACKFILL_PAGE_SIZE = 100
 BACKFILL_MAX_PAGES = 50  # hard cap per pass (5000 rows)
@@ -106,7 +113,7 @@ async def record_rows(
                     ProcurementJob.tenant_id == tenant_id,
                     ProcurementJob.supplier_id == supplier_id,
                     ProcurementJob.upstream_ref == link,
-                    *((ProcurementJob.kind == "vcc",) if card_row else ()),
+                    ProcurementJob.kind == ("vcc" if card_row else ref_kind(r.type)),
                 )
             )
         inserted = await db.scalar(
@@ -136,29 +143,35 @@ async def record_rows(
 
 async def link_rows(db: AsyncSession, tenant_id: uuid.UUID, supplier_id: uuid.UUID) -> int:
     """A ledger row can arrive before its job learns the upstream reference: link the late ones."""
-    job = (
-        select(ProcurementJob.id)
-        .where(
-            ProcurementJob.tenant_id == tenant_id,
-            ProcurementJob.supplier_id == supplier_id,
-            ProcurementJob.upstream_ref == SupplierLedgerEntry.ref_id,
+    res_rows = 0
+    for kind, is_cdk in (("cdk", True), ("direct", False)):
+        job = (
+            select(ProcurementJob.id)
+            .where(
+                ProcurementJob.tenant_id == tenant_id,
+                ProcurementJob.supplier_id == supplier_id,
+                ProcurementJob.kind == kind,
+                ProcurementJob.upstream_ref == SupplierLedgerEntry.ref_id,
+            )
+            .order_by(ProcurementJob.created_at)
+            .limit(1)
+            .scalar_subquery()
         )
-        .order_by(ProcurementJob.created_at)
-        .limit(1)
-        .scalar_subquery()
-    )
-    res = await db.execute(
-        update(SupplierLedgerEntry)
-        .where(
-            SupplierLedgerEntry.tenant_id == tenant_id,
-            SupplierLedgerEntry.supplier_id == supplier_id,
-            SupplierLedgerEntry.job_id.is_(None),
-            SupplierLedgerEntry.ref_id.is_not(None),
-            SupplierLedgerEntry.type.like(LINK_TYPE_PREFIX + "%"),
-            job.is_not(None),
+        cdk_type = SupplierLedgerEntry.type.ilike("%cdk%")
+        res = await db.execute(
+            update(SupplierLedgerEntry)
+            .where(
+                SupplierLedgerEntry.tenant_id == tenant_id,
+                SupplierLedgerEntry.supplier_id == supplier_id,
+                SupplierLedgerEntry.job_id.is_(None),
+                SupplierLedgerEntry.ref_id.is_not(None),
+                SupplierLedgerEntry.type.like(LINK_TYPE_PREFIX + "%"),
+                cdk_type if is_cdk else ~cdk_type,
+                job.is_not(None),
+            )
+            .values(job_id=job)
         )
-        .values(job_id=job)
-    )
+        res_rows += int(res.rowcount or 0)  # type: ignore[attr-defined]
     card_job = (
         select(ProcurementJob.id)
         .where(
@@ -182,7 +195,7 @@ async def link_rows(db: AsyncSession, tenant_id: uuid.UUID, supplier_id: uuid.UU
         )
         .values(job_id=card_job)
     )
-    return int(res.rowcount or 0) + int(cards.rowcount or 0)  # type: ignore[attr-defined]
+    return res_rows + int(cards.rowcount or 0)  # type: ignore[attr-defined]
 
 
 async def handle_balance_event(

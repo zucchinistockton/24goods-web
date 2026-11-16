@@ -14,7 +14,7 @@ export interface ProcSource {
   supplier_env: SupplierEnv
   supplier_enabled: boolean
   supplier_breaker_open: boolean
-  kind: 'cdk' | 'vcc'
+  kind: 'cdk' | 'vcc' | 'direct'
   params: SourceParams
   /** decimal string or null */
   cost_estimate: string | null
@@ -36,6 +36,9 @@ export interface SourceParams {
   recharge_amount?: string
   first_name?: string
   last_name?: string
+  /** direct orders: `product` (gpt | claude | grok), `plan`, our funding card id, optional currency */
+  card_id?: number
+  payment_currency?: string
 }
 export interface SourceListing {
   product_id: string
@@ -86,6 +89,9 @@ export interface ProcJob {
   /** card jobs: first 6 + last 4 digits and the supplier's card id; never the full number */
   card_mask?: string | null
   card_id?: string | null
+  /** direct jobs: masked account e-mail and `product/plan`; never the session */
+  account_mask?: string | null
+  plan?: string | null
   cost: string | null
   currency: string | null
   next_poll_at: string | null

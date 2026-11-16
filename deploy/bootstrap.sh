@@ -68,11 +68,15 @@ chmod 700 secrets
 docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/secrets:/keys" --entrypoint python \
   "$API_IMAGE" -m app.devtools.keygen --out-dir /keys >/dev/null
 # shellcheck disable=SC1091
-source secrets/secrets.env   # APP_VAULT_ACTIVE_KID, APP_VAULT_FINGERPRINT_KEY, APP_QUOTE_HMAC_KEY, APP_INTERNAL_TOKEN
+source secrets/secrets.env   # APP_VAULT_ACTIVE_KID, APP_VAULT_FINGERPRINT_KEY, APP_QUOTE_HMAC_KEY, APP_INTERNAL_TOKEN, APP_CRED_ACTIVE_KID
 # private key: readable only by the container user of `delivery`
 as_root chown "$APP_UID:$APP_GID" secrets/vault_private_keys.json
 as_root chmod 0400 secrets/vault_private_keys.json
 chmod 0444 secrets/vault_public_keys.json
+# buyer-credential keypair (upstream_direct): the private half belongs to `procurement` only
+as_root chown "$APP_UID:$APP_GID" secrets/cred_private_keys.json
+as_root chmod 0400 secrets/cred_private_keys.json
+chmod 0444 secrets/cred_public_keys.json
 
 # ---- passwords ------------------------------------------------------------------
 PG_SUPERUSER_PASSWORD=$(rnd); APP_OWNER_PASSWORD=$(rnd)
@@ -160,6 +164,8 @@ APP_UPLOAD_DIR=/data/uploads
 APP_VAULT_PUBLIC_KEYS_FILE=/run/secrets/vault_public_keys
 APP_VAULT_ACTIVE_KID=$APP_VAULT_ACTIVE_KID
 APP_VAULT_FINGERPRINT_KEY=$APP_VAULT_FINGERPRINT_KEY
+APP_CRED_PUBLIC_KEYS_FILE=/run/secrets/cred_public_keys
+APP_CRED_ACTIVE_KID=$APP_CRED_ACTIVE_KID
 APP_QUOTE_HMAC_KEY=$APP_QUOTE_HMAC_KEY
 APP_INTERNAL_TOKEN=$APP_INTERNAL_TOKEN
 APP_POW_KEY=$APP_POW_KEY
@@ -230,6 +236,7 @@ APP_HEALTH_PORT=8004
 APP_VAULT_PUBLIC_KEYS_FILE=/run/secrets/vault_public_keys
 APP_VAULT_ACTIVE_KID=$APP_VAULT_ACTIVE_KID
 APP_VAULT_FINGERPRINT_KEY=$APP_VAULT_FINGERPRINT_KEY
+APP_CRED_PRIVATE_KEYS_FILE=/run/secrets/cred_private_keys
 ZOVOCARD_SANDBOX_APP_ID=$ZOVO_SANDBOX_ID
 ZOVOCARD_SANDBOX_APP_SECRET=$ZOVO_SANDBOX_SECRET
 EOF

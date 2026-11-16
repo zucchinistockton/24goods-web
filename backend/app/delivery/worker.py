@@ -56,7 +56,7 @@ PROCURE_REQUESTED = "procure.requested"
 PROCURE_FULFILLED = "procure.fulfilled"
 PROCURE_FAILED = "procure.failed"
 TOPICS = (TOPIC, REPLACE_TOPIC, PROCURE_FULFILLED, PROCURE_FAILED)
-UPSTREAM_MODES = ("upstream_cdk", "upstream_vcc")
+UPSTREAM_MODES = ("upstream_cdk", "upstream_vcc", "upstream_direct")
 MAX_ATTEMPTS = 8
 
 

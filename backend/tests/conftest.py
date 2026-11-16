@@ -40,6 +40,16 @@ VAULT_PUB_JSON = json.dumps(
         ).decode()
     }
 )
+# the buyer-credential keypair (upstream_direct): a DIFFERENT pair from the card vault's
+CRED_PRIV = X25519PrivateKey.generate()
+CRED_KID = "ctest"
+CRED_PUB_JSON = json.dumps(
+    {
+        CRED_KID: base64.b64encode(
+            CRED_PRIV.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+        ).decode()
+    }
+)
 FP_KEY = base64.b64encode(secrets.token_bytes(32)).decode()
 QUOTE_KEY = base64.b64encode(secrets.token_bytes(32)).decode()
 POW_KEY = base64.b64encode(secrets.token_bytes(32)).decode()
@@ -174,6 +184,8 @@ def make_settings(s: Services, **over):
         vault_public_keys=VAULT_PUB_JSON,
         vault_active_kid=VAULT_KID,
         vault_fingerprint_key=FP_KEY,
+        cred_public_keys=CRED_PUB_JSON,
+        cred_active_kid=CRED_KID,
         quote_hmac_key=QUOTE_KEY,
         pow_key=POW_KEY,
         settings_key=SETTINGS_KEY,

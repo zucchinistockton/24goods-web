@@ -200,6 +200,22 @@ async def margin(
             c[0] += int(n)
             if state == "fulfilled":
                 c[1] += int(unmatched)
+    incomplete: set[uuid.UUID] = set()
+    if ids:
+        # a direct order whose subscription price is not in the balance currency: the wallet only
+        # saw the service fee, so the ledger is NOT the whole cost (M6)
+        incomplete = set(
+            await db.scalars(
+                select(J.order_id).where(
+                    J.tenant_id == tid,
+                    J.order_id.in_(ids),
+                    J.kind == "direct",
+                    J.state.in_(("fulfilled", "needs_manual")),
+                    J.upstream_ref.is_not(None),
+                    J.cost.is_(None),
+                )
+            )
+        )
     items = []
     for o in orders:
         costs: dict[str, tuple[Decimal, str]] = {}
@@ -214,6 +230,8 @@ async def margin(
             margin_v = {"amount": _money(revenue - costs[o.currency][0]), "currency": o.currency}
         elif not costs:
             margin_v = None
+        if o.id in incomplete:
+            margin_v = None  # never a margin computed from the service fee alone
         n_jobs, n_unmatched = job_counts.get(o.id, [0, 0])
         items.append(
             {
@@ -230,6 +248,7 @@ async def margin(
                     for cur, (amt, src) in sorted(costs.items())
                 ],
                 "margin": margin_v,
+                "cost_incomplete": o.id in incomplete,
             }
         )
     out = page.wrap(items, int(total))

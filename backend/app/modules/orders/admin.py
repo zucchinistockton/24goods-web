@@ -33,6 +33,7 @@ from app.modules.aftersales import service as aftersales_svc
 from app.modules.catalog.service import escape_like
 from app.modules.catalog.variants import reserve_variant_stock
 from app.modules.chat.messages import post_system
+from app.modules.common.modes import UPSTREAM_MODES
 from app.modules.common.sitedefaults import delivery_deadlines, order_terms
 from app.modules.common.views import iso
 from app.modules.content.site import tenant_settings
@@ -435,7 +436,7 @@ async def _accept_held(
         raise InvalidState("Only an order held for review can be released")
     if order.kind == "reseller_signup":
         raise InvalidState("A held sign-up order cannot be released here; refund it instead")
-    if order.delivery_mode in ("upstream_cdk", "upstream_vcc"):
+    if order.delivery_mode in UPSTREAM_MODES:
         # TODO(v12-M3): a late-payment upstream order held in manual_review has no procurement
         # job to act on (L3 of the M2 payment audit); give it a staff "release into procurement".
         # its procurement jobs decide (retry / switch source / fulfil manually, review-v12)
@@ -647,6 +648,7 @@ async def refund_undelivered(
     note: str | None,
     agent: User,
     ip: str | None,
+    ack_irreversible: bool = False,
 ) -> tuple[Order, Message | None]:
     """v8 A.3: refund a paid-but-undelivered goods order (admin only, see the router). Same
     routine and reference rule as after-sales refunds."""
@@ -654,7 +656,9 @@ async def refund_undelivered(
     order = await lock_order(db, order_id, agent.tenant_id)
     if order.kind != "goods" or order.status not in aftersales_svc.UNDELIVERED:
         raise InvalidState("Only a paid, undelivered order can be refunded here")
-    await aftersales_svc.refund_order(db, order, agent, ip, ref, note, source="admin")
+    await aftersales_svc.refund_order(
+        db, order, agent, ip, ref, note, source="admin", ack_irreversible=ack_irreversible
+    )
     msg = await post_system(
         db,
         tenant_id=order.tenant_id,

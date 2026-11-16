@@ -22,7 +22,7 @@ from app.modules.common.modes import MAX_UPSTREAM_QTY
 def _usable():  # type: ignore[no-untyped-def]
     return (
         SupplierOffer.enabled.is_(True),
-        SupplierOffer.kind.in_(("cdk", "vcc")),
+        SupplierOffer.kind.in_(("cdk", "vcc", "direct")),
         SupplierOffer.last_check_ok.is_(True),
         SupplierAccount.enabled.is_(True),
         SupplierAccount.breaker_open.is_(False),
@@ -66,6 +66,39 @@ async def target_available(
         _base().where(SupplierOffer.product_id == product_id, match, *_usable()).limit(1)
     )
     return row is not None
+
+
+async def direct_target_product(
+    db: AsyncSession,
+    product_id: uuid.UUID,
+    variant_id: uuid.UUID | None,
+    *,
+    exclude_sandbox: bool = False,
+) -> str:
+    """The ONE vendor product (``gpt`` / ``claude`` / ``grok``) the enabled direct sources of this
+    target buy, which decides what kind of account session checkout asks for. No usable source, or
+    sources that disagree, is "not available" (never a guess)."""
+    match = (
+        SupplierOffer.variant_id == variant_id
+        if variant_id is not None
+        else SupplierOffer.variant_id.is_(None)
+    )
+    rows = await db.execute(
+        _base()
+        .add_columns(SupplierOffer.params)
+        .where(
+            SupplierOffer.product_id == product_id,
+            match,
+            SupplierOffer.kind == "direct",
+            *_usable(),
+            *((SupplierAccount.env != "sandbox",) if exclude_sandbox else ()),
+        )
+    )
+    products = {str((params or {}).get("product")) for _pid, _vid, params in rows.all()}
+    products.discard("None")
+    if len(products) != 1:
+        raise OutOfStock("Not available right now", extra={"product_id": str(product_id)})
+    return products.pop()
 
 
 async def require_upstream_stock(

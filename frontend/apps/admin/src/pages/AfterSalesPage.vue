@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ChatLineRound } from '@element-plus/icons-vue'
-import { formatDateTime, formatMoney, safeAssetUrl, visibleEmail } from '@24goods/shared'
+import { formatDateTime, formatMoney, isApiError, safeAssetUrl, visibleEmail } from '@24goods/shared'
 import { apiV3 } from '../api'
 import type { AfterSalesTicket } from '../api-v3'
 import { usePaged } from '../composables/usePaged'
@@ -96,7 +96,7 @@ async function submitDialog() {
   }
   await run(dlg.action, { note: dlg.note.trim() || undefined, delivery_text: dlg.action === 'replace' && mode.value === 'manual' ? dlg.text.trim() : undefined, reference: dlg.action === 'refund' ? dlg.reference.trim() : undefined })
 }
-async function run(a: TicketAction, body: { note?: string; delivery_text?: string; reference?: string }) {
+async function run(a: TicketAction, body: { note?: string; delivery_text?: string; reference?: string; acknowledge_irreversible?: boolean }) {
   const tk = ticket.value
   if (!tk || busy.value) return
   busy.value = a
@@ -107,6 +107,12 @@ async function run(a: TicketAction, body: { note?: string; delivery_text?: strin
     dlg.open = false
     void desk.refreshAfterSales()
   } catch (e) {
+    // a subscription already applied to the buyer's account stays there: the admin must say so explicitly
+    if (isApiError(e) && e.code === 'direct_refund_ack_required' && !body.acknowledge_irreversible) {
+      busy.value = null
+      if (await confirmBox(t('afterSales.directAck'), t('afterSales.action.refund'))) await run(a, { ...body, acknowledge_irreversible: true })
+      return
+    }
     toastError(e)
   } finally {
     busy.value = null

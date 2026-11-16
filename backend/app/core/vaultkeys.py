@@ -14,6 +14,7 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PublicKey
 
 from app.core.cardvault import CardSealer
 from app.core.config import Settings
+from app.core.credvault import CredentialSealer
 
 
 class VaultConfigError(RuntimeError):
@@ -52,3 +53,31 @@ def build_sealer(settings: Settings) -> CardSealer:
     except ValueError as exc:
         raise VaultConfigError("APP_VAULT_FINGERPRINT_KEY: " + str(exc)) from exc
     return CardSealer(pubs, active, fp_key)
+
+
+def build_credential_sealer(settings: Settings) -> CredentialSealer | None:
+    """The seal-only keyring for buyer credentials, or ``None`` when none is configured: then
+    ``upstream_direct`` products cannot be bought (checkout answers 503 ``direct_unavailable``)."""
+    if settings.cred_public_keys.strip():
+        raw = settings.cred_public_keys
+    elif settings.cred_public_keys_file:
+        try:
+            raw = Path(settings.cred_public_keys_file).read_text(encoding="utf-8")
+        except OSError as exc:
+            raise VaultConfigError("cannot read APP_CRED_PUBLIC_KEYS_FILE") from exc
+    else:
+        return None
+    try:
+        data = json.loads(raw)
+        pubs = {
+            str(kid): X25519PublicKey.from_public_bytes(base64.b64decode(b64, validate=True))
+            for kid, b64 in data.items()
+        }
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise VaultConfigError("credential public keys must be JSON {kid: base64}") from exc
+    if not pubs:
+        raise VaultConfigError("no credential public key configured")
+    active = settings.cred_active_kid or (next(iter(pubs)) if len(pubs) == 1 else "")
+    if active not in pubs:
+        raise VaultConfigError("APP_CRED_ACTIVE_KID is missing or unknown")
+    return CredentialSealer(pubs, active)

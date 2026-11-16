@@ -11,7 +11,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import Boolean, ForeignKey, Integer, Numeric, String, false
+from sqlalchemy import Boolean, ForeignKey, Integer, LargeBinary, Numeric, String, false
 from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -108,8 +108,27 @@ class ProcurementJob(Base):
     first_sent_at: Mapped[datetime | None]
     # 0028: masked card number of a purchased card (never the full number)
     card_mask: Mapped[str | None] = mapped_column(String(24))
+    # 0029: masked account e-mail of an upstream_direct job (never the session)
+    account_mask: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = created_at()
     updated_at: Mapped[datetime] = updated_at()
+
+
+class ProcurementCredential(Base):
+    """A buyer's account session for ``upstream_direct``, SEALED with the procurement public key
+    (migration 0029). ``blob`` and ``kid`` are readable by ``app_procurement`` only: the API role
+    has INSERT and column-level SELECT of the non-secret columns, so it can never read it back."""
+
+    __tablename__ = "procurement_credentials"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    order_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("orders.id"), unique=True)
+    product: Mapped[str] = mapped_column(String(8))
+    kid: Mapped[str] = mapped_column(String(64))
+    blob: Mapped[bytes] = mapped_column(LargeBinary)
+    email_masked: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = created_at()
 
 
 class SupplierWebhookEvent(Base):
