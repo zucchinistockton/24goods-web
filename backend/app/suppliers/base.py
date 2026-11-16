@@ -163,10 +163,18 @@ class Result:
     retry_after: timedelta | None = None
     supplier_stop: bool = False  # account-level refusal: open the supplier breaker
     card_mask: str | None = None  # vcc: masked card number (never the full one)
+    # direct: masked account e-mail the supplier's preflight reported, and the token's expiry
+    account_mask: str | None = None
+    preflight_expires_at: datetime | None = None
 
     @classmethod
     def from_error(
-        cls, exc: SupplierError, *, upstream_ref: str | None = None, card_mask: str | None = None
+        cls,
+        exc: SupplierError,
+        *,
+        upstream_ref: str | None = None,
+        card_mask: str | None = None,
+        account_mask: str | None = None,
     ) -> Result:
         return cls(
             outcome=exc.outcome,
@@ -175,6 +183,7 @@ class Result:
             supplier_stop=exc.supplier_stop,
             upstream_ref=upstream_ref,
             card_mask=card_mask,
+            account_mask=account_mask,
         )
 
 
@@ -226,6 +235,9 @@ class JobSpec:
     idempotency_key: str
     offer: OfferSpec
     upstream_ref: str | None = None
+    # upstream_direct ONLY: the buyer's account session, opened in memory by the engine for this one
+    # call. A live credential: hidden from ``repr``, never logged, never copied anywhere.
+    credential: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if not IDEMPOTENCY_KEY_RE.fullmatch(self.idempotency_key):

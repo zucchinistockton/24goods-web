@@ -173,20 +173,26 @@ class ZovoClient:
         json_body: Mapping[str, Any] | None = None,
         idempotency_key: str | None = None,
         endpoint: str | None = None,
+        read_only_post: bool = False,
     ) -> ZovoResponse:
+        """``read_only_post``: a POST that changes nothing upstream (the direct preflight): it is
+        classified like a read (a timeout is simply repeated) and carries no Idempotency-Key, but it
+        still obeys the production-write gate because it carries a buyer's credential."""
         method = method.upper()
-        write = method != "GET"
+        mutating = method != "GET"
+        write = mutating and not read_only_post
         if not _PATH_RE.fullmatch(path) or ".." in path:
             raise ValueError("invalid API path")
-        if write:
+        if mutating:
             # checked BEFORE anything else: a production write never leaves the process
             if self.config.env == "production" and not self.config.allow_production_writes:
                 log.warning("zovocard refused production write %s %s", method, path)
                 raise ProductionWriteBlocked()
+        if write:
             if idempotency_key is None or not IDEMPOTENCY_KEY_RE.fullmatch(idempotency_key):
                 raise ValueError("writes need an Idempotency-Key matching ^[A-Za-z0-9._:-]{1,80}$")
         elif idempotency_key is not None:
-            raise ValueError("GET requests carry no Idempotency-Key")
+            raise ValueError("reads carry no Idempotency-Key")
 
         headers = {
             "X-API-Key": self.config.app_secret,
