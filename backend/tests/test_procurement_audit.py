@@ -1031,8 +1031,10 @@ async def _due_recovery(env) -> None:
 
 async def test_n1_recovery_honours_the_kill_switches_then_needs_manual(env, up):
     for kill in (
-        "UPDATE suppliers SET enabled = false",
-        "UPDATE suppliers SET breaker_open = true, breaker_kind = 'hard', breaker_reason = 'x'",
+        "UPDATE suppliers SET enabled = false WHERE id = (SELECT supplier_id FROM procurement_jobs "
+        "WHERE id = :j)",
+        "UPDATE suppliers SET breaker_open = true, breaker_kind = 'hard', breaker_reason = 'x' "
+        "WHERE id = (SELECT supplier_id FROM procurement_jobs WHERE id = :j)",
     ):
         mock = LosingMock("mock_a", lose=1)
         await up.supplier(mock, code=f"m{uuid.uuid4().hex[:6]}")
@@ -1044,7 +1046,7 @@ async def test_n1_recovery_honours_the_kill_switches_then_needs_manual(env, up):
         assert r.status_code == 200 and r.json()["recovering"] is True
         await _sql(
             env,
-            kill + " WHERE id = (SELECT supplier_id FROM procurement_jobs WHERE id = :j)",
+            kill,
             j=job.id,
         )
         for _ in range(2):
