@@ -62,12 +62,25 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
   result shape (the sandbox never has one) and a non-mock redemption.
 - **Demo** runs the v12 branch incl. two-factor login and the redemption site (CI images loaded by hand).
   `user_totp` was created by hand there (it was already past 0022a). The mock supplier row is enabled.
-- **M3 part 1 (`upstream_vcc`) is in progress**: implementer on `feat/v12-m3-vcc` (worktree
-  `.claude/worktrees/m3`), backend only; then payment-auditor + security-reviewer, then the UI. `upstream_direct`
-  is M3 part 2, not started.
-- **Next, in order:** (1) M3 part 1 review, audit, UI, merge; (2) M3 part 2 (`upstream_direct`); (3) sandbox
-  webhook (below; account expires **2026-11-18 10:57**); (4) redemption host DNS (owner); (5) small UI polish:
-  the two-factor password placeholder is cut off at 375 px.
+- **M3 part 1 (`upstream_vcc`, virtual cards per order): merged** (PR #15, `985a589`, migration `0028`, spec §17).
+  Adapter (open → optional top-up → read card), engine with every M2 rule, the card sealed as one secret
+  `pan----MM/YY----cvv` through the existing vault path, 3DS one-time codes to the card owner (Redis TTL + SSE,
+  never stored; `GET /orders/{ref}/card-otp`), ledger links by card id, console (card mode, source form, masked
+  card in jobs, admin-only card paste) and buyer UI (code panel on the order page), en + zh-CN.
+  Payment-auditor: first pass failed it (refund of a delivered card left it live; a replayed open could make
+  a second card); F1–F11 fixed; re-audit pass with notes; the four notes fixed (not audited again).
+  Security-reviewer: pass with notes; fixed: the card fingerprint no longer derives from the card data
+  (`lookup_fp` NULL), card paste is admin-only, the leak test sweeps every table.
+  **Verified against the real ZovoCard sandbox on the demo (2026-11-16):** a card order was bought (10 USD,
+  product `USMAB01`), sealed, delivered and revealed (16 / 5 / 3 characters, mask equal to the console's);
+  after an after-sales refund the job went to `voided` and the supplier reports the card `DELETED` with
+  balance 0. Not verified: the recharge-pending 400, a real `card_3ds_otp` event, real fees (the sandbox
+  charges none), the buyer and console screens in a browser (typechecked by CI only).
+- **Next, in order:** (1) M3 part 2 (`upstream_direct`: procurement keypair, preflight refresh, async
+  orders) — not started; (2) look at the M3 screens in a browser; (3) put the demo's procurement back on the
+  simulator after 2026-11-18 10:57 (see the redeem.kesiv.com note above); (4) sandbox webhook: still no
+  vendor delivery observed since 01:39 UTC on 2026-11-16; (5) v12 to `main` waits for the M1 exit gate
+  (independent security review, AGENTS.md §1.11).
 - **Re-audit verdict (2026-11-15, head `2895860`): pass with notes — no Critical/High, no path to a double
   purchase or double delivery.** Original findings: H1, M1, M2, M4, M5, L1, L2, L4, L7 closed; H2, M3, L5
   partly; L3 and L6 deferred (`TODO(v12-M3)`). New findings and the decided fixes (paths under
