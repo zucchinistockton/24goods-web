@@ -982,3 +982,33 @@ async def test_l2_api_may_void_a_sold_code_only_for_a_job_being_voided(env, up):
                 text("UPDATE card_stock SET status = 'sold' WHERE id = :c"), {"c": card_id}
             )
         await db.rollback()
+
+
+# ------------------------------------------------------------------ re-audit (2026-11-15)
+async def test_n4_failed_evaluation_leaves_the_freshness_gate_stale(env, up, monkeypatch):
+    from app.procurement import breaker
+    from tests.test_procurement_breaker import _refresh
+
+    mock = MockSupplier("mock_a")
+    sid, _ = await up.supplier(mock)
+    await _sql(env, "UPDATE suppliers SET last_balance_at = now() - interval '1 hour'")
+
+    async def boom(*a, **k):
+        raise RuntimeError("evaluation failed")
+
+    monkeypatch.setattr(breaker, "evaluate", boom)
+    await _refresh(up, sid)  # a good balance read, but the breaker could not evaluate it
+    stale = await env.scalar(
+        "SELECT last_balance_at < now() - interval '30 minutes' FROM suppliers WHERE id = :s",
+        s=sid,
+    )
+    assert stale is True
+    _buyer, order = await up.paid_order()
+    await up.run()
+    job = await _job(up, order)
+    assert job.state == "queued" and job.error_code == "balance_stale" and mock.calls == []
+    monkeypatch.undo()
+    await _refresh(up, sid)
+    await up.make_due()
+    await up.run()
+    assert (await _job(up, order)).state == "fulfilled"

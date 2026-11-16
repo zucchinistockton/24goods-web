@@ -105,8 +105,9 @@ async def record_health(
     if probed:
         values["last_probe_at"] = now
     if balance is not None:
+        # last_balance_at (the freshness gate for NEW jobs) is stamped by ``stamp_balance``
+        # only after the breaker evaluated this reading (N4)
         values["last_balance"] = balance.spendable
-        values["last_balance_at"] = now
     async with tenant_session(ctx.maker, ref.tenant_id) as db:
         await db.execute(
             update(SupplierAccount)
@@ -123,6 +124,17 @@ async def record_health(
                 after={"health": health, "detail": detail},
                 severity="warning" if health == "down" else "info",
             )
+        await db.commit()
+
+
+async def stamp_balance(ctx: ProcurementContext, ref: SupplierRef) -> None:
+    """Mark the balance reading as fresh; called only once the breaker evaluated it."""
+    async with tenant_session(ctx.maker, ref.tenant_id) as db:
+        await db.execute(
+            update(SupplierAccount)
+            .where(SupplierAccount.tenant_id == ref.tenant_id, SupplierAccount.id == ref.id)
+            .values(last_balance_at=datetime.now(timezone.utc))
+        )
         await db.commit()
 
 
@@ -190,7 +202,8 @@ async def refresh_balance(ctx: ProcurementContext, ref: SupplierRef) -> Balance 
 
         try:
             await evaluate(ctx, ref, bal, supplier)
-        except Exception as exc:  # the breaker never turns a good balance read into an error
+            await stamp_balance(ctx, ref)
+        except Exception as exc:  # a failed evaluation leaves the freshness gate stale (N4)
             log.error("breaker evaluation failed supplier=%s error=%s", ref.id, type(exc).__name__)
         return bal
     finally:
