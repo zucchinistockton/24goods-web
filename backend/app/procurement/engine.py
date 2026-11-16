@@ -1198,6 +1198,7 @@ async def _lease(ctx: ProcurementContext, job_id: uuid.UUID, tenant_id: uuid.UUI
                 # another order is at the vendor on the SAME funding card: wait, never fail over
                 job.error_code = "card_busy"
                 job.next_poll_at = now + BALANCE_BACKOFF
+                await _alert_if_stuck(db, job, now)  # a long park is still a stuck job
                 await db.commit()
                 return None
             else:

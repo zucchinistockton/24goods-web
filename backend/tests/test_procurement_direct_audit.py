@@ -871,3 +871,31 @@ async def test_a_busy_cooling_or_deleted_funding_card_is_not_used_now():
     vendor.cards[4242]["status"] = "DELETED"
     av = await sup.availability(spec)
     assert not av.available and av.reason == "funding_card_invalid"
+
+
+async def test_a_watched_held_order_still_occupies_its_funding_card(env, dup):
+    vendor = _vendor()
+    vendor.direct_end = "running"
+    await _zovo(dup, vendor, CLAUDE)
+    _b1, o1 = await dup.paid_direct(claude_session(new_marker()))
+    await dup.run()
+    await _sql(env, "UPDATE procurement_jobs SET first_sent_at = now() - interval '3 hours'")
+    await _settle(dup, 2)
+    j1 = await _job(dup, o1)
+    assert j1.state == "needs_manual" and j1.next_poll_at is not None  # watched
+    _b2, o2 = await dup.paid_direct(claude_session(new_marker()))
+    await dup.run()
+    j2 = next(j for j in await dup.jobs(o2["id"]))
+    assert j2.state == "queued" and j2.error_code == "card_busy" and not j2.maybe_sent
+    assert vendor.direct_executions == 1
+    # a park is a stuck job after 30 minutes, like the balance park
+    await _sql(env, "UPDATE procurement_jobs SET created_at = now() - interval '2 hours' "
+                    "WHERE id = :j", j=j2.id)  # fmt: skip
+    await _sql(env, "UPDATE procurement_jobs SET next_poll_at = now() - interval '1 second' "
+                    "WHERE id = :j", j=j2.id)  # fmt: skip
+    await dup.run()
+    assert (await _job_by_id(dup, j2.id)).alerted_at is not None
+
+
+async def _job_by_id(dup, jid):
+    return next(j for j in await dup.jobs() if j.id == jid)

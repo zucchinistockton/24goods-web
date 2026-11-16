@@ -74,8 +74,13 @@ async def card_in_flight(
                 ProcurementJob.supplier_id == supplier_id,
                 ProcurementJob.kind == "direct",
                 ProcurementJob.id != exclude,
-                ProcurementJob.state.in_(IN_FLIGHT_STATES),
-                ProcurementJob.maybe_sent.is_(True),
+                (ProcurementJob.state.in_(IN_FLIGHT_STATES) & ProcurementJob.maybe_sent.is_(True))
+                # a held job whose supplier order is still WATCHED may yet complete and charge
+                | (
+                    (ProcurementJob.state == "needs_manual")
+                    & ProcurementJob.upstream_ref.is_not(None)
+                    & ProcurementJob.next_poll_at.is_not(None)
+                ),
                 SupplierOffer.params["card_id"].astext == str(card_id),
             )
         )
