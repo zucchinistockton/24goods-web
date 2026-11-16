@@ -585,10 +585,14 @@ async def test_availability_via_adapter():
     for plan in ("pro_20x", "pro_5x_renew", "credit250", "nope"):
         a = await s.availability(OfferSpec("cdk", {"product": "gpt", "plan": plan}))
         assert not a.available and a.reason == "not_purchasable", plan
-    direct = await s.availability(OfferSpec("direct", {"product": "claude", "plan": "pro"}))
+    direct = await s.availability(
+        OfferSpec("direct", {"product": "claude", "plan": "pro", "card_id": 7})
+    )
     assert direct.available
     # the acc_plan_key is not a registry key
-    bad = await s.availability(OfferSpec("direct", {"product": "claude", "plan": "claude_pro"}))
+    bad = await s.availability(
+        OfferSpec("direct", {"product": "claude", "plan": "claude_pro", "card_id": 7})
+    )
     assert not bad.available
     assert not (await s.availability(OfferSpec("cdk", {"product": "grok", "plan": "x"}))).available
     assert not (await s.availability(OfferSpec("vcc", {}))).available

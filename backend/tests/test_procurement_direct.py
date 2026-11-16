@@ -1088,3 +1088,24 @@ async def test_migration_0029_up_and_down(services):
 
 
 _ = time  # (kept for clarity: no test depends on wall-clock dates)
+
+
+async def test_admin_can_create_a_direct_product_with_a_forced_separator(env):
+    admin, _ = await env.login("admin")
+    r = await admin.post(
+        "/api/v1/admin/products",
+        json={
+            "title_i18n": {"en": "Claude Pro", "zh-CN": "Claude Pro"},
+            "price": "25.00",
+            "floor_price": "0",
+            "currency": "CNY",
+            "delivery_mode": "upstream_direct",
+            "category": "gift_cards",
+            "status": "active",
+            "delivery_separator": "|",
+        },
+    )
+    assert r.status_code in (200, 201), r.text
+    body = r.json()
+    assert body["delivery_mode"] == "upstream_direct" and body["delivery_separator"] == "----"
+    assert body["delivery_format"] == "Plan----Account----Supplier order"
