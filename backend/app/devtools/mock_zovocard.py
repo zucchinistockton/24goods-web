@@ -23,6 +23,16 @@ same-key replay returns the code), ``scn_409`` (first attempt 409, then executes
 (executed, first answer ``202`` without an envelope), ``scn_503`` (always ``503
 channel_unavailable``, nothing charged).
 
+Public redemption (``/api/v1/cdk/{preview,preflight,redeem,result}``, no API key, review-v12
+§8/§12): tokens are bound to the ``X-Redemption-Device`` header of the preview (another device
+answers ``400 REDEMPTION_SESSION_INVALID``); ``preflight`` returns a token plus payment
+country/currency (Grok/Claude plans: no token); ``redeem`` answers ``succeeded`` with an
+``SBXORD-`` order id and, like the real sandbox, leaves the CDK ``unused``; ``result`` is 404
+``not_found`` for an unknown token (and for every token when ``MockZovo.result_404`` or
+``APP_MOCKZOVO_RESULT_404=1``). An unknown, disabled or non-``unused`` code is
+``400 CDK_UNAVAILABLE``. A credential containing ``invalid`` is ``400 GPT_SESSION_INVALID``.
+The credential and the code are never stored in ``requests``.
+
 Force a quirk from tests with ``MockZovo.force(path, name)`` or, on a running dev server,
 ``POST /__mock/force {"path": "/balance", "quirk": "429"}``. Refuses to start unless
 ``APP_ENV`` is dev or test.
@@ -34,9 +44,11 @@ import asyncio
 import json
 import os
 import re
+import secrets
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from starlette.applications import Starlette
@@ -223,6 +235,11 @@ class MockZovo:
     scenarios: bool = False  # E2E scenario plans (scn_*), see the module docstring
     scn_seen: set[str] = field(default_factory=set)
     executions: int = 0  # how many issue requests really ran (tests: never twice per key)
+    # public redemption: token -> session; (step, device, has_credential) per call, no secrets
+    sessions: dict[str, dict[str, Any]] = field(default_factory=dict)
+    redeem_calls: list[tuple[str, str, bool]] = field(default_factory=list)
+    redeem_orders: dict[str, dict[str, Any]] = field(default_factory=dict)  # client_request_id
+    result_404: bool = False  # the real sandbox never returns a result
 
     def force(self, path: str, quirk: str, times: int = 1) -> None:
         if quirk not in QUIRKS:
@@ -414,6 +431,146 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
             )
         return JSONResponse({"code": 404, "msg": "not found"}, status_code=404)
 
+    # ---- public redemption (no API key): the buyer-facing four steps
+    def _rerr(status: int, error_code: str, msg: str) -> JSONResponse:
+        return JSONResponse({"code": status, "error_code": error_code, "msg": msg}, status)
+
+    def _device(request: Request) -> str:
+        return request.headers.get("x-redemption-device") or request.headers.get("user-agent", "")
+
+    def _session(
+        request: Request, body: dict[str, Any], step: str
+    ) -> dict[str, Any] | JSONResponse:
+        token = body.get("redemption_token")
+        sess = mock.sessions.get(token) if isinstance(token, str) else None
+        has_cred = isinstance(body.get("credential"), dict)
+        mock.redeem_calls.append((step, request.headers.get("x-redemption-device", ""), has_cred))
+        if sess is None or sess["expires"] < time.time() or sess["device"] != _device(request):
+            return _rerr(400, "REDEMPTION_SESSION_INVALID", "session invalid")
+        return sess
+
+    def _good_credential(cred: Any) -> bool:
+        return (
+            isinstance(cred, dict)
+            and cred.get("mode") == "session"
+            and isinstance(cred.get("session"), str)
+            and bool(cred["session"])
+            and "invalid" not in cred["session"]
+        )
+
+    async def cdk_step(request: Request) -> JSONResponse:
+        step = request.path_params["step"]
+        if step == "result":
+            token = request.query_params.get("token", "")
+            mock.redeem_calls.append(
+                ("result", request.headers.get("x-redemption-device", ""), False)
+            )
+            sess = mock.sessions.get(token)
+            if mock.result_404 or sess is None or sess["device"] != _device(request):
+                return _rerr(404, "not_found", "not found")
+            order = sess.get("order")
+            if order is None:
+                return _rerr(404, "not_found", "not found")
+            return JSONResponse(
+                _env(
+                    0,
+                    {
+                        "order": {**order, "stage": "completed", "cdk_status": "unused"},
+                        "events": [{"type": "order.succeeded", "created_at": order["created_at"]}],
+                    },
+                )
+            )
+        if request.method != "POST":
+            return _rerr(405, "method_not_allowed", "POST only")
+        try:
+            body = json.loads(await request.body() or b"{}")
+        except ValueError:
+            body = None
+        if not isinstance(body, dict):
+            return _rerr(400, "INVALID_REQUEST", "bad body")
+        if step == "preview":
+            code = body.get("code")
+            mock.redeem_calls.append(
+                ("preview", request.headers.get("x-redemption-device", ""), False)
+            )
+            cdk = next((c for c in mock.cdks.values() if c["code"] == code), None)
+            if cdk is None or cdk["status"] != "unused":
+                return _rerr(400, "CDK_UNAVAILABLE", "code unavailable")
+            token = "rt_" + secrets.token_hex(16)
+            expires = datetime.now(timezone.utc) + timedelta(minutes=15)
+            mock.sessions[token] = {
+                "cdk": cdk["id"], "device": _device(request), "expires": time.time() + 900,
+                "plan": cdk["plan"], "preflight": None,
+            }  # fmt: skip
+            return JSONResponse(
+                _env(
+                    0,
+                    {
+                        "redemption_token": token,
+                        "expires_at": expires.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        "plan": cdk["plan"],
+                        "plan_flow": "checkout",
+                        "funding_cap_minor": 0,
+                    },
+                )
+            )
+        sess = _session(request, body, step)
+        if isinstance(sess, JSONResponse):
+            return sess
+        tokenless = str(sess["plan"]).startswith(("grok_", "claude"))
+        if step == "preflight":
+            if not _good_credential(body.get("credential")):
+                return _rerr(400, "GPT_SESSION_INVALID", "session rejected")
+            sess["credential_ok"] = True
+            ptoken = None if tokenless else "pf_" + secrets.token_hex(16)
+            sess["preflight"] = ptoken
+            return JSONResponse(
+                _env(
+                    0,
+                    {
+                        "preflight_token": ptoken,
+                        "preflight_expires_at": (
+                            datetime.now(timezone.utc) + timedelta(minutes=10)
+                        ).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        "payment_country": "PH",
+                        "payment_currency": "PHP",
+                        "quotes": None,
+                    },
+                )
+            )
+        if step == "redeem":
+            rid = body.get("client_request_id")
+            if not isinstance(rid, str) or not rid:
+                return _rerr(400, "INVALID_REQUEST", "client_request_id required")
+            fingerprint = json.dumps(
+                {k: body.get(k) for k in ("redemption_token", "preflight_token")}, sort_keys=True
+            )
+            prior = mock.redeem_orders.get(rid)
+            if prior is not None:
+                if prior["fp"] != fingerprint:
+                    return _rerr(409, "IDEMPOTENCY_CONFLICT", "other parameters")
+                return JSONResponse(_env(0, {"order": prior["order"]}))
+            if tokenless:
+                if not _good_credential(body.get("credential")):
+                    return _rerr(400, "CREDENTIAL_REQUIRED", "credential required")
+            elif body.get("preflight_token") is None:
+                return _rerr(400, "PREFLIGHT_REQUIRED", "preflight required")
+            elif body.get("preflight_token") != sess["preflight"]:
+                return _rerr(400, "REDEMPTION_SESSION_INVALID", "preflight invalid")
+            cdk = mock.cdks.get(sess["cdk"])
+            if cdk is None or cdk["status"] != "unused":
+                return _rerr(400, "CDK_UNAVAILABLE", "code unavailable")
+            order = {
+                "order_id": f"SBXORD-{secrets.token_hex(6).upper()}",
+                "status": "succeeded",
+                "sandbox_mock": True,
+                "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            }
+            sess["order"] = order
+            mock.redeem_orders[rid] = {"fp": fingerprint, "order": order}
+            return JSONResponse(_env(0, {"order": order}))
+        return _rerr(404, "not_found", "unknown step")
+
     async def force(request: Request) -> JSONResponse:
         try:
             data = json.loads(await request.body())
@@ -429,6 +586,7 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
         routes=[
             Route("/healthz", healthz),
             Route("/__mock/force", force, methods=["POST"]),
+            Route("/api/v1/cdk/{step}", cdk_step, methods=["GET", "POST"]),
             Route(
                 PREFIX + "/{path:path}",
                 dispatch,
@@ -447,7 +605,10 @@ async def _main() -> None:
         raise SystemExit("mock_zovocard only runs with APP_ENV=dev|test")
     host = os.environ.get("APP_MOCKZOVO_HOST", "127.0.0.1")
     port = int(os.environ.get("APP_MOCKZOVO_PORT", "8005"))
-    state = MockZovo(scenarios=os.environ.get("APP_MOCKZOVO_SCENARIOS", "") == "1")
+    state = MockZovo(
+        scenarios=os.environ.get("APP_MOCKZOVO_SCENARIOS", "") == "1",
+        result_404=os.environ.get("APP_MOCKZOVO_RESULT_404", "") == "1",
+    )
     server = uvicorn.Server(
         uvicorn.Config(
             create_mock_zovocard(state),

@@ -226,6 +226,82 @@ proxy is stateless apart from Redis rate limits, forwards the buyer's credential
 it, and is not routed through the API container. Built in M2 after issuance works; until then buyers can
 redeem on the supplier's own page.
 
+### 8.1 Built backend and HTTP contract (for the SPA author)
+
+**Topology.** `python -m app.procurement` runs a second uvicorn listener (`app/procurement/redeem.py`,
+`APP_REDEEM_ENABLED=1`, default off) on `APP_REDEEM_HOST:APP_REDEEM_PORT` (compose: `10.89.15.30:8006`). It
+serves only `/redeem/*`. The internal API (`:8004`) is a different listener bound to procurement's `backend`
+address (`10.89.11.30`); `web` (Caddy) shares only the internal `redeem` network (`10.89.15.0/24`) with
+procurement, so Caddy has no path to `:8004`, and the public listener has no `/internal/*` route (both
+tested). Caddy site `https://{REDEEM_HOST}` (`deploy/Caddyfile`, `Caddyfile.prod`; `REDEEM_HOST` defaults to
+`redeem.invalid` = off; demo bootstrap uses `redeem.localhost`, prod only when `REDEEM_HOST` is given) serves
+`/srv/redeem` (image: `deploy/redeem/`, replaced by the SPA build) with `default-src 'none'; script-src 'self';
+style-src 'self'; img-src 'self' data:; connect-src 'self'; ...`, strips `Cookie`/`Authorization` before the
+proxy, forwards only the four paths below and answers any other `/redeem/*` with 404. Same origin, so the proxy
+sends **no CORS headers** and refuses a POST whose `Origin` differs from `Host` (403 `forbidden`).
+
+**Which supplier.** The proxy cannot tell cheaply and safely which environment issued a code (card rows hold
+sealed secrets; `app_procurement` cannot read them). It uses the **single enabled ZovoCard supplier of the
+platform tenant** (a reseller's supplier is never used); if none or more than one `(code, env)` is enabled
+the answer is `unavailable`. `APP_REDEEM_SUPPLIER_ENV=sandbox|production` pins one environment when both are
+enabled. The vendor base is derived from that supplier's `BASE_URL` (`scheme://host/api/v1/cdk`); no API key
+is sent (the vendor's public steps need none) and https is required outside dev/test.
+
+**Conventions.** JSON in, JSON out; POST bodies need `Content-Type: application/json`, at most 24 KiB, only the
+listed keys (unknown keys = `invalid_request`). Every response has `Cache-Control: no-store`; no cookies are
+ever set. Success: `{"data": {...}}` (only the fields below, everything else from the vendor is dropped).
+Failure: `{"error": {"code": "<code>", "message": "<fixed English text>"}}`; localise by `code`. Never put the
+code or the credential in a URL; keep `redemption_token` for 15 min (the vendor session) and reuse the same
+`client_request_id` when retrying `redeem`.
+
+| Step | Request | `data` on success |
+|---|---|---|
+| `POST /redeem/preview` | `{"code": "<CDK>"}`; `[A-Za-z0-9._:-]{8,128}` | `redemption_token`, `expires_at` (ISO), `plan`, `plan_flow`, `funding_cap_minor` (int, 0 = none) |
+| `POST /redeem/preflight` | `{"redemption_token", "credential": {"mode": "session", "session": "<ChatGPT session text, 8..16384 chars, no control chars>"}}` | `preflight_token` (**null for Grok/Claude codes**), `preflight_expires_at`, `payment_country` (e.g. `PH`), `payment_currency`, `subscription_recovery_required` (bool) |
+| `POST /redeem/redeem` | `{"redemption_token", "client_request_id": "[A-Za-z0-9._:-]{1,80}", "preflight_token"?, "credential"?}`; at least one of `preflight_token` (GPT/X) or `credential` (Grok/Claude, same account as preflight) | `order_id`, `status`, `stage`, `terminal` (bool). Success means *accepted*, not paid: poll result |
+| `POST /redeem/result {"redemption_token"}` (POST only: a token never travels in a URL on our side; `GET` answers 405) | | `order_id`, `status`, `stage`, `cdk_status`, `terminal`, `events[]` (`type`, `status`, `at`; at most 50). `404 not_found` is normal for a while (and always in the vendor sandbox); keep polling every 3-5 s up to ~2 min, then show "check later" |
+
+`card_id`, API keys and any other field are not accepted. Tokens are `[A-Za-z0-9._~+/=:-]{8,512}`.
+
+| `error.code` | HTTP | Meaning / SPA action |
+|---|---|---|
+| `invalid_request` | 400 | malformed input, caught locally (nothing reached the vendor) |
+| `forbidden` | 403 | cross-origin request |
+| `not_found` | 404 | result not available (yet); also unknown path |
+| `method_not_allowed` | 405 | wrong method |
+| `payload_too_large` | 413 | body over 24 KiB |
+| `code_unavailable` | 422 | unknown, disabled, used or wrongly-scoped code (one code: no oracle) |
+| `credential_invalid` | 422 | the session was not accepted; ask for a fresh one |
+| `account_ineligible` | 422 | the account cannot take this plan (e.g. plan already active) |
+| `rejected` | 422 | any other vendor refusal (cards, funding); show a generic failure + support link |
+| `session_expired` | 409 | redemption/preflight token invalid or expired: restart from preview |
+| `conflict` | 409 | `client_request_id` reused with other parameters: show result, do not resubmit |
+| `rate_limited` | 429 | `Retry-After` seconds; applies to our limits and to the vendor's |
+| `unavailable` | 503 | vendor down, no/ambiguous supplier, our own failure (limits fail closed when Redis is down) |
+| `timeout` | 504 | vendor did not answer in 20 s; for `redeem` retry with the **same** `client_request_id`, or poll result |
+
+**Limits (all fixed 60 s windows, settings `APP_REDEEM_*`).** Per client IP and step: preview 10, preflight 10,
+redeem 6, result 40. One shared budget per step for all buyers, because the vendor limits per *egress* IP
+(30/20/60 per minute) and every buyer shares ours: preview 25, preflight 20, redeem 15, result 50. Per code
+(keyed HMAC): 10 previews per 10 min. Per redemption token: 40 requests per minute. Client IP comes from
+`X-Forwarded-For` only when the peer is in `APP_REDEEM_TRUSTED_PROXIES` (compose: Caddy's `10.89.15.10`).
+Redis keys are `rl:proc:redeem-*` with a keyed hash of the identifier (inside the `procurement` ACL; no
+bootstrap change needed). Upstream timeout 20 s (5 s connect), one request per step, no automatic retry.
+
+**What is never recorded.** Log lines carry the step, the mapped outcome and the vendor HTTP status only;
+no body, header, URL query, exception message, code, token or credential (the `httpx` logger is forced to
+WARNING because the vendor's result call carries the token in its query). No audit rows are written, no
+database is touched except the supplier lookup (cached 30 s). Caddy drops query strings, `Cookie`,
+`Referer` and `Authorization` from its access log on this host. `X-Redemption-Device` is the constant
+`APP_REDEEM_DEVICE` (bootstrap generates `24g-<24 hex>` once per deployment); egress is procurement's
+`procurement_egress` network.
+
+**Settings** (`ProcurementSettings`, env `APP_REDEEM_*`): `ENABLED`, `HOST`, `PORT`, `DEVICE` (required when
+enabled, `[A-Za-z0-9._-]{8,64}`), `SUPPLIER_ENV`, `TRUSTED_PROXIES`, `UPSTREAM_TIMEOUT_S`, `IP_LIMITS`,
+`GLOBAL_LIMITS`, `CODE_PER_10MIN`, `TOKEN_PER_MIN`. Deploy: `REDEEM_HOST` in `deploy/.env` (bootstrap).
+Mock vendor: `app/devtools/mock_zovocard.py` serves the four steps (device-bound tokens, `SBXORD-` order,
+CDK stays `unused`, `APP_MOCKZOVO_RESULT_404=1` reproduces the sandbox's missing result).
+
 ## 9. Small fixes (separate PR `fix/pay-ux-reco`, can start now)
 
 - `frontend/apps/web/src/pages/UsdtPayPage.vue`: card padding ≥ 16 px and row gaps at 375 px; address rendered

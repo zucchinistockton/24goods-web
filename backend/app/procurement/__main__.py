@@ -72,9 +72,52 @@ async def _serve(settings: ProcurementSettings) -> None:
     )
     log.info("procurement service on %s:%d", settings.procurement_host, settings.procurement_port)
     trim()
+    redeem_app = None
+    redeem_server = None
+    if settings.redeem_enabled:
+        from app.procurement.redeem import create_redeem_app
+
+        # a SECOND listener: it serves only /redeem/*, the internal API is never on it
+        redeem_app = create_redeem_app(ctx)
+        redeem_server = uvicorn.Server(
+            uvicorn.Config(
+                redeem_app,
+                host=settings.redeem_host,
+                port=settings.redeem_port,
+                proxy_headers=False,
+                server_header=False,
+                access_log=False,
+                log_config=None,
+                lifespan="off",
+                loop="asyncio",
+                http="h11",
+                limit_concurrency=64,
+                timeout_keep_alive=5,
+            )
+        )
+        log.info("redeem proxy on %s:%d", settings.redeem_host, settings.redeem_port)
     try:
-        await server.serve()
+        if redeem_server is None:
+            await server.serve()
+        else:
+            # stop both when either exits (uvicorn handles SIGTERM per server)
+            async def _both() -> None:
+                tasks = [
+                    asyncio.create_task(server.serve()),
+                    asyncio.create_task(redeem_server.serve()),
+                ]
+                try:
+                    await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                finally:
+                    server.should_exit = True
+                    redeem_server.should_exit = True
+                    await asyncio.gather(*tasks, return_exceptions=True)
+
+            await _both()
     finally:
+        if redeem_app is not None:
+            with contextlib.suppress(Exception):
+                await redeem_app.state.close()
         stop.set()
         for task in (loop_task, engine_task):
             task.cancel()

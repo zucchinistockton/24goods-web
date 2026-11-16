@@ -25,6 +25,9 @@ API_IMAGE="${API_IMAGE:-ghcr.io/zucchinistockton/goods24-api:main}"
 WEB_IMAGE="${WEB_IMAGE:-ghcr.io/zucchinistockton/goods24-web:main}"
 PUBLISH_HTTP="${PUBLISH_HTTP:-80}"
 SITE_ADDRESS="${SITE_ADDRESS:-:80}"
+# CDK redemption site (review-v12 §8). Host name only. Demo default: redeem.localhost (reachable with a
+# Host header, as the e2e smoke does). Prod: OFF unless REDEEM_HOST is given (e.g. redeem.example.com).
+if [[ "${MODE:-demo}" == "demo" ]]; then REDEEM_HOST="${REDEEM_HOST:-redeem.localhost}"; else REDEEM_HOST="${REDEEM_HOST:-}"; fi
 PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-http://127.0.0.1:${PUBLISH_HTTP}}"
 COOKIE_SECURE="${COOKIE_SECURE:-false}"
 MODE="${MODE:-demo}"             # demo | prod
@@ -110,6 +113,7 @@ API_IMAGE=$API_IMAGE
 WEB_IMAGE=$WEB_IMAGE
 PUBLISH_HTTP=$PUBLISH_HTTP
 SITE_ADDRESS=$SITE_ADDRESS
+REDEEM_HOST=${REDEEM_HOST:-redeem.invalid}
 ADMIN_ALLOW_IPS="$ADMIN_ALLOW_IPS"
 PG_SUPERUSER_PASSWORD=$PG_SUPERUSER_PASSWORD
 APP_OWNER_PASSWORD=$APP_OWNER_PASSWORD
@@ -220,7 +224,7 @@ APP_ENV=$APP_ENV_NAME
 APP_PROCUREMENT_DATABASE_URL=postgresql+asyncpg://app_procurement:$DB_PROCUREMENT_PW@$PG
 APP_REDIS_URL=$(redis_url procurement "$R_PROCUREMENT")
 APP_PROCUREMENT_TOKEN=$PROCUREMENT_TOKEN
-APP_PROCUREMENT_HOST=0.0.0.0
+APP_PROCUREMENT_HOST=10.89.11.30
 APP_PROCUREMENT_PORT=8004
 APP_HEALTH_PORT=8004
 APP_VAULT_PUBLIC_KEYS_FILE=/run/secrets/vault_public_keys
@@ -229,6 +233,18 @@ APP_VAULT_FINGERPRINT_KEY=$APP_VAULT_FINGERPRINT_KEY
 ZOVOCARD_SANDBOX_APP_ID=$ZOVO_SANDBOX_ID
 ZOVOCARD_SANDBOX_APP_SECRET=$ZOVO_SANDBOX_SECRET
 EOF
+if [[ -n "$REDEEM_HOST" ]]; then
+  # public redemption proxy: its own listener on the redeem network (never the internal API port)
+  {
+    echo "APP_REDEEM_ENABLED=1"
+    echo "APP_REDEEM_HOST=10.89.15.30"
+    echo "APP_REDEEM_PORT=8006"
+    echo "APP_REDEEM_DEVICE=24g-$(rnd 12)"   # constant per deployment
+    echo "APP_REDEEM_TRUSTED_PROXIES=10.89.15.10/32"
+    # which supplier environment receives buyers' credentials: explicit, never inferred (prod refuses to start without it)
+    if [[ "$MODE" == "demo" ]]; then echo "APP_REDEEM_SUPPLIER_ENV=sandbox"; else echo "APP_REDEEM_SUPPLIER_ENV=production"; fi
+  } >> env/procurement.env
+fi
 if [[ "$MODE" == "demo" ]]; then
   # demo/CI only: the "sandbox" supplier is the simulator (prod mode never writes these)
   echo "ZOVOCARD_SANDBOX_BASE_URL=http://mockzovo:8005/openapi/v1" >> env/procurement.env
