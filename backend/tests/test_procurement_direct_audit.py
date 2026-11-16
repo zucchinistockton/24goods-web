@@ -899,3 +899,32 @@ async def test_a_watched_held_order_still_occupies_its_funding_card(env, dup):
 
 async def _job_by_id(dup, jid):
     return next(j for j in await dup.jobs() if j.id == jid)
+
+
+async def test_refund_of_an_order_with_a_live_supplier_order_needs_the_acknowledgement(env, dup):
+    vendor = _vendor()
+    await _zovo(dup, vendor, CLAUDE)
+    _b, order = await dup.paid_direct(claude_session(new_marker()))
+    await dup.run()  # accepted_pending: the supplier holds an order that may complete
+    admin, _ = await env.login("admin")
+    body = {"reference": "REF-" + uuid.uuid4().hex[:8].upper()}
+    r = await admin.post(f"/api/v1/admin/orders/{order['id']}/refund", json=body)
+    assert r.status_code == 422 and r.json()["error"]["code"] == "direct_refund_ack_required"
+    r = await admin.post(
+        f"/api/v1/admin/orders/{order['id']}/refund",
+        json={**body, "acknowledge_irreversible": True},
+    )
+    assert r.status_code == 200, r.text
+    # a job that never reached the supplier needs none
+    _b2, o2 = await dup.paid_direct(claude_session(new_marker()))
+    r = await admin.post(
+        f"/api/v1/admin/orders/{o2['id']}/refund",
+        json={"reference": "REF-" + uuid.uuid4().hex[:8].upper()},
+    )
+    assert r.status_code == 200, r.text
+
+
+def test_the_engine_sweep_default_is_inside_the_database_backstop():
+    from app.procurement.config import ProcurementSettings
+
+    assert ProcurementSettings().cred_max_age_s == 18000.0 < 21600.0

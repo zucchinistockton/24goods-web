@@ -41,9 +41,11 @@ class ProcurementSettings:
     # buyer-credential PRIVATE keys for upstream_direct (review-v12 §18): the only process that may
     # open a buyer's account session. NOT the card vault's keys (that stays refused above).
     cred_private_keys_file: str = ""
-    # a sealed credential is deleted after this many seconds in any case (default 6 h, the same
-    # bound as a same-key replay): a session text is a live credential for the buyer's account
-    cred_max_age_s: float = 21600.0
+    # a sealed credential is deleted after this many seconds in any case (default 5 h; the API's
+    # database backstop deletes at 6 h, so the engine's own sweep always wins): a session text is
+    # a live credential for the buyer's account. Keep ``replay_max_age_s`` within the vendor's
+    # idempotency-key retention (unverified)
+    cred_max_age_s: float = 18000.0
     cred_sweep_interval_s: float = 30.0  # how often the sweeper looks for credentials to delete
     # an upstream_direct order still pending at the supplier after this long goes to needs_manual
     # (``pending_too_long``): a subscription takes minutes, an order that never moves needs staff

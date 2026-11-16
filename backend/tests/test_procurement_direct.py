@@ -155,7 +155,7 @@ async def _refund(env, order):
     admin, _ = await env.login("admin")
     return await admin.post(
         f"/api/v1/admin/orders/{order['id']}/refund",
-        json={"reference": "REF-" + uuid.uuid4().hex[:8].upper()},
+        json={"reference": "REF-" + uuid.uuid4().hex[:8].upper(), "acknowledge_irreversible": True},
     )
 
 
@@ -965,7 +965,7 @@ def test_procurement_never_accepts_the_card_vault_private_key():
     with pytest.raises(ValueError):
         ProcurementSettings.from_env({"APP_VAULT_PRIVATE_KEYS_FILE": "/x"})
     ok = ProcurementSettings.from_env({"APP_CRED_PRIVATE_KEYS_FILE": "/run/secrets/c"})
-    assert ok.cred_private_keys_file == "/run/secrets/c" and ok.cred_max_age_s == 21600.0
+    assert ok.cred_private_keys_file == "/run/secrets/c" and ok.cred_max_age_s == 18000.0
 
 
 def test_credential_checks_by_product():

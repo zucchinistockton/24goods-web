@@ -470,14 +470,17 @@ UNDELIVERED_ORDER = ("paid", "manual_review")  # nothing handed over yet
 
 
 async def direct_completed(db: AsyncSession, order: Order) -> bool:
-    """Any ``direct`` job of the order whose supplier subscription COMPLETED (fulfilled)."""
+    """Any ``direct`` job of the order that has (or may have) a supplier order that is not yet
+    closed out: completed, or still moving (any state except failed / voided with an order id).
+    A refund of such an order may be a loss, so it needs the admin's acknowledgement."""
     return bool(
         await db.scalar(
             select(func.count(ProcurementJob.id)).where(
                 ProcurementJob.tenant_id == order.tenant_id,
                 ProcurementJob.order_id == order.id,
                 ProcurementJob.kind == "direct",
-                ProcurementJob.state == "fulfilled",
+                ProcurementJob.upstream_ref.is_not(None),
+                ProcurementJob.state.not_in(("failed", "voided")),
             )
         )
     )
