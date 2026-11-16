@@ -45,9 +45,10 @@ token valid ``DIRECT_TOKEN_TTL_S``; the full e-mail is reported, the adapter mas
 reproduced: an UNKNOWN ``product`` silently becomes ``gpt``; a repeated ``client_request_id``
 returns the original order; a missing / used / expired token is ``400 GPT_PRICE_UNCONFIRMED``),
 ``GET /gpt-direct/orders`` (list) and ``/{id}`` (``data.order`` + ``data.events``; the order moves
-queued -> running -> completed over successive reads, or ends ``declined`` / stays ``running``
-forever through ``direct_end``), ``POST /gpt-direct/orders/{id}/cancel`` (200 only while
-``queued``, else ``409`` without error_code). The session is NEVER stored: only a digest.
+queued -> running -> completed over successive reads, the 1st still saying queued, or ends
+``declined`` / stays ``running`` forever through ``direct_end``),
+``POST /gpt-direct/orders/{id}/cancel`` (200 only while ``queued``, else ``409`` without
+error_code). The session is NEVER stored: only a digest.
 
 Force a quirk from tests with ``MockZovo.force(path, name)`` or, on a running dev server,
 ``POST /__mock/force {"path": "/balance", "quirk": "429"}``. Refuses to start unless
@@ -282,7 +283,9 @@ class MockZovo:
     direct_executions: int = 0  # how many orders really ran (tests: never twice per job)
     preflights: int = 0
     direct_end: str = "completed"  # completed | declined | running (never ends)
-    direct_polls: int = 2  # GETs before the order completes
+    direct_polls: int = 3  # the Nth read ends the order (1st: queued, then running)
+    direct_expire_next: int = 0  # the next N preflight tokens are issued already expired
+    direct_cancel_409: bool = False  # every cancel answers 409 (payment already started)
     direct_current_plan: str = "free"  # what the preflight reports as the account's plan
     direct_quote_error: str = ""  # a non-empty quote_error on the preflight
     direct_cancelled: int = 0
@@ -505,6 +508,9 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
         mock.preflights += 1
         token = "pf-" + secrets.token_hex(12)
         expires = time.monotonic() + DIRECT_TOKEN_TTL_S
+        if mock.direct_expire_next > 0:
+            mock.direct_expire_next -= 1
+            expires = time.monotonic() - 1.0  # a stale token: the order refuses it
         mock.direct_tokens[token] = expires
         country = body.get("payment_country") or "PH"
         currency = body.get("payment_currency") or ("USD" if country == "US" else "PHP")
@@ -606,7 +612,7 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
         o = mock.direct_orders.get(oid)
         if o is None:
             return JSONResponse({"code": 404, "msg": "no order"}, 404)
-        if o["status"] != "queued":  # payment started or done: too late (no error_code)
+        if o["status"] != "queued" or mock.direct_cancel_409:  # too late (no error_code)
             return JSONResponse({"code": 409, "msg": "cannot cancel"}, 409)
         o["status"] = "cancelled"
         mock.direct_cancelled += 1
@@ -618,12 +624,12 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
             return JSONResponse({"code": 404, "msg": "no order"}, 404)
         if o["status"] in ("queued", "running"):
             o["polls"] += 1
-            if mock.direct_end == "running":
+            if o["polls"] == 1:
+                pass  # the first read still sees it queued (a cancel is possible)
+            elif mock.direct_end == "running" or o["polls"] < mock.direct_polls:
                 o["status"] = "running"
-            elif o["polls"] >= mock.direct_polls:
-                o["status"] = mock.direct_end
             else:
-                o["status"] = "running"
+                o["status"] = mock.direct_end
         return JSONResponse(_env(0, {"order": _order_view(o), "events": []}))
 
     def _write(request: Request, path: str, body: dict[str, Any]) -> JSONResponse:
