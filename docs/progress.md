@@ -14,7 +14,9 @@ supersedes the ones below).**
      with a test in `tests/test_procurement_audit.py` (or a sibling); schema changes go into a new migration
      `0028` (never edit 0027); document new rules in spec §16.
   2. Push, read CI on the new head. The last run (43742459446 on `2895860`) was green except one backend
-     test, `test_open_breaker_raises_one_staff_alert`, fixed in `4778d80`; that fix has not been through CI.
+     test, `test_open_breaker_raises_one_staff_alert`, fixed in `4778d80`. The run on `15d6967` (43784580423) then
+     failed only `test_backfill_pages_until_nothing_new...`: its fixed dates fell out of the 2-day backfill
+     lookback on 2026-11-16 (a test time bomb, not a code fault); the dates are relative now.
   3. Short payment-auditor pass over the new commits only (N1–N8 and the hash rule), then merge `main` into
      `feat/v12-procurement`, take PR #2 out of draft and **squash-merge** it into `feat/v12-procurement`.
   4. Update the demo to that build: migration 0027 (+0028), the Redis ACL line for the `procurement` user

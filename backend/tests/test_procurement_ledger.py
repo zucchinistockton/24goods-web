@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import httpx
@@ -145,15 +146,17 @@ async def test_backfill_pages_until_nothing_new_and_links_cdk_rows_to_jobs(env, 
         "UPDATE procurement_jobs SET supplier_id = :s, upstream_ref = '777'",
         s=sid,
     )
+    # dated inside the lookback window, so only the short last page ends the paging
+    now = datetime.now(timezone.utc)
+    older = (now - timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ")
     vendor.balance_logs = [
-        {"id": i, "created_at": "2026-11-14T00:00:00Z", "amount": -1, "type": "recharge"}
-        for i in range(250, 0, -1)
+        {"id": i, "created_at": older, "amount": -1, "type": "recharge"} for i in range(250, 0, -1)
     ]
     vendor.balance_logs.insert(
         0,
         {
             "id": 999,
-            "created_at": "2026-11-15T00:00:00Z",
+            "created_at": (now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "amount": -5.5,
             "type": "gpt_direct_cdk_purchase",
             "ref_id": 777,
