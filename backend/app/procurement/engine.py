@@ -59,6 +59,7 @@ from app.procurement import ledger
 from app.procurement.context import ProcurementContext
 from app.procurement.service import SupplierRef, make_supplier, refresh_balance
 from app.suppliers.base import (
+    CARD_FIELD_SEP,
     JobSpec,
     OfferSpec,
     Outcome,
@@ -1137,7 +1138,7 @@ async def _fulfil(
     code = res.secrets[0]
     # a card is ONE sealed secret ``<pan>----<MM/YY>----<cvv>`` (first field = PAN: staff find
     # a card by its number without decrypting it); a CDK code is the whole secret
-    first = code.split("----", 1)[0] if job.kind == "vcc" else code
+    first = code.split(CARD_FIELD_SEP, 1)[0] if job.kind == "vcc" else code
     values = {
         "id": card_id,
         "tenant_id": order.tenant_id,

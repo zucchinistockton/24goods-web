@@ -5,10 +5,11 @@
 - ``procurement_jobs.card_mask``: the MASKED card number (first 6 + last 4) of a purchased card,
   for the console job list. The full number, expiry and CVV exist only sealed in ``card_stock``.
 
-No new table and no new grant: a card is sealed into ``card_stock`` as ``sold`` exactly like a
-CDK code (policy ``procurement_insert_sold`` of 0024), the job row is covered by the existing
-``app_procurement`` / ``app_api`` grants (``card_mask`` is engine-owned: ``app_api`` has no UPDATE
-on it) and every table involved already has FORCE ROW LEVEL SECURITY.
+No new table: a card is sealed into ``card_stock`` as ``sold`` exactly like a CDK code (policy
+``procurement_insert_sold`` of 0024), the job row is covered by the existing ``app_procurement`` /
+``app_api`` grants and every table involved already has FORCE ROW LEVEL SECURITY. The one new
+grant: ``app_api`` may UPDATE ``card_mask`` (a hand-fulfilled card job shows its masked number
+like an automatic one).
 
 Revision ID: 0028_procurement_vcc
 Revises: 0027_procurement_audit_fixes
@@ -31,9 +32,11 @@ UP = [
     "ALTER TABLE orders ADD CONSTRAINT orders_delivery_mode_check "
     "CHECK (delivery_mode IN ('auto_card', 'manual', 'system', 'upstream_cdk', 'upstream_vcc'))",
     "ALTER TABLE procurement_jobs ADD COLUMN card_mask varchar(24)",
+    "GRANT UPDATE (card_mask) ON procurement_jobs TO app_api",
 ]
 
 DOWN = [
+    "REVOKE UPDATE (card_mask) ON procurement_jobs FROM app_api",
     "ALTER TABLE procurement_jobs DROP COLUMN card_mask",
     "ALTER TABLE orders DROP CONSTRAINT IF EXISTS orders_delivery_mode_check",
     "ALTER TABLE orders ADD CONSTRAINT orders_delivery_mode_check "

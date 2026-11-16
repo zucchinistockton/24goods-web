@@ -49,7 +49,8 @@ from app.modules.admin.suppliers import _dec, _iso
 from app.modules.orders.admin import _checkout_left_review, hold_reason, lock_for_release
 from app.modules.orders.events import add_event, snapshot
 from app.procurement import engine
-from app.suppliers.base import clean_detail
+from app.suppliers.base import CARD_FIELD_SEP, canonical_card_secret, clean_detail
+from app.suppliers.zovocard.webhook import mask_pan
 
 router = APIRouter(prefix="/admin/procurement/jobs", tags=["admin"])
 
@@ -127,6 +128,7 @@ def _job_view(
         "attempts": j.attempts,
         "upstream_ref": j.upstream_ref,
         "upstream_status": j.upstream_status,
+        "card_mask": j.card_mask,  # first 6 + last 4 only; the card itself is sealed
         "cost": _dec(j.cost),
         "currency": j.currency,
         "next_poll_at": _iso(j.next_poll_at),
@@ -501,6 +503,15 @@ async def fulfil_manually(
     if not (4 <= len(code) <= 256) or not code.isprintable():
         raise Validation("That is not a valid code", code="bad_code")
     job = await _lock(db, staff.tenant_id, job_id)
+    mask = None
+    if job.kind == "vcc":
+        # a card is pasted as ``<pan>----<MM/YY>----<cvv>`` and sealed exactly like an automatic one
+        canonical = canonical_card_secret(code)
+        if canonical is None:
+            raise Validation("Paste the card as number----MM/YY----CVV", code="bad_card")
+        code = canonical
+        mask = mask_pan(code.split(CARD_FIELD_SEP, 1)[0])
+        del canonical
     if job.state == "fulfilled" or job.card_stock_ids:
         raise Conflict("This job is already fulfilled", code="already_fulfilled")
     _need(job, OPEN, "fulfilled by hand")
@@ -519,7 +530,9 @@ async def fulfil_manually(
         "variant_id": order.variant_id,
         "blob": sealer.seal(code, CardContext(tid, str(order.product_id), str(card_id))),
         "fingerprint": sealer.fingerprint(tid, code),
-        "lookup_fp": sealer.lookup_fingerprint(tid, code),
+        "lookup_fp": sealer.lookup_fingerprint(
+            tid, code.split(CARD_FIELD_SEP, 1)[0] if job.kind == "vcc" else code
+        ),
         "kid": sealer.active_kid,
         "status": "sold",
         "order_id": order.id,
@@ -534,6 +547,8 @@ async def fulfil_manually(
     finally:
         values.clear()
     job.card_stock_ids = [card_id]
+    if mask is not None:
+        job.card_mask = mask
     job.manual_by = staff.id
     job.error_code, job.step, job.next_poll_at = None, "done", None
     recovering = _schedule_recovery(job)  # the supplier's own code, if any, is disabled

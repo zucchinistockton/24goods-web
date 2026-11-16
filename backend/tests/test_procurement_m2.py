@@ -61,6 +61,7 @@ class Up:
         self.ctx = None
         self.product = None
         self.vendor_http: httpx.AsyncClient | None = None
+        self.mode, self.kind = "upstream_cdk", "cdk"  # M3: upstream_vcc tests switch both
 
     async def start(self) -> None:
         from app.core.db import make_engine, make_sessionmaker
@@ -68,7 +69,7 @@ class Up:
         from app.procurement.context import ProcurementContext
         from app.procurement.keys import build_sealer
 
-        self.product = await self.env.product(mode="upstream_cdk", title="GPT Plus CDK", price=5000)
+        self.product = await self.env.product(mode=self.mode, title="GPT Plus CDK", price=5000)
         self.engine = make_engine(self.env.s.procurement_url, pool_size=3, max_overflow=2)
         self.ctx = ProcurementContext(
             ProcurementSettings(env="test", procurement_token="t" * 40),
@@ -108,7 +109,7 @@ class Up:
             db.add(
                 SupplierOffer(
                     id=oid, tenant_id=tid, supplier_id=sid,
-                    product_id=(product or self.product).id, variant_id=None, kind="cdk",
+                    product_id=(product or self.product).id, variant_id=None, kind=self.kind,
                     params=params or {"plan": "plus"}, priority=priority, enabled=True,
                     last_check_ok=True, cost_estimate=Decimal("1.00"), currency="USD",
                 )

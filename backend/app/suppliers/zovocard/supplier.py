@@ -31,6 +31,7 @@ from app.suppliers.base import (
     SupplierError,
     SupplierEvent,
     WebhookRejected,
+    card_secret,
     dec,
     job_idempotency_key,
 )
@@ -673,7 +674,6 @@ _RECHARGE_OK = frozenset({"success", "succeeded", "completed", "done"})
 _RECHARGE_FAILED = frozenset({"failed", "fail", "failure", "rejected", "cancelled", "canceled"})
 _PRODUCT_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
 _NAME_RE = re.compile(r"^[A-Za-z]{1,32}$")
-CARD_FIELD_SEP = "----"  # the buyer-facing format of a sealed card (product delivery_separator)
 MAX_CARD_AMOUNT = Decimal("100000")
 
 
@@ -756,21 +756,11 @@ def parse_card_open(data: Any) -> tuple[str, str, Decimal | None] | None:
     )
 
 
-_PAN_RE = re.compile(r"^[0-9]{12,19}$")
-_EXP_RE = re.compile(r"^(0[1-9]|1[0-2])/([0-9]{2}|[0-9]{4})$")
-_CVV_RE = re.compile(r"^[0-9]{3,4}$")
-
-
 def parse_card_secret(data: Any) -> str | None:
     """``GET /cards/{id}`` -> ``"<pan>----<MM/YY>----<cvv>"`` (one sealed secret per card), or
     ``None`` for anything malformed or not an active card."""
     if not isinstance(data, Mapping):
         return None
-    pan = re.sub(r"[ -]", "", str(data.get("card_number") or ""))
-    exp, cvv = str(data.get("expire") or "").strip(), str(data.get("cvv") or "").strip()
-    status = str(data.get("status") or "ACTIVE").upper()
-    if status not in ("ACTIVE", "FROZEN") or not (
-        _PAN_RE.fullmatch(pan) and _EXP_RE.fullmatch(exp) and _CVV_RE.fullmatch(cvv)
-    ):
+    if str(data.get("status") or "ACTIVE").upper() not in ("ACTIVE", "FROZEN"):
         return None
-    return CARD_FIELD_SEP.join((pan, exp, cvv))
+    return card_secret(data.get("card_number"), data.get("expire"), data.get("cvv"))  # type: ignore[arg-type]
