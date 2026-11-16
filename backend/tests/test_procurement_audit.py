@@ -1159,7 +1159,7 @@ async def test_n5_refund_voids_a_fulfilled_but_undelivered_unit(env, up):
 async def test_n5_refund_leaves_a_delivered_unit_alone(env, up):
     mock = MockSupplier("mock_a")
     await up.supplier(mock)
-    buyer, order = await up.paid_order()
+    _buyer, order = await up.paid_order()
     await up.run()
     assert await env.drain() >= 1
     assert await _order_status(env, order) == "delivered"
