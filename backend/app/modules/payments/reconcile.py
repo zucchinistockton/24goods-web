@@ -300,6 +300,7 @@ async def run(res: Resources) -> int:
             await alert_procurement_jobs(res, db, tid, now)
             await alert_supplier_breakers(res, db, tid)
             await purge_overdue_sessions(res, db, tid)
+            await alert_declining_offers(res, db, tid, now)
             refs = list(
                 await db.scalars(
                     select(PaymentAttempt.local_ref)
@@ -588,6 +589,40 @@ async def alert_procurement_jobs(
             ],
             link=notify_tg.admin_link(res, "orders"),
             once=(f"procurement_job:{jid}:{state}", 30 * 86400),
+        )
+    return len(rows)
+
+
+async def alert_declining_offers(
+    res: Resources, db: AsyncSession, tid: uuid.UUID, now: datetime
+) -> int:
+    """A direct source was switched off after repeated declines: staff re-enable it by hand."""
+    from app.core import notify_tg
+    from app.models import AuditLog
+
+    rows = list(
+        (
+            await db.execute(
+                select(AuditLog.id, AuditLog.target)
+                .where(
+                    AuditLog.tenant_id == tid,
+                    AuditLog.action == "procurement.offer_declining",
+                    AuditLog.created_at > now - timedelta(hours=24),
+                )
+                .order_by(AuditLog.id.desc())
+                .limit(5)
+            )
+        ).all()
+    )
+    await db.rollback()
+    for aid, target in rows:
+        notify_tg.notify_bg(
+            res,
+            tid,
+            "payment_review",
+            [notify_tg.T("proc.offer_off", offer=str(target)[-8:])],
+            link=notify_tg.admin_link(res, "orders"),
+            once=(f"procurement:offer_off:{aid}", 7 * 86400),
         )
     return len(rows)
 

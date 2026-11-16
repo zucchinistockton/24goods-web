@@ -1835,7 +1835,13 @@ async def _direct_fatal(db: AsyncSession, job: ProcurementJob, res: Result, limi
             )
         )
         if len(recent) >= limit and all(c in DECLINES for c in recent):
-            await _set_check(db, job, False)
+            # DURABLE: the source is disabled (a precheck / refresh cannot switch it back on and
+            # routing stops); re-enabling is a staff action in the console
+            await db.execute(
+                update(SupplierOffer)
+                .where(SupplierOffer.tenant_id == job.tenant_id, SupplierOffer.id == job.offer_id)
+                .values(enabled=False, last_check_ok=False, last_check_at=utcnow())
+            )
             await audit(
                 db,
                 tenant_id=job.tenant_id,

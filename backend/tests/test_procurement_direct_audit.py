@@ -7,6 +7,7 @@ import base64
 import urllib.parse
 import uuid
 from dataclasses import replace
+from datetime import datetime, timezone
 
 import pytest
 from sqlalchemy import text
@@ -156,12 +157,27 @@ async def test_repeated_declines_switch_the_source_off(env, dup):
             await _settle(dup, 1)
         assert (await _job(dup, order)).error_code == "order_declined"
         await env.drain()
-    assert await env.scalar("SELECT last_check_ok FROM supplier_offers") is False
+    assert await env.scalar("SELECT enabled FROM supplier_offers") is False  # durable
     n = await env.scalar(
         "SELECT count(*) FROM audit_log WHERE action = 'procurement.offer_declining' "
         "AND severity = 'critical'"
     )
     assert n >= 1
+    # routing has stopped: the next order finds no source and nothing reaches the vendor
+    before = vendor.preflights
+    await dup.run()  # (a precheck / refresh pass cannot switch the source back on)
+    buyer, _u = await env.login("buyer")
+    r = await buyer.post(
+        "/api/v1/orders",
+        json={"product_id": str(dup.product.id), "qty": 1, "session": claude_session("Z")},
+    )
+    assert r.status_code == 409 and r.json()["error"]["code"] == "out_of_stock"  # not sold
+    assert vendor.preflights == before and vendor.direct_executions == 3
+    # staff are alerted (once per switch-off)
+    from app.modules.payments.reconcile import alert_declining_offers
+
+    async with env.api_session() as db:
+        assert await alert_declining_offers(env.res, db, env.tenant_id, datetime.now(timezone.utc))
 
 
 # ------------------------------------------------------------------ H2: no failover after a send
