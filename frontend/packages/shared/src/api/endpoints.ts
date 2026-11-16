@@ -328,6 +328,7 @@ export function createAdminApi(c: ApiClient) {
   const buyer = createBuyerApi(c)
   return {
     auth: buyer.auth,
+    twoFactor: buyer.twoFactor,
     chatActions: buyer.chatActions,
     product: buyer.product,
     categories: buyer.categories,
