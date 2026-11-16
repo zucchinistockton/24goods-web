@@ -12,6 +12,9 @@
 #   backend  10.89.11.0/24 – internal:true (no internet egress): postgres, redis, api, delivery, mockpay, mockusdt
 #   usdt     10.89.12.0/24 – api <-> bepusdt only (profile "usdt"); bepusdt needs chain-RPC egress,
 #                            has NO published port and NO Caddy route (admin via SSH tunnel)
+#   redeem   10.89.15.0/24 – internal:true: web (.10) <-> procurement (.30) ONLY, for the public CDK
+#                            redemption proxy (:8006). The internal API (:8004) listens on procurement's
+#                            backend address (10.89.11.30) only, so Caddy cannot reach it.
 #   procurement_egress 10.89.14.0/24 – procurement's own network with GENERAL internet egress
 #                            (profile "procurement", review-v12). NOT an allowlist: restricting it to
 #                            the supplier hosts is an open item before go-live (spec §14). api reaches
@@ -125,10 +128,15 @@ services:
     command: ["python", "-m", "app.procurement"]
     env_file: [env/procurement.env]       # supplier API secrets live ONLY here
     secrets: [vault_public_keys]          # public key only: can seal (M2), cannot open
-    networks: [backend, procurement_egress]
+    networks:
+      backend:
+        ipv4_address: 10.89.11.30         # == APP_PROCUREMENT_HOST: the internal API binds here only
+      redeem:
+        ipv4_address: 10.89.15.30         # == APP_REDEEM_HOST: the public proxy binds here
+      procurement_egress: {}
     mem_limit: 96m
     healthcheck:
-      test: ["CMD", "python", "-c", "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8004/healthz', timeout=2).status == 200 else 1)"]
+      test: ["CMD", "python", "-c", "import os,sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://'+os.environ.get('APP_PROCUREMENT_HOST','127.0.0.1')+':8004/healthz', timeout=2).status == 200 else 1)"]
       interval: 30s
       timeout: 3s
       retries: 3
@@ -192,12 +200,15 @@ services:
     security_opt: [no-new-privileges:true]
     environment:
       SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+      REDEEM_HOST: ${REDEEM_HOST:-redeem.invalid}   # never resolves: the redeem site is off until configured
     ports:
       - "${PUBLISH_HTTP:-80}:80"
     volumes: [caddy_data:/data, caddy_config:/config]
     networks:
       edge:
         ipv4_address: 10.89.10.10         # == APP_TRUSTED_PROXIES in env/api.env
+      redeem:
+        ipv4_address: 10.89.15.10         # == APP_REDEEM_TRUSTED_PROXIES (procurement.env)
     mem_limit: 64m
     depends_on: [api]
     healthcheck:
@@ -224,6 +235,10 @@ networks:
   usdt_egress:                             # bepusdt's own route to chain RPC endpoints
     ipam:
       config: [{ subnet: 10.89.13.0/24 }]
+  redeem:                                  # web <-> procurement public proxy only; never attach others
+    internal: true
+    ipam:
+      config: [{ subnet: 10.89.15.0/24 }]
   procurement_egress:                      # procurement only; general egress (no allowlist yet)
     ipam:
       config: [{ subnet: 10.89.14.0/24 }]

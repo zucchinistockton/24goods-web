@@ -1,6 +1,6 @@
 """Public CDK redemption proxy (review-v12 §8): ``/redeem/*`` -> ZovoCard ``/api/v1/cdk/*``.
 
-Runs inside the procurement process on its OWN listener (``APP_PROCUREMENT_REDEEM_PORT``), never on
+Runs inside the procurement process on its OWN listener (``APP_REDEEM_PORT``), never on
 the internal API port. Caddy on ``redeem.<domain>`` is the only client. The four vendor steps share
 one egress IP (the procurement network) and one constant ``X-Redemption-Device`` (config).
 
@@ -15,7 +15,7 @@ Rules (each has a test in tests/test_redeem.py):
 
 Environment selection: the proxy cannot tell cheaply and safely which supplier environment issued
 a code (card rows hold only sealed secrets and the procurement role cannot read them), so it uses
-the single enabled ZovoCard supplier of the platform tenant (``APP_PROCUREMENT_REDEEM_SUPPLIER_ENV``
+the single enabled ZovoCard supplier of the platform tenant (``APP_REDEEM_SUPPLIER_ENV``
 pins sandbox/production when both are enabled; an ambiguous setup answers ``unavailable``).
 """
 
@@ -303,9 +303,9 @@ def create_redeem_app(ctx: ProcurementContext) -> Starlette:
     for noisy in ("httpx", "httpcore"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
     if not DEVICE_RE.fullmatch(cfg.redeem_device):
-        raise ValueError("APP_PROCUREMENT_REDEEM_DEVICE must match [A-Za-z0-9._-]{8,64}")
+        raise ValueError("APP_REDEEM_DEVICE must match [A-Za-z0-9._-]{8,64}")
     if cfg.redeem_supplier_env not in ("", "sandbox", "production"):
-        raise ValueError("APP_PROCUREMENT_REDEEM_SUPPLIER_ENV must be sandbox or production")
+        raise ValueError("APP_REDEEM_SUPPLIER_ENV must be sandbox or production")
     ip_limits = parse_limits(cfg.redeem_ip_limits)
     global_limits = parse_limits(cfg.redeem_global_limits)
     trusted = tuple(

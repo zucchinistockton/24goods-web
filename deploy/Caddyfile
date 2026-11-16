@@ -151,6 +151,73 @@
 	}
 }
 
+# CDK redemption site (review-v12 §8): own host, own strict CSP, NO cookies, NO shared origin with the
+# shop. Serves /srv/redeem and forwards ONLY the four redemption routes to procurement's public
+# listener on the `redeem` network. The procurement internal API (:8004) is not on that network
+# address, so no Caddy route can reach it. REDEEM_HOST defaults to redeem.invalid = site is off.
+(redeem) {
+	header {
+		?Strict-Transport-Security "max-age=63072000; includeSubDomains"
+		?X-Content-Type-Options "nosniff"
+		?X-Frame-Options "DENY"
+		?Referrer-Policy "no-referrer"
+		?Permissions-Policy "camera=(), geolocation=(), microphone=(), payment=()"
+		?Cross-Origin-Opener-Policy "same-origin"
+		?Cross-Origin-Resource-Policy "same-origin"
+		?Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+		-Server
+		-Via
+		-Set-Cookie
+	}
+	encode zstd gzip
+	request_body {
+		max_size 32KB
+	}
+
+	@redeem_api path /redeem/preview /redeem/preflight /redeem/redeem /redeem/result
+	handle @redeem_api {
+		reverse_proxy procurement:8006 {
+			header_up X-Forwarded-For {client_ip}
+			header_up -Cookie
+			header_up -Authorization
+			header_up -X-Api-Key
+			transport http {
+				dial_timeout 3s
+				response_header_timeout 45s
+			}
+		}
+	}
+	handle /redeem/* {
+		respond "Not found" 404
+	}
+	handle {
+		root * /srv/redeem
+		@immutable path /assets/*
+		header @immutable Cache-Control "public, max-age=31536000, immutable"
+		@html path / /index.html
+		header @html Cache-Control "no-cache"
+		try_files {path} /index.html
+		file_server
+	}
+
+	log {
+		output stdout
+		format filter {
+			wrap json
+			fields {
+				request>uri regexp "\\?.*$" ""
+				request>headers>Cookie delete
+				request>headers>Referer delete
+				request>headers>Authorization delete
+			}
+		}
+	}
+}
+
+http://{$REDEEM_HOST:redeem.invalid} {
+	import redeem
+}
+
 {$SITE_ADDRESS::80} {
 	import app
 }

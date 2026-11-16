@@ -41,3 +41,5 @@ COPY --from=caddy /usr/bin/caddy /usr/bin/caddy
 COPY deploy/Caddyfile /etc/caddy/Caddyfile
 COPY --from=build /src/frontend/apps/web/dist /srv/web
 COPY --from=build /src/frontend/apps/admin/dist /srv/admin
+# redemption site (review-v12 §8): placeholder until the SPA is built into this directory
+COPY deploy/redeem/ /srv/redeem/
