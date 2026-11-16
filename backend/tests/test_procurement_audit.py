@@ -1020,3 +1020,45 @@ async def test_n4_failed_evaluation_leaves_the_freshness_gate_stale(env, up, mon
     await up.make_due()
     await up.run()
     assert (await _job(up, order)).state == "fulfilled"
+
+
+async def _due_recovery(env) -> None:
+    await _sql(
+        env,
+        "UPDATE procurement_jobs SET next_poll_at = now() - interval '1 second' WHERE recover",
+    )
+
+
+async def test_n1_recovery_honours_the_kill_switches_then_needs_manual(env, up):
+    for kill in (
+        "UPDATE suppliers SET enabled = false",
+        "UPDATE suppliers SET breaker_open = true, breaker_kind = 'hard', breaker_reason = 'x'",
+    ):
+        mock = LosingMock("mock_a", lose=1)
+        await up.supplier(mock, code=f"m{uuid.uuid4().hex[:6]}")
+        staff, _ = await env.login("agent")
+        _buyer, order = await up.paid_order()
+        await up.run()  # charged at the supplier, the answer was lost
+        job = await _job(up, order)
+        r = await staff.post(f"{JOBS}/{job.id}/fail", json={"reason": "gave up"})
+        assert r.status_code == 200 and r.json()["recovering"] is True
+        await _sql(
+            env,
+            kill + " WHERE id = (SELECT supplier_id FROM procurement_jobs WHERE id = :j)",
+            j=job.id,
+        )
+        for _ in range(2):
+            await _due_recovery(env)
+            await up.run()
+        job = await _job(up, order)
+        assert job.state == "failed" and job.recover and job.error_code == "recover_blocked"
+        assert [op for op, _ in mock.calls] == ["submit"]  # no recovery call while blocked
+        await _sql(env, "UPDATE procurement_jobs SET attempts = 20 WHERE id = :j", j=job.id)
+        await _due_recovery(env)
+        await up.run()
+        job = await _job(up, order)
+        assert job.state == "needs_manual" and job.error_code == "recover_blocked"
+        assert job.maybe_sent and not job.recover
+        assert [op for op, _ in mock.calls] == ["submit"]
+        assert len(mock.charged) == 1  # maybe charged, never asked again
+        await _sql(env, "DELETE FROM procurement_jobs")

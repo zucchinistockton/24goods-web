@@ -709,6 +709,25 @@ async def _stop_recovery(db: AsyncSession, job: ProcurementJob, reason: str) -> 
         )
 
 
+RECOVER_BLOCKED_MAX = 20  # ~1.5 h of waiting for the kill switch to be lifted
+
+
+async def _supplier_blocked(db: AsyncSession, job: ProcurementJob) -> bool:
+    """The job's supplier is disabled or its ``hard`` breaker is open: no call that may buy."""
+    r = (
+        await db.execute(
+            select(
+                SupplierAccount.enabled, SupplierAccount.breaker_open, SupplierAccount.breaker_kind
+            )
+            .join(SupplierOffer, SupplierOffer.supplier_id == SupplierAccount.id)
+            .where(SupplierOffer.id == job.offer_id)
+        )
+    ).first()
+    if r is None:
+        return True
+    return (not r.enabled) or bool(r.breaker_open and (r.breaker_kind or "hard") == "hard")
+
+
 async def _audit_manual_fulfil(db: AsyncSession, job: ProcurementJob) -> None:
     await audit(
         db,
@@ -740,6 +759,18 @@ async def _lease_detached(
         return None
     if mode == "recover" and (problem := _replay_problem(ctx, job, offer, now)):
         await _stop_recovery(db, job, problem)  # no replay of a changed / too old request
+        await db.commit()
+        return None
+    if mode == "recover" and await _supplier_blocked(db, job):
+        # the replay can buy (one issue fee at most): it honours the kill switches (N1). The job
+        # waits for staff to re-enable the supplier / reset its breaker, then ends in
+        # needs_manual (maybe charged: maybe_sent stays set).
+        job.attempts += 1
+        if job.attempts > RECOVER_BLOCKED_MAX:
+            await _stop_recovery(db, job, "recover_blocked")
+        else:
+            job.error_code = "recover_blocked"
+            job.next_poll_at = now + _backoff(min(job.attempts, 6), None)
         await db.commit()
         return None
     job.attempts += 1

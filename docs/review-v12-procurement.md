@@ -426,5 +426,26 @@ Engine rules added after the payment-auditor pass (migration `0027`; tests `test
 - **Locks.** One order: job set (one ordered statement), then order, then supplier. Refund / close take the job set
   `NOWAIT` (409 `procurement_busy`).
 - **Left open.** L3 (release of late-payment upstream orders) and L6 (webhook pulling `next_poll_at` forward on a
-  leased job) are marked `TODO(v12-M3)` in the code. Note: a hand-fulfilled job with a possible supplier code has
-  that code disabled by the recovery; staff must not paste the supplier's own code in that case.
+  leased job) are marked `TODO(v12-M3)` in the code. (The earlier note that a hand-fulfilled job's supplier code is
+  disabled by the recovery is superseded by "Re-audit fixes" below.)
+
+### Re-audit fixes (2026-11-16, N1-N8)
+
+- **Recovery policy and cost bound (N1).** The recovery of a closed job (`maybe_sent`, no `upstream_ref`) is one
+  same-key replay -> record the reference -> disable the code. It stays because the replay is the only way to learn
+  whether a code exists (the vendor's CDK list has no idempotency key). Its worst case is ONE issue fee per job (the
+  key makes a second replay a lookup, never a second purchase). It honours the kill switches: no recovery call while
+  the supplier is disabled or its `hard` breaker is open; the job waits (backoff, `RECOVER_BLOCKED_MAX` = 20
+  attempts, about 1.5 h) and then goes `needs_manual` with `recover_blocked`, still flagged maybe charged.
+- **Hand fulfil (N2).** For a hand-fulfilled job the recovery records `upstream_ref` and writes a critical audit row
+  `procurement.recovered_after_manual_fulfil`; it never disables the code (staff may have pasted exactly it).
+  Disabling is an explicit staff `void`. Jobs closed by refund / fail keep the automatic disable.
+- **Freshness (N4).** `last_balance_at` is stamped only after the breaker evaluated the reading; a failed evaluation
+  leaves the gate stale.
+- **Pre-check (N3).** The pre-check reads a FRESH catalog. After an ambiguous `request_failed` on a write, one fresh
+  availability check runs; a plan the catalog definitely does not offer means the write did not execute.
+- **Retries (N6, N7).** The recovery's FATAL path keeps `maybe_sent` on `IDEMPOTENCY_CONFLICT`; a passed pre-check no
+  longer resets the retry counter.
+- **Refund (N5).** `fulfilled`, undelivered units go to `void_pending` (disable + void the `card_stock` row).
+- **Parked jobs (N8).** A queued never-sent job behind a balance breaker fails over when another source exists; the
+  stuck alert also fires for a long park. A `maybe_sent` job with a NULL `request_hash` is treated like a mismatch.
