@@ -528,7 +528,69 @@ def wait_for(fn, what: str, timeout: float = 60):
     fail(f"timed out waiting for {what}")
 
 
-def v12_procurement(base: str, admin: Client, category: str, env: dict) -> None:
+def v12_redeem(base: str, host: str, code: str) -> None:
+    """review-v12 §8: the CDK redemption site through Caddy on its own host (Host header): static
+    page + strict CSP, then preview -> preflight -> redeem -> result for a code issued by the
+    normal purchase path, then forged / unknown codes, wrong host and the per-IP rate limit."""
+    rc = httpx.Client(base_url=base, headers={"Host": host}, timeout=30, follow_redirects=False)
+    page = rc.get("/")
+    check(page.status_code == 200 and "Redeem" in page.text, "redeem site not served on its host")
+    csp = page.headers.get("Content-Security-Policy", "")
+    check("default-src 'none'" in csp and "script-src 'self'" in csp, "redeem CSP not strict")
+    check("set-cookie" not in page.headers, "the redeem site must not set cookies")
+    check("MOCKPLUS" not in page.text, "no code on the static page")
+    # the shop's API and the procurement internal API are not routed on this host
+    for path in ("/api/v1/auth/login", "/internal/probe", "/healthz", "/redeem/", "/redeem/foo"):
+        r = rc.get(path)
+        check("application/json" not in r.headers.get("content-type", "") or r.status_code == 404,
+              f"{path} must not reach a backend on the redeem host")
+    check(rc.post("/internal/probe", json={}).status_code in (404, 405), "internal API reachable")
+
+    def call(step_name: str, body: dict, expect: int = 200) -> dict:
+        r = rc.post(f"/redeem/{step_name}", json=body)
+        check(r.status_code == expect, f"redeem {step_name} -> {r.status_code}: {r.text[:200]}")
+        check("no-store" in r.headers.get("Cache-Control", ""), f"{step_name} must be no-store")
+        check("access-control-allow-origin" not in r.headers, "CORS must not be enabled")
+        return r.json()
+
+    cred = {"mode": "session", "session": "e2e-session-" + uuid.uuid4().hex * 3}
+    prev = call("preview", {"code": code})["data"]
+    token = prev["redemption_token"]
+    check(code not in json.dumps(prev), "the code must not be echoed back")
+    pre = call("preflight", {"redemption_token": token, "credential": cred})["data"]
+    check(pre["preflight_token"] and pre["payment_country"], "preflight must return token + country")
+    check(cred["session"] not in json.dumps(pre), "the credential must not be echoed back")
+    red = call("redeem", {"redemption_token": token, "preflight_token": pre["preflight_token"],
+                          "client_request_id": "e2e-" + uuid.uuid4().hex[:12]})["data"]
+    check(red["status"] == "succeeded" and red["order_id"].startswith("SBXORD-"), f"redeem: {red}")
+    res = rc.get("/redeem/result", params={"token": token})
+    check(res.status_code == 200 and res.json()["data"]["order_id"] == red["order_id"], "result")
+    step("redeem site: preview -> preflight -> redeem -> result through Caddy, nothing echoed")
+
+    err = call("preview", {"code": "MOCKPLUS-FORGED" + uuid.uuid4().hex[:8].upper()}, expect=422)
+    check(err["error"]["code"] == "code_unavailable", f"forged code answer: {err}")
+    bad = call("preview", {"code": "bad code!"}, expect=400)
+    check(bad["error"]["code"] == "invalid_request", "malformed code must be refused locally")
+    check(rc.post("/redeem/preflight", json={"redemption_token": "rt_" + "0" * 32,
+                                             "credential": cred}).status_code == 409,
+          "unknown token must be a session error")
+    xo = rc.post("/redeem/preview", json={"code": code}, headers={"Origin": "https://evil.example"})
+    check(xo.status_code == 403, "cross-origin POST must be refused")
+    step("redeem site: forged code, malformed input, unknown token, cross-origin refused")
+
+    seen = 0
+    for _ in range(40):  # per-IP (10/min) and shared (25/min) preview budgets
+        r = rc.post("/redeem/preview", json={"code": "MOCKPLUS-RATE" + uuid.uuid4().hex[:10].upper()})
+        if r.status_code == 429:
+            seen += 1
+            check(r.json()["error"]["code"] == "rate_limited" and r.headers.get("Retry-After"),
+                  "429 must carry the fixed code and Retry-After")
+            break
+    check(seen, "the redeem rate limit never triggered")
+    step("redeem site: per-IP rate limit answers 429 rate_limited")
+
+
+def v12_procurement(base: str, admin: Client, category: str, env: dict, redeem_host: str = "") -> None:
     """review-v12 M2 exit: an upstream_cdk order through the ZovoCard simulator (scenario plans)
     covering timeout-after-send, 409, 202 and a 503 failover, then a duplicate webhook and a
     forged signature. Needs the demo stack (procurement + mockzovo); skipped without them."""
@@ -654,6 +716,9 @@ def v12_procurement(base: str, admin: Client, category: str, env: dict) -> None:
     check(received() == stored, "a refused webhook must not be stored")
     step("webhook: forged, tampered and wrongly signed events refused (401, nothing stored)")
 
+    if redeem_host:
+        v12_redeem(base, redeem_host, orders["scn_503"]["secret"])
+
 
 def main() -> None:
     ap = argparse.ArgumentParser()
@@ -662,6 +727,8 @@ def main() -> None:
     ap.add_argument(
         "--dev", action="store_true", help="Vite dev server (scripts/dev.sh): skip Caddy edge headers"
     )
+    ap.add_argument("--redeem-host", default="redeem.localhost",
+                    help="Host header of the CDK redemption site ('' skips it; always skipped with --dev)")
     a = ap.parse_args()
     env = read_env(a.seed_env)
     base = a.base.rstrip("/")
@@ -799,7 +866,7 @@ def main() -> None:
     v3_file_message(buyer, agent, conv)
     v4_commerce(base, anon, buyer, agent, admin, auto, manual, conv)
     v5_commerce(base, anon, admin, manual)
-    v12_procurement(base, admin, auto["category"], env)
+    v12_procurement(base, admin, auto["category"], env, "" if a.dev else a.redeem_host)
 
     # ---- ledger balance -------------------------------------------------------------
     rows, page = [], 1
