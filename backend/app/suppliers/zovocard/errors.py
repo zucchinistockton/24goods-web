@@ -121,9 +121,9 @@ TABLE: dict[tuple[int | None, str | None], Rule] = {
     (None, "cdk_brand_prefix_invalid"): _FATAL,
 }
 
-# Card recharge (vendor §3): "result pending" is HTTP 400 WITHOUT a code. Every 400 on
-# /cards/recharge that is not one of these terminal codes is ACCEPTED_PENDING (resolved through
-# GET /cards/{id}/recharges), never a failure and never a resubmit.
+# Card recharge (vendor §3): "result pending" is HTTP 400 WITHOUT a code. Only a 400 with NO
+# error_code on /cards/recharge is ACCEPTED_PENDING (resolved through GET /cards/{id}/recharges),
+# never a failure and never a resubmit; any coded 400 is terminal (these codes, or FATAL).
 RECHARGE_TERMINAL_CODES = frozenset(
     {"amount_below_min", "insufficient_balance", "not_found", "invalid_argument"}
 )
@@ -135,8 +135,13 @@ def classify(
     """Outcome for a non-success response. ``status`` is the effective status (for an HTTP 200
     whose body says ``code != 0`` the caller passes the body code)."""
     code = error_code or None
-    if endpoint == "cards.recharge" and status == 400 and code not in RECHARGE_TERMINAL_CODES:
-        return Rule(Outcome.ACCEPTED_PENDING)
+    if endpoint == "cards.recharge" and status == 400:
+        if code is None:
+            return Rule(Outcome.ACCEPTED_PENDING)  # the documented "result pending": no error_code
+        # a coded 400 is an answer, never "pending": a known code keeps its table rule, an
+        # unknown one is a refusal that needs staff (no second charge can come from it)
+        rule = TABLE.get((status, code)) or TABLE.get((None, code))
+        return rule.resolve(write) if rule is not None else _FATAL
     if code is not None:
         rule = TABLE.get((status, code)) or TABLE.get((None, code))
         if rule is not None:

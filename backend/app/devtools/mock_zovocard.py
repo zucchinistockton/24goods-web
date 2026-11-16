@@ -80,6 +80,7 @@ QUIRKS: dict[str, tuple[int, dict[str, Any]]] = {
     "200_code_404": (200, {"code": 404, "msg": "card not found"}),
     # the request is EXECUTED (and its 2xx cached) but the answer is lost: timeout after send
     "lost_response": (504, {}),
+    "delete_disabled": (400, {"code": 400, "error_code": "DELETE_DISABLED", "msg": "no delete"}),
     "403_access_denied": (
         403,
         {"code": 403, "error_code": "GPT_DIRECT_ACCESS_DENIED", "msg": "direct not enabled"},

@@ -705,7 +705,10 @@ def _spec(job: ProcurementJob, offer: OfferRow, mode: str) -> JobSpec:
     voiding = mode in ("void", "dvoid")
     return JobSpec(
         job_id=job.id.hex,
-        step="void" if voiding else job.step,
+        # a pending delete is only ever READ afterwards (step ``delete_pending``, F4)
+        step=("delete_pending" if job.step == "delete_pending" else "void")
+        if voiding
+        else job.step,
         # the vendor caches answers per key: a void never reuses the issue key
         idempotency_key=job_idempotency_key(job.id.hex, "void") if voiding else job.idempotency_key,
         offer=OfferSpec(kind=offer.kind, params=offer.params),  # type: ignore[arg-type]
@@ -1186,19 +1189,44 @@ async def _fulfil(
     await emit_if_complete(db, order)
 
 
+VOID_PENDING_MAX = 100  # ~24 h of cheap GET polls (capped at 15 min) for a pending delete
+
+
+async def _void_failed(db: AsyncSession, job: ProcurementJob, reason: str) -> None:
+    """A void the supplier refused or that never resolved: the sealed card stays voided locally
+    but the supplier may still hold a live code/card, so staff must look (never back to
+    ``fulfilled``). A critical audit row names the reason (no secret)."""
+    await audit(
+        db,
+        tenant_id=job.tenant_id,
+        action="procurement.void_failed",
+        target=f"procurement_job:{job.id}",
+        detail={"reason": clean_detail(reason), "order_id": str(job.order_id)},
+        severity="critical",
+    )
+    job.step = "done"
+    await _needs_manual(db, job, "void_failed", notify_order=False)
+
+
 async def _apply_void(db: AsyncSession, job: ProcurementJob, res: Result, now: datetime) -> None:
-    """``void_pending`` -> ``voided`` once the supplier disabled the code; a refusal ("already
-    redeemed", unknown code) puts the job back where it was and tells staff why."""
+    """``void_pending`` -> ``voided`` once the supplier disabled/deleted the code; a refusal
+    ("already redeemed", unknown code) or an exhausted retry budget ends in ``needs_manual`` with
+    ``void_failed``. A pending delete (202) keeps polling for ~24 h without re-sending."""
     o = res.outcome
     if o is Outcome.OK:
         job.step, job.next_poll_at, job.error_code = "done", None, None
         job.upstream_status = VOIDED_STATUS.get(job.kind, "disabled")
         await _transition(db, job, "voided", "void_ok")
+    elif o is Outcome.ACCEPTED_PENDING:
+        job.error_code = clean_detail(res.error_code or "void_pending")
+        if job.attempts > VOID_PENDING_MAX:
+            await _void_failed(db, job, f"void_unresolved:{res.error_code or ''}")
+            return
+        if res.error_code == "delete_pending":
+            job.step = "delete_pending"  # from now on only the card is read
+        job.next_poll_at = now + _backoff(job.attempts, res.retry_after)
     elif o is Outcome.FATAL or job.attempts > MAX_RETRIES:
-        job.error_code = clean_detail(f"void_rejected:{res.error_code or 'unresolved'}")
-        job.step, job.next_poll_at = "done", None
-        back = "fulfilled" if job.card_stock_ids else "needs_manual"
-        await _transition(db, job, back, "void_rejected", severity="warning")
+        await _void_failed(db, job, f"void_rejected:{res.error_code or 'unresolved'}")
     else:  # RETRYABLE / AMBIGUOUS / UNAVAILABLE: the same void key is replayed later
         job.error_code = clean_detail(res.error_code or "void_retry")
         job.next_poll_at = now + _backoff(job.attempts, res.retry_after)
@@ -1293,11 +1321,27 @@ async def _apply_detached(
         job.upstream_status = VOIDED_STATUS.get(job.kind, "disabled")
         if job.state == "failed":
             await _transition(db, job, "voided", "recovered_void", severity="warning")
+    elif o is Outcome.ACCEPTED_PENDING:
+        job.error_code = clean_detail(res.error_code or "void_pending")
+        if job.attempts > VOID_PENDING_MAX:
+            await _dvoid_failed(db, job, f"void_unresolved:{res.error_code or ''}")
+            return
+        if res.error_code == "delete_pending":
+            job.step = "delete_pending"
+        job.next_poll_at = now + _backoff(job.attempts, res.retry_after)
     elif o is Outcome.FATAL or job.attempts > MAX_RETRIES:
-        await _stop_recovery(db, job, f"void_rejected:{res.error_code or 'unresolved'}")
+        await _dvoid_failed(db, job, f"void_rejected:{res.error_code or 'unresolved'}")
     else:
         job.error_code = clean_detail(res.error_code or "void_retry")
         job.next_poll_at = now + _backoff(job.attempts, res.retry_after)
+
+
+async def _dvoid_failed(db: AsyncSession, job: ProcurementJob, reason: str) -> None:
+    job.recover, job.next_poll_at = False, None
+    if job.state == "failed":
+        await _void_failed(db, job, reason)
+    else:  # a hand-fulfilled job: only the critical audit row
+        await _stop_recovery(db, job, reason)
 
 
 async def _alert_if_stuck(db: AsyncSession, job: ProcurementJob, now: datetime) -> None:
@@ -1318,14 +1362,40 @@ async def _alert_if_stuck(db: AsyncSession, job: ProcurementJob, now: datetime) 
         )
 
 
-def _record_reference(job: ProcurementJob, res: Result, mode: str) -> None:
+def _record_reference(job: ProcurementJob, res: Result, mode: str) -> str | None:
     """A multi-step purchase (a card) knows its supplier reference before it is finished: record it
     on EVERY answer that carries one (ambiguous, pending, refused after the open), so the job is
     never "nothing happened" once the supplier holds something for it and a void can find it."""
+    other: str | None = None
     if mode in ("submit", "query", "verify", "recover") and res.upstream_ref:
+        if job.upstream_ref and job.upstream_ref != res.upstream_ref:
+            other = res.upstream_ref  # a SECOND card for one job: never silently adopted
         job.upstream_ref = job.upstream_ref or res.upstream_ref
+        if res.cost is not None and job.cost is None:
+            job.cost, job.currency = res.cost.amount, res.cost.currency
     if res.card_mask and not job.card_mask:
         job.card_mask = res.card_mask[:24]
+    return other
+
+
+async def _card_mismatch(db: AsyncSession, job: ProcurementJob, other: str) -> None:
+    """The supplier answered with a card id other than the one recorded: two cards may exist for
+    one job. Nothing is sealed; both ids (not secrets) go to a critical audit row and the job is
+    parked for staff, flagged maybe charged (it keeps ``upstream_ref`` and ``maybe_sent``)."""
+    await audit(
+        db,
+        tenant_id=job.tenant_id,
+        action="procurement.card_mismatch",
+        target=f"procurement_job:{job.id}",
+        detail={
+            "recorded": clean_detail(job.upstream_ref),
+            "answered": clean_detail(other),
+            "order_id": str(job.order_id),
+        },
+        severity="critical",
+    )
+    job.maybe_sent = True
+    await _needs_manual(db, job, "card_mismatch")
 
 
 async def _apply(ctx: ProcurementContext, lease: Lease, res: Result) -> None:
@@ -1350,7 +1420,11 @@ async def _apply(ctx: ProcurementContext, lease: Lease, res: Result) -> None:
             return
         if res.supplier_stop:
             await _open_breaker(db, job, res.error_code or "supplier_stop")
-        _record_reference(job, res, lease.mode)
+        other = _record_reference(job, res, lease.mode)
+        if other is not None:
+            await _card_mismatch(db, job, other)
+            await db.commit()
+            return
         if lease.mode in ("recover", "dvoid"):
             await _apply_detached(db, job, lease, res, now)
             await db.commit()
