@@ -258,6 +258,9 @@ class MockZovo:
     delete_pending_next: int = 0  # the next N deletes answer 202 and settle after two reads
     card_cvv: str | None = None  # tests: a CVV / expiry that cannot collide with ordinary numbers
     card_expire: str | None = None
+    short_open: float = 0.0  # the card opens holding this much LESS than init_amount
+    fee_from_card: bool = False  # open / recharge fees are taken from the card balance
+    recharge_fee: float = 0.0  # reported on every recharge row (0 in the real sandbox)
     malformed_detail: int = 0  # the next N card reads lack ``status`` / ``available_amount``
 
     def force(self, path: str, quirk: str, times: int = 1) -> None:
@@ -367,6 +370,7 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
             "status": card["status"],
             "available_amount": card["available_amount"],
             "card_type": "save",
+            "open_fee": card.get("open_fee", 0),
         }
 
     def _open_card(body: dict[str, Any]) -> JSONResponse:
@@ -393,7 +397,9 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
         card = {
             "id": cid, "card_number": pan, "cvv": mock.card_cvv or f"{(cid * 37) % 900 + 100}",
             "expire": mock.card_expire or f"{(cid % 12) + 1:02d}/{year:02d}", "status": "ACTIVE",
-            "available_amount": float(amount), "product_code": prod["product_code"],
+            "available_amount": float(amount) - mock.short_open
+            - (float(prod["open_fee"]) if mock.fee_from_card else 0.0),
+            "open_fee": float(prod["open_fee"]), "product_code": prod["product_code"],
         }  # fmt: skip
         mock.cards[cid] = card
         mock.recharges[cid] = []
@@ -405,7 +411,7 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
                 {
                     "id": cid, "issuer": prod["issuer"], "card_number": pan, "cvv": card["cvv"],
                     "expire": card["expire"], "product_code": prod["product_code"],
-                    "available_amount": float(amount), "status": "ACTIVE",
+                    "available_amount": card["available_amount"], "status": "ACTIVE",
                     "open_fee": prod["open_fee"],
                 },
             )
@@ -420,7 +426,11 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
             return JSONResponse(
                 {"code": 400, "error_code": "amount_below_min", "msg": "below minimum"}, 400
             )
-        row = {"id": len(mock.recharges[card["id"]]) + 1, "amount": float(amount), "fee": 0}
+        row = {
+            "id": len(mock.recharges[card["id"]]) + 1,
+            "amount": float(amount),
+            "fee": mock.recharge_fee,
+        }
         if mock.recharge_pending_next > 0:
             # the documented quirk: "result pending" is a 400 WITHOUT error_code, not cached; the
             # recharge IS in flight and shows up as pending, then settles by itself
@@ -430,7 +440,9 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
             return JSONResponse({"code": 400, "msg": "recharge result pending"}, status_code=400)
         mock.card_recharges += 1
         mock.recharges[card["id"]].append({**row, "status": "success"})
-        card["available_amount"] += float(amount)
+        card["available_amount"] += float(amount) - (
+            mock.recharge_fee if mock.fee_from_card else 0.0
+        )
         _log(card, "card_recharge", -float(amount))
         return JSONResponse(_env(0, {"pending": False}, msg="ok"))
 
@@ -446,7 +458,8 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
             return JSONResponse({"msg": "accepted"}, status_code=202)
         card["status"] = "DELETED"
         _log(card, "card_refund", card["available_amount"])
-        return JSONResponse(_env(0, None))
+        card["available_amount"] = 0.0  # the sandbox answers 200 with 0, not 404
+        return JSONResponse(_env(0, {"pending": False}))
 
     def _write(request: Request, path: str, body: dict[str, Any]) -> JSONResponse:
         if path == "/cards/open":
@@ -542,6 +555,7 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
                 if card["polls"] >= 2:
                     card["status"] = "DELETED"
                     _log(card, "card_refund", card["available_amount"])
+                    card["available_amount"] = 0.0
             if mock.malformed_detail > 0:
                 mock.malformed_detail -= 1
                 view = _card_view(card)

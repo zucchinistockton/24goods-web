@@ -688,11 +688,37 @@ New fields / codes: job `error_code` `card_mismatch`, `void_failed`, `card_not_a
 `delete_pending`; audit actions `procurement.delivered_card_voided`, `.card_mismatch`, `.void_failed`, `.card_pasted`,
 `.manual_card_differs`. Not changed: routes and settings.
 
+### 17.9 Re-audit notes (2026-11-16, round 3)
+
+* **Balance witness tolerates REPORTED fees.** Required balance = `init + recharge - (card open_fee + sum of the
+  successful recharge rows' fee)`, never below `init - open_fee`; a card under that is `balance_short`. A recharge row
+  existing still dominates ("it ran, never POST again"). A `balance_short` / `card_not_active` job has `upstream_ref`,
+  `maybe_sent`, `card_mask`; the job view adds `card_id` (the supplier's id, not secret), `charged_possible` is true,
+  `switch` is not offered and `void` deletes the card.
+* **Hand-pasted card dedup.** The fingerprint no longer derives from the secret, so a paste is refused with 409
+  `duplicate_code` when another non-voided card job of the tenant has the same `card_mask` (first 6 + last 4; a collision
+  of two different live cards in one tenant is rare and acceptable: void the other or give the vendor card id). The
+  paste body may carry the supplier's `card_id`; it becomes the fingerprint input exactly as in the engine path, so the
+  UNIQUE catches an engine/hand overlap (409 `duplicate_code`).
+* **`void_failed` alert.** A job that ends in `needs_manual` `void_failed` raises its own staff alert through the
+  reconciler's procurement alert path (`proc.void_failed`, en + zh-CN, once per job: key
+  `procurement_job:<id>:void_failed`), not only an audit row.
+* **Admin `void` and `delete_pending`.** Voiding a job whose step is `delete_pending` keeps that step (no second
+  DELETE, the card is only read); only a job in `void_failed` (step `done`) restarts the void from the beginning.
+
 ### 17.7 Left open
 
 * The recharge-pending 400 body and the `card_3ds_otp` payload are still [I] (not reproducible in the sandbox); the
   mock reproduces them as documented. Confirm with the first sandbox/production card.
 * `cards/open` replay window: the vendor's idempotency retention is unknown; `APP_REPLAY_MAX_AGE_S` (6 h) bounds it.
+* **Verified in the real sandbox [V] (saved responses, 2026-11-15):** `POST /cards/open` with 10 USD answers
+  `available_amount: 10`, `open_fee: 0`, `status: "ACTIVE"` (the card object carries `open_fee`);
+  `GET /cards/{id}/recharges` lists ONLY recharges (two recharges of 10 = two rows `{id, card_id, amount, fee, status:
+  "success"}`, the opening funding is not a row) and after two recharges the card read shows `available_amount: 30`;
+  `GET /cards/{id}` of a DELETED card answers HTTP 200 with `available_amount: 0` (not 404); `DELETE` answers
+  `{"pending": false}` (a `pending: true` is treated like a 202). Sandbox fees are 0, so whether a fee is taken from the
+  card balance or from the wallet is still unknown (17.9 tolerates exactly what the vendor reports). The mock mirrors
+  these shapes (`short_open`, `fee_from_card`, `recharge_fee` knobs).
 * The top-up fee uses the catalogue's `recharge_fee` as a rate (vendor 6.1); if the vendor changes its meaning the
   estimate is off, the ledger is not.
 * `min_recharge` (card detail) is not read: a top-up below it answers `amount_below_min` (FATAL, `needs_manual`, the card

@@ -88,6 +88,9 @@ class ReasonIn(BaseModel):
 
 class FulfilIn(BaseModel):
     code: str = Field(min_length=4, max_length=256, repr=False)
+    # a card job: the supplier's card id when staff know it; it becomes the dedup fingerprint input
+    # exactly as in the engine path, so the UNIQUE catches an engine / hand overlap
+    card_id: str | None = Field(default=None, pattern=r"^[0-9]{1,20}$")
     reason: str | None = Field(default=None, max_length=200)
 
     check_reason = field_validator("reason")(_no_card_number)
@@ -145,6 +148,9 @@ def _job_view(
         "upstream_ref": j.upstream_ref,
         "upstream_status": j.upstream_status,
         "card_mask": j.card_mask,  # first 6 + last 4 only; the card itself is sealed
+        "card_id": j.upstream_ref
+        if j.kind == "vcc"
+        else None,  # the supplier's card id (not secret)
         "cost": _dec(j.cost),
         "currency": j.currency,
         "next_poll_at": _iso(j.next_poll_at),
@@ -530,6 +536,22 @@ async def fulfil_manually(
             raise Validation("Paste the card as number----MM/YY----CVV", code="bad_card")
         code = canonical
         mask = mask_pan(code.split(CARD_FIELD_SEP, 1)[0])
+        # the same card must not end up in two jobs (the fingerprint no longer derives from it):
+        # refuse a card whose mask another live card job of this tenant already holds
+        clash = await db.scalar(
+            select(func.count(ProcurementJob.id)).where(
+                ProcurementJob.tenant_id == staff.tenant_id,
+                ProcurementJob.kind == "vcc",
+                ProcurementJob.card_mask == mask,
+                ProcurementJob.id != job.id,
+                ProcurementJob.state != "voided",
+            )
+        )
+        if clash:
+            raise Conflict(
+                "Another card job already holds this card; void it or use the supplier card id",
+                code="duplicate_code",
+            )
         last4 = code.split(CARD_FIELD_SEP, 1)[0][-4:]
         del canonical
     if job.state == "fulfilled" or job.card_stock_ids:
@@ -552,7 +574,8 @@ async def fulfil_manually(
         # a card's fingerprint never derives from the secret (S1); a CDK code keeps the old rule
         "fingerprint": (
             sealer.card_fingerprint(
-                tid, job.upstream_ref or f"manual:{order.id}:{job.unit_no}:{last4}"
+                tid,
+                body.card_id or job.upstream_ref or f"manual:{order.id}:{job.unit_no}:{last4}",
             )
             if job.kind == "vcc"
             else sealer.fingerprint(tid, code)
@@ -641,7 +664,10 @@ async def void_job(
         )
     reason = clean_detail(body.reason, 120)
     if job.upstream_ref and job.offer_id is not None:
-        job.step, job.attempts, job.next_poll_at = "void", 0, _now()
+        # a delete already accepted (202) is only ever read afterwards: its step survives; a job
+        # that ended in void_failed (step done) restarts the void from the beginning
+        job.step = "delete_pending" if job.step == "delete_pending" else "void"
+        job.attempts, job.next_poll_at = 0, _now()
         await engine._transition(
             db, job, "void_pending", f"manual:{reason}", actor_id=admin.id,
             actor_role=admin.role, ip=ip, severity="warning",

@@ -528,6 +528,7 @@ class ZovoCardSupplier:
         known = job.upstream_ref if job.upstream_ref and job.upstream_ref.isdigit() else None
         mask: str | None = None
         cost: Money | None = None
+        fee: Decimal | None = None
         if known is None:
             try:
                 opened = await self.client.request(
@@ -565,11 +566,34 @@ class ZovoCardSupplier:
         if detail.status != "ACTIVE":
             return Result(Outcome.FATAL, error_code="card_not_active", **base)
         if detail.available < want:
-            return Result(Outcome.FATAL, error_code="balance_short", **base)
+            # a fee the vendor REPORTS (the card's open_fee, each recharge row's fee) may have been
+            # taken from the card: tolerate exactly that much, never more (sandbox fees are 0, so
+            # where a real fee is booked is still unknown). Floor: init - open_fee.
+            fees = await self._reported_fees(card_id)
+            if fees is None:
+                return Result(Outcome.RETRYABLE, error_code="recharge_list_unreadable", **base)
+            open_fee = detail.open_fee if detail.open_fee is not None else (fee or Decimal(0))
+            required = max(spec.init_amount - open_fee, want - open_fee - fees)
+            if detail.available < required:
+                return Result(Outcome.FATAL, error_code="balance_short", **base)
         secret = card_secret(detail.pan, detail.expire, detail.cvv)
         if secret is None:
             return Result(Outcome.AMBIGUOUS, error_code="malformed_card", **base)
         return Result(Outcome.OK, secrets=(secret,), **base)
+
+    async def _reported_fees(self, card_id: str) -> Decimal | None:
+        """Sum of ``fee`` over the card's successful recharge rows (``None`` = list unreadable)."""
+        try:
+            listing = await self.client.get(f"/cards/{card_id}/recharges")
+        except SupplierError:
+            return None
+        total = Decimal(0)
+        for r in _recharge_rows(listing.data):
+            if str(r.get("status") or "").lower() in _RECHARGE_OK:
+                f = _dec_or_none(r.get("fee"))
+                if f is not None and f > 0:
+                    total += f
+        return total
 
     async def _recharge_fee(self, spec: VccSpec) -> Decimal:
         """The catalogue's top-up fee (``recharge_fee`` is a rate) for the estimate; 0 when the
@@ -683,7 +707,8 @@ class ZovoCardSupplier:
             )
         except SupplierError as exc:
             return Result.from_error(exc)
-        if resp.status == 202:
+        pending = isinstance(resp.data, Mapping) and resp.data.get("pending") is True
+        if resp.status == 202 or pending:
             return Result(
                 Outcome.ACCEPTED_PENDING, error_code="delete_pending", upstream_ref=card_id
             )
@@ -827,6 +852,7 @@ def parse_card_open(data: Any) -> tuple[str, str, Decimal | None] | None:
 class CardDetail:
     status: str
     available: Decimal
+    open_fee: Decimal | None = None  # the card object's own open_fee, when the read carries it
     pan: str = field(repr=False, default="")
     expire: str = field(repr=False, default="")
     cvv: str = field(repr=False, default="")
@@ -859,9 +885,11 @@ def parse_card_detail(data: Any) -> CardDetail | None:
     status = str(data.get("status") or "").upper()
     if not status:
         return None
+    fee = _dec_or_none(data.get("open_fee"))
     return CardDetail(
         status,
         available,
+        fee if fee is not None and fee >= 0 else None,
         str(data.get("card_number") or ""),
         str(data.get("expire") or ""),
         str(data.get("cvv") or ""),

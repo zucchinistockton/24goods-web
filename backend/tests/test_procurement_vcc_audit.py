@@ -701,3 +701,175 @@ async def test_card_secret_never_leaves_the_vault_strict_sweep(env, vup, caplog)
     await pubsub.aclose()
     assert _leaks(caplog.text, pan, exp, cvv) == []  # logs at DEBUG, incl. both failure paths
     assert "Qw8Er5Ty" not in caplog.text
+
+
+# ------------------------------------------------------------------ round 3: re-audit notes
+
+
+async def test_balance_witness_tolerates_fees_the_vendor_reports():
+    vendor = MockZovo()
+    vendor.fee_from_card = True  # fees come out of the card balance
+    vendor.recharge_fee = 0.5  # reported on every recharge row
+    sup = _adapter(vendor)
+    res = await sup.submit(_spec(WITH_RECHARGE))
+    card = vendor.cards[int(res.upstream_ref)]
+    # 20 - 1.5 (open fee) + 10 - 0.5 (recharge fee) = 28 = 30 - (1.5 + 0.5): enough, not short
+    assert card["available_amount"] == 28.0
+    assert res.outcome.value == "ok" and len(res.secrets) == 1
+    # one unit less than what the reported fees explain is still short
+    card["available_amount"] = 27.0
+    short = await sup.query(_spec(WITH_RECHARGE, ref=res.upstream_ref))
+    assert short.outcome.value == "fatal" and short.error_code == "balance_short"
+    # the floor is init - open_fee: a card that does not hold that is short whatever the fees
+    card["available_amount"] = 18.0
+    assert (await sup.query(_spec(OPEN, ref=res.upstream_ref))).error_code == "balance_short"
+    card["available_amount"] = 18.5
+    assert (await sup.query(_spec(OPEN, ref=res.upstream_ref))).outcome.value == "ok"
+
+
+async def test_balance_short_job_tells_staff_the_card_exists_and_void_deletes_it(env, vup):
+    vendor = MockZovo()
+    vendor.short_open = 5.0  # the card opens with 15 instead of 20
+    await _zovo(vup, vendor, OPEN)
+    _buyer, order = await vup.paid_order()
+    await vup.run()
+    job = await _job(vup, order)
+    assert job.state == "needs_manual" and job.error_code == "balance_short"
+    admin, _ = await env.login("admin")
+    view = (await admin.get(f"{JOBS}/{job.id}")).json()
+    card = _card(vendor)
+    assert view["charged_possible"] is True and view["maybe_sent"] is True
+    assert view["card_id"] == str(card["id"]) == job.upstream_ref
+    assert view["card_mask"] == f"{card['card_number'][:6]}****{card['card_number'][-4:]}"
+    assert "void" in view["actions"] and "switch" not in view["actions"]
+    r = await admin.post(f"{JOBS}/{job.id}/void", json={"reason": "card short, delete it"})
+    assert r.status_code == 200, r.text
+    await _settle(vup, 3)
+    assert _card(vendor)["status"] == "DELETED"
+    assert (await _job(vup, order)).state == "voided"
+
+
+async def test_frozen_card_job_is_flagged_and_voidable(env, vup):
+    vendor = MockZovo()
+    await _zovo(vup, vendor, OPEN)
+    _buyer, order = await vup.paid_order()
+    from app.procurement.engine import process_outbox_one
+
+    while await process_outbox_one(vup.ctx):
+        pass
+    sup = vup.mocks[next(iter(vup.mocks))]
+    first = await sup.submit(_spec(OPEN, key=(await _job(vup, order)).idempotency_key))
+    vendor.cards[int(first.upstream_ref)]["status"] = "FROZEN"
+    await _sql(env, "UPDATE procurement_jobs SET upstream_ref = :r", r=first.upstream_ref)
+    await vup.run()
+    job = await _job(vup, order)
+    assert job.state == "needs_manual" and job.error_code == "card_not_active"
+    admin, _ = await env.login("admin")
+    view = (await admin.get(f"{JOBS}/{job.id}")).json()
+    assert view["charged_possible"] and view["card_id"] == first.upstream_ref and view["card_mask"]
+
+
+async def _two_orders(env, vup, vendor):
+    """Order 1 is bought normally (card A); order 2's open is refused, so it needs staff."""
+    _b1, order1 = await vup.paid_order()
+    await vup.run()
+    vendor.force("/cards/open", "401", times=3)
+    _b2, order2 = await vup.paid_order()
+    await vup.run()
+    return order1, order2, await _job(vup, order1), await _job(vup, order2)
+
+
+async def test_hand_pasted_card_cannot_duplicate_a_card_another_job_holds(env, vup):
+    vendor = MockZovo()
+    await _zovo(vup, vendor, OPEN)
+    _o1, o2, j1, j2 = await _two_orders(env, vup, vendor)
+    assert j1.state == "fulfilled" and j2.state == "needs_manual"
+    pan1 = next(iter(vendor.cards.values()))["card_number"]
+    admin, _ = await env.login("admin")
+    # the same card (same first 6 + last 4) pasted into the other job: refused
+    twin = f"{pan1[:6]}123456{pan1[-4:]}----08/31----123"
+    r = await admin.post(f"{JOBS}/{j2.id}/fulfil", json={"code": twin})
+    assert r.status_code == 409 and r.json()["error"]["code"] == "duplicate_code"
+    assert not (await _job(vup, o2)).card_stock_ids
+    # an unrelated card is accepted; and the vendor card id of card A as the fingerprint input
+    # collides with the engine's own row (UNIQUE), whatever the pasted number looks like
+    r = await admin.post(
+        f"{JOBS}/{j2.id}/fulfil",
+        json={"code": "5555555555554444----08/31----123", "card_id": j1.upstream_ref},
+    )
+    assert r.status_code == 409 and r.json()["error"]["code"] == "duplicate_code"
+    r = await admin.post(
+        f"{JOBS}/{j2.id}/fulfil",
+        json={"code": "5555555555554444----08/31----123", "card_id": "999999"},
+    )
+    assert r.status_code == 200, r.text
+    # pasting a card into the job that already holds its mask (the vendor's own) is fine
+    assert (await _job(vup, o2)).state == "fulfilled"
+
+
+async def test_void_failed_raises_one_staff_alert(env, vup, monkeypatch):
+    from datetime import datetime, timezone
+
+    from app.core import notify_tg
+    from app.modules.payments import reconcile
+
+    vendor = MockZovo()
+    await _zovo(vup, vendor, OPEN)
+    _buyer, order = await vup.paid_order()
+    await vup.run()
+    job = await _job(vup, order)
+    vendor.force(f"/cards/{job.upstream_ref}", "delete_disabled", times=1)
+    r = await _refund(env, order)
+    assert r.status_code == 200
+    await _settle(vup, 4)
+    assert (await _job(vup, order)).error_code == "void_failed"
+    sent: list[dict] = []
+    monkeypatch.setattr(
+        notify_tg,
+        "notify_bg",
+        lambda res, tid, kind, lines, **kw: sent.append({"lines": lines, **kw}),
+    )
+    async with env.api_session() as db:
+        n = await reconcile.alert_procurement_jobs(
+            env.res, db, env.tenant_id, datetime.now(timezone.utc)
+        )
+    assert n == 1 and len(sent) == 1
+    assert sent[0]["once"][0] == f"procurement_job:{job.id}:void_failed"
+    assert "proc.void_failed" in repr(sent[0]["lines"])
+
+
+async def test_admin_void_keeps_a_pending_delete_and_restarts_a_failed_one(env, vup):
+    vendor = MockZovo()
+    vendor.delete_pending_next = 1
+    await _zovo(vup, vendor, OPEN)
+    _buyer, order = await vup.paid_order()
+    await vup.run()
+    job = await _job(vup, order)
+    admin, _ = await env.login("admin")
+    assert (
+        await admin.post(f"{JOBS}/{job.id}/void", json={"reason": "first try"})
+    ).status_code == 200
+    await vup.make_due()
+    await vup.run()  # the DELETE goes out once and answers 202
+    job = await _job(vup, order)
+    assert job.state == "void_pending" and job.step == "delete_pending"
+    deletes = [1 for m, p, _h in vendor.requests if m == "DELETE"]
+    assert len(deletes) == 1
+    # staff see it as stuck and press void again: the pending delete is NOT restarted
+    await _sql(env, "UPDATE procurement_jobs SET state = 'needs_manual', lease_until = NULL")
+    r = await admin.post(f"{JOBS}/{job.id}/void", json={"reason": "second try"})
+    assert r.status_code == 200, r.text
+    job = await _job(vup, order)
+    assert job.state == "void_pending" and job.step == "delete_pending"
+    await _settle(vup, 4)
+    assert (await _job(vup, order)).state == "voided" and _card(vendor)["status"] == "DELETED"
+    assert len([1 for m, p, _h in vendor.requests if m == "DELETE"]) == 1
+    # a job in void_failed (step done) starts again from the beginning
+    await _sql(
+        env,
+        "UPDATE procurement_jobs SET state = 'needs_manual', step = 'done', "
+        "error_code = 'void_failed'",
+    )
+    r = await admin.post(f"{JOBS}/{job.id}/void", json={"reason": "after void_failed"})
+    assert r.status_code == 200, r.text
+    assert (await _job(vup, order)).step == "void"
