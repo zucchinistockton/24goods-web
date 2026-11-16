@@ -442,8 +442,9 @@ Engine rules added after the payment-auditor pass (migration `0027`; tests `test
   Disabling is an explicit staff `void`. Jobs closed by refund / fail keep the automatic disable.
 - **Freshness (N4).** `last_balance_at` is stamped only after the breaker evaluated the reading; a failed evaluation
   leaves the gate stale.
-- **Pre-check (N3).** The pre-check reads a FRESH catalog. After an ambiguous `request_failed` on a write, one fresh
-  availability check runs; a plan the catalog definitely does not offer means the write did not execute.
+- **Pre-check (N3).** The pre-check before the first send reads a FRESH catalog, so a paused plan is not
+  submitted. A write that fails ambiguously stays ambiguous whatever the catalog says afterwards (a plan can sell
+  out because the write ran): same-key reconcile, never a failover, `needs_manual` flagged maybe charged at the end.
 - **Retries (N6, N7).** The recovery's FATAL path keeps `maybe_sent` on `IDEMPOTENCY_CONFLICT`; a passed pre-check no
   longer resets the retry counter.
 - **Refund (N5).** `fulfilled`, undelivered units go to `void_pending` (disable + void the `card_stock` row).

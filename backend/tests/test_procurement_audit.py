@@ -1232,7 +1232,8 @@ class _PausesOnSubmit(MockSupplier):
         return Result(Outcome.AMBIGUOUS, error_code="request_failed")
 
 
-async def test_n3_failed_write_with_a_paused_plan_fails_over_as_not_executed(env, up):
+async def test_failed_write_stays_maybe_sent_even_when_the_plan_is_gone_afterwards(env, up):
+    """Re-audit F1: the plan may be gone BECAUSE the write ran, so there is no failover."""
     a = _PausesOnSubmit("mock_a")
     b = MockSupplier("mock_b")
     _sid, offer_a = await up.supplier(a, code="mock_a", priority=10)
@@ -1241,17 +1242,6 @@ async def test_n3_failed_write_with_a_paused_plan_fails_over_as_not_executed(env
     for _ in range(4):
         await up.run()
     job = await _job(up, order)
-    assert job.state == "fulfilled" and job.tried_offer_ids == [offer_a]
-    assert [op for op, _ in a.calls] == ["submit"] and len(b.charged) == 1
-    assert await _offer_check(env, offer_a) is False
-
-
-async def test_n3_failed_write_with_a_paused_plan_and_no_source_is_not_maybe_charged(env, up):
-    a = _PausesOnSubmit("mock_a")
-    _sid, offer = await up.supplier(a)
-    _buyer, order = await up.paid_order()
-    for _ in range(3):
-        await up.run()
-    job = await _job(up, order)
-    assert job.state == "needs_manual" and job.error_code == "no_source:plan_unavailable"
-    assert not job.maybe_sent and await _offer_check(env, offer) is False
+    assert job.maybe_sent and job.state != "fulfilled" and not job.tried_offer_ids
+    assert b.calls == [] and len(b.charged) == 0  # the second supplier was never asked
+    assert await _offer_check(env, offer_a) is False  # the offer stops taking new jobs
