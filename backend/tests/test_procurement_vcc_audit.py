@@ -500,8 +500,6 @@ async def test_card_operation_for_another_suppliers_or_tenants_card_changes_noth
 
 # ---------------------------------------------------------------- L6 and staff actions on card jobs
 
-# ------------------------------------------------------------------ L6 and staff actions on card jobs
-
 
 async def test_cdk_webhook_under_a_live_lease_does_not_pull_the_poll_forward(env, up):
     from app.procurement.engine import process_outbox_one
@@ -599,3 +597,107 @@ async def test_a_queued_card_job_can_be_switched_but_never_opened_by_the_action(
     r = await admin.post(f"{JOBS}/{job.id}/switch", json={})
     assert r.status_code == 409 and r.json()["error"]["code"] == "no_other_source"
     assert vendor.card_opens == 0
+
+
+# ------------------------------------------------------------------ S3: the strict sweep
+
+
+async def _all_dumps(env) -> dict[str, str]:
+    """Every public table as ``row_to_json`` text (the tenant-pinned owner view)."""
+    names = [
+        r[0]
+        for r in await _rows(
+            env,
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema = 'public' AND table_type = 'BASE TABLE'",
+        )
+    ]
+    out: dict[str, str] = {}
+    for name in names:
+        sql = f"SELECT coalesce(string_agg(row_to_json(t)::text, '|'), '') FROM \"{name}\" t"  # noqa: S608
+        out[name] = await env.scalar(sql)
+    return out
+
+
+def _leaks(text: str, pan: str, exp: str, cvv: str) -> list[str]:
+    import re
+
+    found = []
+    if pan in text:
+        found.append("pan")
+    if exp in text:
+        found.append("expiry")
+    if re.search(rf"(?<![0-9]){re.escape(cvv)}(?![0-9])", text):
+        found.append("cvv")
+    if f"{pan}----{exp}----{cvv}" in text:
+        found.append("secret")
+    return found
+
+
+async def test_card_secret_never_leaves_the_vault_strict_sweep(env, vup, caplog):
+    import datetime as dt
+    import logging
+
+    from tests.test_procurement_m2 import WEBHOOK_SECRET, _signed
+
+    caplog.set_level(logging.DEBUG)
+    env.res.settings = env.res.settings.model_copy(
+        update={"zovocard_sandbox_webhook_secret": WEBHOOK_SECRET}
+    )
+    vendor = MockZovo()
+    vendor.card_cvv = "7391"  # four digits + a MM/YY with a slash: no ordinary row holds either
+    vendor.card_expire = f"11/{(dt.date.today().year + 5) % 100:02d}"
+    vendor.force("/cards/open", "lost_response")  # failure path 1: ambiguous after the open
+    vendor.malformed_detail = 1  # failure path 2: a card read with the secrets but a broken shape
+    sid, _ = await _zovo(vup, vendor, WITH_RECHARGE)
+    from tests.helpers import buy, pay_order
+
+    buyer, _user = await env.login("buyer")
+    order = await buy(buyer, vup.product, 1)
+    pubsub = env.s.redis.pubsub()
+    await pubsub.psubscribe("rt:*")
+    await pay_order(env, buyer, order)
+    await env.drain()
+    await _deliver(env, vup, order, buyer)
+    job = await _job(vup, order)
+    assert job.state == "fulfilled"
+    assert [e for e in caplog.records if "malformed" in e.getMessage()] == []  # nothing echoed
+    http_bodies = [(await buyer.post(f"/api/v1/orders/{order['id']}/reveal")).text]  # the ONE exit
+    # an OTP forwarded for this card goes through pub/sub as well
+    raw, h = _signed({"event": "card_3ds_otp", "otp": "Qw8Er5Ty", "matrix_id": "M1",
+                      "card_id": int(job.upstream_ref)})  # fmt: skip
+    await env.client(csrf=False).post("/api/v1/webhooks/zovocard", content=raw, headers=h)
+    admin, _ = await env.login("admin")
+    for url in (
+        f"{JOBS}",
+        f"{JOBS}/{job.id}",
+        f"/api/v1/admin/procurement/sources?product_id={vup.product.id}",
+        f"/api/v1/admin/orders/{order['id']}",
+        f"/api/v1/orders/{order['id']}",
+    ):
+        http_bodies.append((await admin.get(url)).text)
+    card = _card(vendor)
+    pan, exp, cvv = card["card_number"], card["expire"], card["cvv"]
+    reveal = http_bodies.pop(0)
+    assert pan in reveal and cvv in reveal  # the reveal is the one place the secret may appear
+    for i, body in enumerate(http_bodies):
+        assert _leaks(body, pan, exp, cvv) == [], f"http response {i}"
+    # every public table, row by row: only the sealed blob holds the card
+    from app.procurement import ledger
+    from app.procurement.service import SupplierRef
+
+    await ledger.backfill(
+        vup.ctx, SupplierRef(sid, env.tenant_id, "zovocard", "zovocard", "sandbox", "ok"), "USD"
+    )
+    for name, text_ in (await _all_dumps(env)).items():
+        assert _leaks(text_, pan, exp, cvv) == [], f"table {name}"
+    # pub/sub: nothing published carries the card; the OTP goes only to the owner's channel
+    seen: list[str] = []
+    while (m := await pubsub.get_message(timeout=0.3)) is not None:
+        if m["type"] == "pmessage":
+            seen.append(m["data"].decode())
+    assert seen and all(_leaks(x, pan, exp, cvv) == [] for x in seen)
+    assert any("card_otp" in x for x in seen)  # the owner's channel got the code
+    await pubsub.aclose()
+    assert _leaks(caplog.text, pan, exp, cvv) == []  # logs at DEBUG, incl. both failure paths
+    assert "Qw8Er5Ty" not in caplog.text

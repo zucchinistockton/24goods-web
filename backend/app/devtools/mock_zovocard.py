@@ -256,6 +256,9 @@ class MockZovo:
     card_recharges: int = 0  # how many recharges really ran
     recharge_pending_next: int = 0  # the next N recharges answer the "pending" 400 (documented)
     delete_pending_next: int = 0  # the next N deletes answer 202 and settle after two reads
+    card_cvv: str | None = None  # tests: a CVV / expiry that cannot collide with ordinary numbers
+    card_expire: str | None = None
+    malformed_detail: int = 0  # the next N card reads lack ``status`` / ``available_amount``
 
     def force(self, path: str, quirk: str, times: int = 1) -> None:
         if quirk not in QUIRKS:
@@ -388,8 +391,8 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
         pan = f"4111{cid:012d}"
         year = (datetime.now(timezone.utc).year + 4) % 100
         card = {
-            "id": cid, "card_number": pan, "cvv": f"{(cid * 37) % 900 + 100}",
-            "expire": f"{(cid % 12) + 1:02d}/{year:02d}", "status": "ACTIVE",
+            "id": cid, "card_number": pan, "cvv": mock.card_cvv or f"{(cid * 37) % 900 + 100}",
+            "expire": mock.card_expire or f"{(cid % 12) + 1:02d}/{year:02d}", "status": "ACTIVE",
             "available_amount": float(amount), "product_code": prod["product_code"],
         }  # fmt: skip
         mock.cards[cid] = card
@@ -539,6 +542,11 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
                 if card["polls"] >= 2:
                     card["status"] = "DELETED"
                     _log(card, "card_refund", card["available_amount"])
+            if mock.malformed_detail > 0:
+                mock.malformed_detail -= 1
+                view = _card_view(card)
+                view.pop("status"), view.pop("available_amount")  # secrets present, shape broken
+                return JSONResponse(_env(0, view))
             return JSONResponse(_env(0, _card_view(card)))
         if path == "/gpt-direct/cdks":
             items = sorted(mock.cdks.values(), key=lambda c: -c["id"])
