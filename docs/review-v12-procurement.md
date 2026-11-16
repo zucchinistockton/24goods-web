@@ -635,7 +635,7 @@ Buyer (`/api/v1`):
 
 | Route | Notes |
 |---|---|
-| `POST /orders` with an `upstream_vcc` product | unchanged; quantity capped by `MAX_UPSTREAM_QTY` (5); 409/422 `out_of_stock` when no source is usable |
+| `POST /orders` with an `upstream_vcc` product | unchanged; quantity capped by `MAX_UPSTREAM_QTY` (5); the existing out-of-stock error when no source is usable |
 | `POST /orders/{ref}/reveal` | unchanged; `cards[].code` is `pan----MM/YY----cvv` for card orders |
 | `GET /orders/{ref}/card-otp` | NEW. Owner only (404 otherwise, also for non-card orders), `Cache-Control: no-store`, 60 req/min. `{"items": [{"otp", "card" (masked), "unit", "expires_in" (s)}]}`; empty when none is live |
 | SSE `GET /stream`, event `card_otp` | NEW. `{"order_id", "otp", "card", "unit", "expires_in"}`; show it once, never persist it client-side beyond the page |
@@ -647,7 +647,7 @@ Console (admin, staff):
 |---|---|
 | `POST /admin/products`, `PATCH /admin/products/{id}` | `delivery_mode` accepts `upstream_vcc` (separator/format forced, see 17.3) |
 | `POST /admin/procurement/sources` / `PATCH .../{id}` | `params` for a card product: `product_code`, `init_amount`, optional `recharge_amount`, `first_name`, `last_name` (strings; `plan` is for CDK products only). Errors: 422 `bad_params`, `cost_required` (when enabling without a usable cost) |
-| `GET /admin/procurement/sources/{id}/check` | availability incl. `amount_out_of_range` / `not_purchasable` |
+| `POST /admin/procurement/sources/{id}/check` | availability incl. `amount_out_of_range` / `not_purchasable` |
 | `GET /admin/procurement/jobs`, `/{id}` | new `card_mask`; `kind = "vcc"`; `upstream_status` is `active`/`deleted` or the last webhook `operation:status`; no secret ever |
 | `POST /admin/procurement/jobs/{id}/fulfil` | card jobs: `code = "<pan>----<MM/YY>----<cvv>"`, 422 `bad_card` |
 | `.../void`, `/fail`, `/retry`, `/requery`, `/switch` | unchanged semantics; void = delete at the supplier |
