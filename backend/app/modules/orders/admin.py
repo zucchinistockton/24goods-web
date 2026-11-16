@@ -50,6 +50,7 @@ from app.modules.orders.service import (
 from app.modules.payments.channels import split_amount
 from app.modules.payments.settle import apply_sold, lock_checkout, payment_for_order, sold_keys
 from app.modules.promo import service as promo_svc
+from app.procurement.engine import close_order_jobs
 
 
 async def lock_order(db: AsyncSession, order_id: uuid.UUID, tenant_id: uuid.UUID) -> Order:
@@ -434,6 +435,14 @@ async def _accept_held(
         raise InvalidState("Only an order held for review can be released")
     if order.kind == "reseller_signup":
         raise InvalidState("A held sign-up order cannot be released here; refund it instead")
+    if order.delivery_mode in ("upstream_cdk",):
+        # TODO(v12-M3): a late-payment upstream order held in manual_review has no procurement
+        # job to act on (L3 of the M2 payment audit); give it a staff "release into procurement".
+        # its procurement jobs decide (retry / switch source / fulfil manually, review-v12)
+        raise InvalidState(
+            "Release supplier-sourced orders through their procurement jobs",
+            code="use_procurement_actions",
+        )
     pay = await _verified_payment(db, order)
     # #72 audit M3: count the sale from state (never entered ``paid`` before), for every mode
     count_sale = order.product_id is not None and not await _sale_counted(db, order)
@@ -567,6 +576,9 @@ async def _close_held(
     held = {o.id: (await hold_reason(db, o))[0] for o in orders}
     for o in orders:
         before = snapshot(o)
+        await close_order_jobs(
+            db, o, actor_id=actor_id, actor_role=actor_role, ip=ip, reason="order_closed"
+        )  # an upstream order held for review: its open jobs end with it
         o.status = "cancelled"
         o.cancel_reason = reason
         o.version += 1

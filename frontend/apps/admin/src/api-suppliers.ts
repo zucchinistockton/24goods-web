@@ -21,6 +21,11 @@ export interface AdminSupplier {
   last_probe_at: string | null
   last_balance: string | null
   last_balance_at: string | null
+  breaker_open?: boolean
+  /** `hard` = the supplier refused us (manual reset); `balance` = low balance (closes by itself) */
+  breaker_kind?: 'hard' | 'balance' | null
+  breaker_reason?: string | null
+  breaker_at?: string | null
   created_at: string
   updated_at: string
 }
@@ -40,7 +45,8 @@ export interface SupplierInput {
   min_spendable: string
   enabled: boolean
 }
-export type SupplierPatch = Partial<Pick<SupplierInput, 'label' | 'env' | 'priority' | 'min_spendable' | 'enabled'>>
+/** `current_password`: required by the server for a production supplier (create, or switch to production). */
+export type SupplierPatch = Partial<Pick<SupplierInput, 'label' | 'env' | 'priority' | 'min_spendable' | 'enabled'>> & { current_password?: string }
 
 /** Redacted probe report from the procurement process: no secrets, no response bodies. */
 export interface ProbeReport {
@@ -70,7 +76,8 @@ export const SUPPLIER_AMOUNT_RE = /^[0-9]{1,9}(\.[0-9]{1,2})?$/
 export function createSuppliersApi(c: ApiClient) {
   return {
     list: () => c.get<SupplierList>('/admin/suppliers'),
-    create: (b: SupplierInput) => c.post<AdminSupplier>('/admin/suppliers', b),
+    resetBreaker: (id: string) => c.post<AdminSupplier>(`/admin/suppliers/${seg(id)}/reset-breaker`),
+    create: (b: SupplierInput & { current_password?: string }) => c.post<AdminSupplier>('/admin/suppliers', b),
     update: (id: string, b: SupplierPatch) => c.patch<AdminSupplier>(`/admin/suppliers/${seg(id)}`, b),
     probe: (id: string) => c.post<{ report: ProbeReport; supplier: AdminSupplier | null }>(`/admin/suppliers/${seg(id)}/probe`),
   }

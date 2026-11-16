@@ -1,5 +1,5 @@
-"""ZovoCard supplier adapter. M1: read-only operations only (probe, balance, availability, plan
-and card-product listing). ``submit`` / ``query`` / ``void`` / ``verify_webhook`` arrive in M2.
+"""ZovoCard supplier adapter: read-only operations (probe, balance, availability, plans, card
+products) and, since M2, CDK issue / reconcile / disable and webhook verification.
 
 Parsers are built from the shapes of live responses (review-v12 §11): ``data.plans{}`` is keyed
 by plan key and camelCase; ``data.registry[]`` is snake_case. Amounts that arrive as JSON floats
@@ -9,6 +9,7 @@ are turned into ``Decimal(str(x))``.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -21,15 +22,19 @@ from app.suppliers.base import (
     Balance,
     Capability,
     JobSpec,
+    LedgerRow,
+    Money,
     OfferSpec,
     Outcome,
     ProbeReport,
     Result,
     SupplierError,
     SupplierEvent,
+    WebhookRejected,
     dec,
 )
 from app.suppliers.zovocard.client import ZovoClient
+from app.suppliers.zovocard.webhook import mask_pan, parse_webhook
 
 log = logging.getLogger("app.suppliers.zovocard")
 
@@ -163,6 +168,52 @@ def parse_balance(data: Any) -> Balance:
     return Balance(spendable=spendable, currency=currency.upper(), total=total)
 
 
+def parse_time(value: Any) -> datetime | None:
+    """ISO-8601 (``Z`` or offset) or ``YYYY-MM-DD HH:MM:SS`` (UTC) -> aware datetime."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        t = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return t if t.tzinfo is not None else t.replace(tzinfo=timezone.utc)
+
+
+def parse_balance_logs(data: Any) -> tuple[list[LedgerRow], int | None]:
+    """``data.list[]`` of ``GET /balance-logs`` -> rows (newest first as sent). Rows without an
+    id or a finite amount are skipped; a full ``card_number`` becomes ``mask_pan`` here and the
+    remark (free text that carries the full PAN) is dropped."""
+    if not isinstance(data, Mapping) or not isinstance(data.get("list"), list):
+        raise SupplierError("malformed balance-logs payload", outcome=Outcome.RETRYABLE)
+    rows: list[LedgerRow] = []
+    for item in data["list"]:
+        if not isinstance(item, Mapping):
+            continue
+        rid = item.get("id")
+        if isinstance(rid, bool) or not isinstance(rid, (int, str)) or not str(rid).strip():
+            continue
+        try:
+            amount = dec(item.get("amount"))
+        except ValueError:
+            continue
+        after = _dec_or_none(item.get("after"))
+        ref = item.get("ref_id")
+        rows.append(
+            LedgerRow(
+                external_id=str(rid).strip()[:64],
+                type=str(item.get("type") or "unknown")[:48],
+                amount=amount,
+                currency=str(item.get("currency") or "")[:3].upper(),
+                occurred_at=parse_time(item.get("created_at")),
+                balance_after=after,
+                ref_id=str(ref)[:64] if isinstance(ref, (int, str)) and ref != "" else None,
+                card_mask=mask_pan(item["card_number"]) if item.get("card_number") else None,
+            )
+        )
+    total = data.get("total")
+    return rows, total if isinstance(total, int) and not isinstance(total, bool) else None
+
+
 def _dec_or_none(v: Any) -> Decimal | None:
     try:
         return dec(v)
@@ -197,8 +248,9 @@ class ZovoCardSupplier:
         {Capability.CDK, Capability.VCC, Capability.DIRECT, Capability.VOID, Capability.WEBHOOK}
     )
 
-    def __init__(self, code: str, client: ZovoClient) -> None:
+    def __init__(self, code: str, client: ZovoClient, *, webhook_secret: str = "") -> None:
         self.code = code
+        self.webhook_secret = webhook_secret
         self.client = client
         self.env = client.config.env
         self._plans: dict[str, tuple[float, PlanCatalog]] = {}
@@ -210,6 +262,14 @@ class ZovoCardSupplier:
     async def balance(self) -> Balance:
         resp = await self.client.get("/balance")
         return parse_balance(resp.data)
+
+    async def balance_logs(self, page: int = 1, page_size: int = 100) -> list[LedgerRow]:
+        """``GET /balance-logs`` (read-only), newest first. Backfill for the cost ledger."""
+        resp = await self.client.get(
+            "/balance-logs", params={"page": str(page), "page_size": str(page_size)}
+        )
+        rows, _total = parse_balance_logs(resp.data)
+        return rows
 
     async def plans(self, product: str, *, fresh: bool = False) -> PlanCatalog:
         if product not in DIRECT_PRODUCTS:
@@ -223,11 +283,39 @@ class ZovoCardSupplier:
         self._plans[product] = (now, catalog)
         return catalog
 
+    async def redemption_cost(self, offer: OfferSpec) -> Money | None:
+        """Reserve the breaker holds back per issued CDK (review-v12 §6, §12 second pass): the
+        plan's ``expectedAmountMinor`` plus the balance buffer (``balanceBufferBps``, at least
+        ``minBalanceBufferUsdMinor``) plus ``serviceFeeUsdMinor`` from the cached plans, only when
+        the plan currency is USD. Otherwise ``None``: the per-offer configured cost applies."""
+        product = offer.params.get("product", "gpt")
+        key = offer.params.get("plan")
+        if product not in DIRECT_PRODUCTS or not isinstance(key, str):
+            return None
+        catalog = await self.plans(product)
+        entry = catalog.registry.get(key)
+        plan = catalog.plans.get(entry.acc_plan_key if entry and entry.acc_plan_key else key)
+        if not isinstance(plan, Mapping) or str(plan.get("currency", "")).upper() != "USD":
+            return None
+        expected = _int_or_none(plan.get("expectedAmountMinor"))
+        if expected is None or expected < 0:
+            return None
+        bps = _int_or_none(plan.get("balanceBufferBps")) or 0
+        floor = _int_or_none(plan.get("minBalanceBufferUsdMinor")) or 0
+        fee = _int_or_none(plan.get("serviceFeeUsdMinor")) or 0
+        buffer = max((Decimal(expected) * bps / 10000).to_integral_value(), Decimal(floor))
+        minor = Decimal(expected) + buffer + Decimal(fee)
+        return Money((minor / 100).quantize(Decimal("0.01")), "USD")
+
     async def card_products(self) -> list[CardProduct]:
         resp = await self.client.get("/products")
         return parse_card_products(resp.data)
 
-    async def availability(self, offer: OfferSpec) -> Availability:
+    async def availability_fresh(self, offer: OfferSpec) -> Availability:
+        """The engine's pre-check before a send: never answered from the 60 s plan cache (N3)."""
+        return await self.availability(offer, fresh=True)
+
+    async def availability(self, offer: OfferSpec, *, fresh: bool = False) -> Availability:
         now = datetime.now(timezone.utc)
         if offer.kind not in ("cdk", "direct"):
             return Availability(False, "kind_not_supported_m1", checked_at=now)
@@ -239,7 +327,7 @@ class ZovoCardSupplier:
             # stricter reading of the docs (A.5 "CDK supports GPT plans only")
             return Availability(False, "cdk_gpt_only", checked_at=now)
         try:
-            catalog = await self.plans(product)
+            catalog = await self.plans(product, fresh=fresh)
         except SupplierError as exc:
             return Availability(False, exc.reason, checked_at=now)
         if not is_purchasable(catalog, key):
@@ -305,15 +393,97 @@ class ZovoCardSupplier:
             checked_at=now,
         )
 
-    # ---- writes and webhooks: M2 / M3
+    # ---- writes (M2: upstream_cdk only; vcc/direct arrive in M3)
     async def submit(self, job: JobSpec) -> Result:
-        raise NotImplementedError("ZovoCard submit arrives in M2")
+        """``POST /gpt-direct/cdks`` with ``count: 1`` under the job's idempotency key."""
+        body = cdk_issue_body(job.offer)
+        if body is None:
+            return Result(Outcome.FATAL, error_code="invalid_offer")
+        try:
+            resp = await self.client.request(
+                "POST",
+                "/gpt-direct/cdks",
+                json_body=body,
+                idempotency_key=job.idempotency_key,
+            )
+        except SupplierError as exc:
+            return Result.from_error(exc)
+        return parse_cdk_issue(resp.data)
 
     async def query(self, job: JobSpec) -> Result:
-        raise NotImplementedError("ZovoCard query arrives in M2")
+        """Reconcile an issue whose outcome is unknown: same-key replay of the SAME body.
+
+        Vendor §4 / A.1: a request that already succeeded is answered from the idempotency
+        cache (``Idempotent-Replayed: true``, same codes); one that failed or never arrived is
+        executed now, exactly once; one still running answers 409 (AMBIGUOUS again). Every path
+        ends with at most one issued code per key. [I] The vendor list (``GET /gpt-direct/cdks``)
+        is not used: it is not documented to expose the idempotency key, so it cannot correlate
+        a code with a job (spec §14.3, to confirm in the sandbox).
+        """
+        return await self.submit(job)
 
     async def void(self, job: JobSpec) -> Result:
-        raise NotImplementedError("ZovoCard void arrives in M2")
+        """Disable an unused code (``POST /gpt-direct/cdks/{id}/disable``). The issue fee is not
+        refunded; ``409 CDK_DISABLE_REJECTED`` = already used or unknown -> FATAL (cannot void)."""
+        ref = job.upstream_ref or ""
+        if not ref.isdigit() or len(ref) > 20:
+            return Result(Outcome.FATAL, error_code="invalid_upstream_ref")
+        try:
+            resp = await self.client.request(
+                "POST",
+                f"/gpt-direct/cdks/{ref}/disable",
+                json_body={},
+                idempotency_key=job.idempotency_key,
+            )
+        except SupplierError as exc:
+            return Result.from_error(exc)
+        data = resp.data if isinstance(resp.data, Mapping) else {}
+        status = data.get("status")
+        if status not in (None, "disabled"):
+            return Result(Outcome.AMBIGUOUS, error_code="unexpected_status", upstream_ref=ref)
+        return Result(Outcome.OK, upstream_ref=ref)
 
     def verify_webhook(self, raw: bytes, headers: Mapping[str, str]) -> list[SupplierEvent]:
-        raise NotImplementedError("ZovoCard webhooks arrive in M2")
+        if not self.webhook_secret:
+            raise WebhookRejected("no webhook secret configured")
+        return parse_webhook(raw, headers, self.webhook_secret)
+
+
+_PLAN_RE = re.compile(r"^[a-z0-9_]{1,40}$")
+_COUNTRY_RE = re.compile(r"^[A-Z]{2}$")
+
+
+def cdk_issue_body(offer: OfferSpec) -> dict[str, Any] | None:
+    """The one request body for a CDK issue, validated BEFORE any call (deterministic, so a
+    replay sends byte-identical JSON and ``request_hash`` can pin it)."""
+    if offer.kind != "cdk" or offer.params.get("product", "gpt") != "gpt":
+        return None
+    plan = offer.params.get("plan")
+    if not isinstance(plan, str) or not _PLAN_RE.fullmatch(plan):
+        return None
+    body: dict[str, Any] = {"plan": plan, "count": 1, "funding_confirmed": True}
+    country = offer.params.get("payment_country")
+    if country is not None:
+        if not isinstance(country, str) or not _COUNTRY_RE.fullmatch(country):
+            return None
+        body["payment_country"] = country
+    return body
+
+
+def parse_cdk_issue(data: Any) -> Result:
+    """``data.issued[]`` with exactly one ``{id, code, fee_amount_minor}``. Anything else after
+    a 2xx means "something happened that we cannot read": AMBIGUOUS (reconcile by replay)."""
+    issued = data.get("issued") if isinstance(data, Mapping) else None
+    if not isinstance(issued, list) or len(issued) != 1 or not isinstance(issued[0], Mapping):
+        return Result(Outcome.AMBIGUOUS, error_code="malformed_issue")
+    item = issued[0]
+    code, ref = item.get("code"), item.get("id")
+    if not isinstance(code, str) or not (4 <= len(code) <= 256) or not code.isprintable():
+        return Result(Outcome.AMBIGUOUS, error_code="malformed_issue")
+    if isinstance(ref, bool) or not isinstance(ref, (int, str)) or not str(ref).isdigit():
+        return Result(Outcome.AMBIGUOUS, error_code="malformed_issue")
+    fee = item.get("fee_amount_minor")
+    cost = None
+    if isinstance(fee, int) and not isinstance(fee, bool) and fee >= 0:
+        cost = Money((Decimal(fee) / 100).quantize(Decimal("0.01")), "USD")
+    return Result(Outcome.OK, upstream_ref=str(ref), secrets=(code.strip(),), cost=cost)

@@ -121,7 +121,7 @@ services:
 
   procurement:                            # supplier adapters (review-v12, ADR-038); opt-in profile
     <<: *app
-    profiles: [procurement]
+    profiles: [procurement, demo]         # demo/CI: runs against the mockzovo simulator below
     command: ["python", "-m", "app.procurement"]
     env_file: [env/procurement.env]       # supplier API secrets live ONLY here
     secrets: [vault_public_keys]          # public key only: can seal (M2), cannot open
@@ -148,6 +148,14 @@ services:
     mem_limit: 96m
     depends_on:
       redis: { condition: service_healthy }
+
+  mockzovo:                               # ZovoCard simulator — demo/CI only (profile "demo")
+    <<: *app                              # never in the "procurement" (production) profile
+    profiles: [demo]
+    command: ["python", "-m", "app.devtools.mock_zovocard"]
+    env_file: [env/mockzovo.env]
+    networks: [backend]                   # reached by procurement only; no edge, no egress
+    mem_limit: 64m
 
   mockusdt:                               # BEpusdt simulator — demo/CI only (profile "demo")
     <<: *app

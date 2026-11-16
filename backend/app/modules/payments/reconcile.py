@@ -297,6 +297,8 @@ async def run(res: Resources) -> int:
             total += await recheck_failed(res, db, tid, now)
             await close_abandoned(res, db, tid, now)
             await alert_dead_jobs(res, db, tid, now)
+            await alert_procurement_jobs(res, db, tid, now)
+            await alert_supplier_breakers(res, db, tid)
             refs = list(
                 await db.scalars(
                     select(PaymentAttempt.local_ref)
@@ -516,6 +518,86 @@ async def alert_dead_jobs(res: Resources, db: AsyncSession, tid: uuid.UUID, now:
             ],
             link=notify_tg.admin_link(res, "orders"),
             once=(f"dead_job:{oid}", 30 * 86400),
+        )
+    return len(rows)
+
+
+async def alert_procurement_jobs(
+    res: Resources, db: AsyncSession, tid: uuid.UUID, now: datetime
+) -> int:
+    """review-v12 §3/§6: a procurement job that needs staff (FATAL, no source left, unresolved)
+    or is stuck past 30 min raises the staff alert once (procurement has no Telegram token)."""
+    from app.core import notify_tg
+    from app.models import ProcurementJob
+
+    rows = list(
+        (
+            await db.execute(
+                select(ProcurementJob.id, ProcurementJob.order_id, ProcurementJob.state,
+                       ProcurementJob.error_code)
+                .where(
+                    ProcurementJob.tenant_id == tid,
+                    or_(
+                        ProcurementJob.state == "needs_manual",
+                        ProcurementJob.alerted_at.is_not(None)
+                        & ProcurementJob.state.in_(("queued", "submitting", "accepted_pending")),
+                    ),
+                    ProcurementJob.updated_at > now - DEAD_JOB_WINDOW,
+                )
+                .order_by(ProcurementJob.updated_at.desc())
+                .limit(10)
+            )
+        ).all()
+    )  # fmt: skip
+    await db.rollback()
+    for jid, oid, state, code in rows:
+        notify_tg.notify_bg(
+            res,
+            tid,
+            "payment_review",
+            [
+                notify_tg.T("proc.job_stuck", job=str(jid)[:8], state=state, code=code or "stuck"),
+                notify_tg.T("proc.order_waits", order=str(oid)[:36]),
+            ],
+            link=notify_tg.admin_link(res, "orders"),
+            once=(f"procurement_job:{jid}:{state}", 30 * 86400),
+        )
+    return len(rows)
+
+
+async def alert_supplier_breakers(res: Resources, db: AsyncSession, tid: uuid.UUID) -> int:
+    """review-v12 §6: an open supplier breaker (a refusal, or a balance below the threshold)
+    raises one staff alert per opening (procurement has no Telegram token)."""
+    from app.core import notify_tg
+    from app.models import SupplierAccount
+
+    rows = list(
+        (
+            await db.execute(
+                select(SupplierAccount.id, SupplierAccount.code, SupplierAccount.env,
+                       SupplierAccount.breaker_reason, SupplierAccount.breaker_kind,
+                       SupplierAccount.breaker_at)
+                .where(
+                    SupplierAccount.tenant_id == tid,
+                    SupplierAccount.breaker_open.is_(True),
+                    SupplierAccount.breaker_at.is_not(None),
+                )
+                .limit(10)
+            )
+        ).all()
+    )  # fmt: skip
+    await db.rollback()
+    for sid, code, env, reason, kind, at in rows:
+        notify_tg.notify_bg(
+            res,
+            tid,
+            "payment_review",
+            [
+                notify_tg.T("proc.supplier_paused", code=code, env=env),
+                notify_tg.T("proc.pause_reason", reason=reason or "unknown", kind=kind or "hard"),
+            ],
+            link=notify_tg.admin_link(res, "orders"),
+            once=(f"supplier_breaker:{sid}:{int(at.timestamp())}", 30 * 86400),
         )
     return len(rows)
 

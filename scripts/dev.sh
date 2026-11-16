@@ -2,11 +2,12 @@
 # Kesiv local development stack — hot reload, mock data, everything on 127.0.0.1.
 #
 #   scripts/dev.sh setup     one-time: Python 3.12 venv (uv), backend[dev], pnpm install, keys + env
-#   scripts/dev.sh up        start PG + Redis (Docker), migrate, seed, API, delivery, mockpay, web, admin
-#   scripts/dev.sh up api    start only some processes (api|delivery|mockpay|web|admin), deps implied
+#   scripts/dev.sh up        start PG + Redis (Docker), migrate, seed, API, delivery, mockpay, procurement,
+#                            mockzovo (ZovoCard simulator, scenario plans scn_*), web, admin
+#   scripts/dev.sh up api    start only some processes (api|delivery|mockpay|procurement|mockzovo|web|admin)
 #   scripts/dev.sh down      stop all processes (containers too with --all)
 #   scripts/dev.sh status    process / port / memory overview
-#   scripts/dev.sh logs X    tail a process log (api|delivery|mockpay|web|admin)
+#   scripts/dev.sh logs X    tail a process log (api|delivery|mockpay|procurement|mockzovo|web|admin)
 #   scripts/dev.sh restart X restart one process (delivery/mockpay have no hot reload of their own)
 #   scripts/dev.sh test      backend tests against the dev containers (own DB), frontend checks
 #   scripts/dev.sh check     fast loop: lint + only the tests/apps this branch touches (CI runs all)
@@ -36,9 +37,11 @@ REDIS_PORT="${DEV_REDIS_PORT:-56390}"
 API_PORT=18000
 DELIVERY_PORT=18001
 MOCKPAY_PORT=18002
+PROCUREMENT_PORT=18004
+MOCKZOVO_PORT=18005
 WEB_PORT=5173
 ADMIN_PORT=5174
-ALL_PROCS=(api delivery mockpay web admin)
+ALL_PROCS=(api delivery mockpay procurement mockzovo web admin)
 
 c_ok() { printf '\033[32m%s\033[0m\n' "$*"; }
 c_warn() { printf '\033[33m%s\033[0m\n' "$*" >&2; }
@@ -153,8 +156,60 @@ APP_MOCKPAY_PORT=$MOCKPAY_PORT
 APP_MOCKPAY_NOTIFY_BASE=http://127.0.0.1:$API_PORT
 APP_HEALTH_PORT=$MOCKPAY_PORT
 EOF
+  write_procurement_env
   chmod 600 "$DEV/.secrets" "$ENVD"/*.env "$KEYS"/*
   mkdir -p "$DEV/uploads"
+}
+
+# Procurement + the ZovoCard simulator (review-v12 M2). Idempotent: also called by `up` for dev
+# directories created before procurement existed (adds only what is missing).
+write_procurement_env() {
+  # shellcheck disable=SC1091
+  source "$KEYS/secrets.env"
+  local app_owner redis_pw pg redis token db_proc whsec
+  app_owner=$(secret APP_OWNER_PASSWORD); redis_pw=$(secret REDIS_PASSWORD)
+  pg="127.0.0.1:$PG_PORT/goods24"; redis="redis://default:$redis_pw@127.0.0.1:$REDIS_PORT"
+  if [[ -f "$ENVD/procurement.env" ]]; then
+    token=$(grep ^APP_PROCUREMENT_TOKEN= "$ENVD/procurement.env" | cut -d= -f2-)
+    db_proc=$(grep ^APP_DB_PROCUREMENT_PASSWORD= "$ENVD/migrate.env" | cut -d= -f2-)
+    whsec=$(grep ^APP_ZOVOCARD_SANDBOX_WEBHOOK_SECRET= "$ENVD/api.env" | cut -d= -f2-)
+  fi
+  token=${token:-$(rnd 32)}; db_proc=${db_proc:-$(rnd)}; whsec=${whsec:-whsec_dev_$(rnd 24)}
+  grep -q ^APP_DB_PROCUREMENT_PASSWORD= "$ENVD/migrate.env" \
+    || echo "APP_DB_PROCUREMENT_PASSWORD=$db_proc" >> "$ENVD/migrate.env"
+  grep -q ^APP_PROCUREMENT_URL= "$ENVD/api.env" || cat >> "$ENVD/api.env" <<EOF
+# review-v12: staff actions + "Test connection" call procurement; the webhook secret verifies
+# supplier events (the mock supplier is signed with the same value by e2e/smoke.py)
+APP_PROCUREMENT_URL=http://127.0.0.1:$PROCUREMENT_PORT
+APP_PROCUREMENT_TOKEN=$token
+APP_ZOVOCARD_SANDBOX_WEBHOOK_SECRET=$whsec
+EOF
+  grep -q ^APP_ZOVOCARD_SANDBOX_WEBHOOK_SECRET= "$ENVD/seed.env" \
+    || echo "APP_ZOVOCARD_SANDBOX_WEBHOOK_SECRET=$whsec" >> "$ENVD/seed.env"
+  [[ -f "$ENVD/procurement.env" ]] || cat > "$ENVD/procurement.env" <<EOF
+APP_ENV=dev
+APP_PROCUREMENT_DATABASE_URL=postgresql+asyncpg://app_procurement:$db_proc@$pg
+APP_REDIS_URL=$redis/0
+APP_PROCUREMENT_TOKEN=$token
+APP_PROCUREMENT_HOST=127.0.0.1
+APP_PROCUREMENT_PORT=$PROCUREMENT_PORT
+APP_HEALTH_PORT=$PROCUREMENT_PORT
+APP_VAULT_PUBLIC_KEYS_FILE=$KEYS/vault_public_keys.json
+APP_VAULT_ACTIVE_KID=$APP_VAULT_ACTIVE_KID
+APP_VAULT_FINGERPRINT_KEY=$APP_VAULT_FINGERPRINT_KEY
+# the "sandbox" supplier of a dev stack is the ZovoCard simulator (dev/test only)
+ZOVOCARD_SANDBOX_APP_ID=mock
+ZOVOCARD_SANDBOX_APP_SECRET=sk_mock_ok
+ZOVOCARD_SANDBOX_BASE_URL=http://127.0.0.1:$MOCKZOVO_PORT/openapi/v1
+EOF
+  [[ -f "$ENVD/mockzovo.env" ]] || cat > "$ENVD/mockzovo.env" <<EOF
+APP_ENV=dev
+APP_MOCKZOVO_HOST=127.0.0.1
+APP_MOCKZOVO_PORT=$MOCKZOVO_PORT
+APP_MOCKZOVO_SCENARIOS=1
+APP_HEALTH_PORT=$MOCKZOVO_PORT
+EOF
+  chmod 600 "$ENVD/procurement.env" "$ENVD/mockzovo.env" 2>/dev/null || true
 }
 
 # ------------------------------------------------------------------ containers
@@ -203,12 +258,14 @@ migrate_seed() {
   # (app_api / app_delivery too: the test migration creates them with test passwords)
   docker exec "$PG_NAME" psql -U postgres -qtAc \
     "ALTER ROLE app_owner PASSWORD '$(secret APP_OWNER_PASSWORD)'" >/dev/null
+  write_procurement_env
   local r pw
-  for r in app_api:APP_DB_API_PASSWORD app_delivery:APP_DB_DELIVERY_PASSWORD; do
+  for r in app_api:APP_DB_API_PASSWORD app_delivery:APP_DB_DELIVERY_PASSWORD \
+    app_procurement:APP_DB_PROCUREMENT_PASSWORD; do
     pw=$(grep "^${r#*:}=" "$ENVD/migrate.env" | cut -d= -f2-)
     docker exec "$PG_NAME" psql -U postgres -qtAc \
       "DO \$\$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname='${r%%:*}') THEN
-         ALTER ROLE ${r%%:*} PASSWORD '$pw'; END IF; END \$\$" >/dev/null
+         ALTER ROLE ${r%%:*} LOGIN PASSWORD '$pw'; END IF; END \$\$" >/dev/null
   done
   echo "migrate…"; with_env "$ENVD/migrate.env" "$PY" -m alembic upgrade head >"$LOGS/migrate.log" 2>&1 \
     || { tail -20 "$LOGS/migrate.log"; die "migration failed"; }
@@ -238,12 +295,20 @@ start_proc() {
       with_env "$ENVD/mockpay.env" "$VENV/bin/watchfiles" --filter python \
         "$PY -m app.devtools.mock_zpay" app/devtools app/payments >>"$log" 2>&1 &
       ;;
+    procurement)
+      with_env "$ENVD/procurement.env" "$VENV/bin/watchfiles" --filter python \
+        "$PY -m app.procurement" app >>"$log" 2>&1 &
+      ;;
+    mockzovo) # dev/test only: refuses to start unless APP_ENV=dev|test
+      with_env "$ENVD/mockzovo.env" "$VENV/bin/watchfiles" --filter python \
+        "$PY -m app.devtools.mock_zovocard" app/devtools >>"$log" 2>&1 &
+      ;;
     web | admin)
       (cd "$ROOT/frontend" && VITE_BACKEND="http://127.0.0.1:$API_PORT" \
         VITE_MOCKPAY="http://127.0.0.1:$MOCKPAY_PORT" NODE_OPTIONS=--max-old-space-size=512 \
         exec pnpm --filter "@24goods/$name" exec vite --host 127.0.0.1) >>"$log" 2>&1 &
       ;;
-    *) die "unknown process '$name' (api|delivery|mockpay|web|admin)" ;;
+    *) die "unknown process '$name' (api|delivery|mockpay|procurement|mockzovo|web|admin)" ;;
   esac
   echo $! >"$(pidfile "$name")"
 }
@@ -262,6 +327,7 @@ stop_proc() {
 
 port_of() {
   case "$1" in api) echo $API_PORT ;; delivery) echo $DELIVERY_PORT ;; mockpay) echo $MOCKPAY_PORT ;;
+    procurement) echo $PROCUREMENT_PORT ;; mockzovo) echo $MOCKZOVO_PORT ;;
     web) echo $WEB_PORT ;; admin) echo $ADMIN_PORT ;; esac
 }
 

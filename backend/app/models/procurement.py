@@ -41,6 +41,10 @@ class SupplierAccount(Base):
     last_probe_at: Mapped[datetime | None]
     last_balance: Mapped[Decimal | None] = mapped_column(AMOUNT)
     last_balance_at: Mapped[datetime | None]
+    breaker_open: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    breaker_reason: Mapped[str | None] = mapped_column(String(64))
+    breaker_at: Mapped[datetime | None]
+    breaker_kind: Mapped[str | None] = mapped_column(String(8))  # hard | balance
     created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[datetime] = created_at()
     updated_at: Mapped[datetime] = updated_at()
@@ -62,6 +66,8 @@ class SupplierOffer(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     last_check_ok: Mapped[bool | None] = mapped_column(Boolean)
     last_check_at: Mapped[datetime | None]
+    # 0027: the supplier named a redemption cost for this offer (the breaker may reserve it)
+    cost_known: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     created_at: Mapped[datetime] = created_at()
     updated_at: Mapped[datetime] = updated_at()
 
@@ -90,6 +96,16 @@ class ProcurementJob(Base):
     currency: Mapped[str | None] = mapped_column(String(3))
     card_stock_ids: Mapped[list[uuid.UUID]] = mapped_column(ARRAY(UUID(as_uuid=True)), default=list)
     manual_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))
+    tried_offer_ids: Mapped[list[uuid.UUID]] = mapped_column(
+        ARRAY(UUID(as_uuid=True)), default=list
+    )
+    upstream_status: Mapped[str | None] = mapped_column(String(32))
+    alerted_at: Mapped[datetime | None]
+    # 0027: send tracking (see the migration docstring)
+    maybe_sent: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    recover: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    lease_until: Mapped[datetime | None]
+    first_sent_at: Mapped[datetime | None]
     created_at: Mapped[datetime] = created_at()
     updated_at: Mapped[datetime] = updated_at()
 
@@ -123,5 +139,7 @@ class SupplierLedgerEntry(Base):
     currency: Mapped[str] = mapped_column(String(3))
     balance_after: Mapped[Decimal | None] = mapped_column(AMOUNT)
     job_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("procurement_jobs.id"))
+    ref_id: Mapped[str | None] = mapped_column(String(64))
+    card_mask: Mapped[str | None] = mapped_column(String(24))
     occurred_at: Mapped[datetime]
     created_at: Mapped[datetime] = created_at()

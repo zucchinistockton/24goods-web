@@ -77,6 +77,7 @@ DB_API_PW=$(rnd); DB_DELIVERY_PW=$(rnd); DB_PROCUREMENT_PW=$(rnd)
 R_API=$(rnd); R_DELIVERY=$(rnd); R_MOCK=$(rnd); R_HEALTH=$(rnd); R_PROCUREMENT=$(rnd)
 PROCUREMENT_TOKEN=$(rnd 32)   # api -> procurement internal API (distinct from the delivery token)
 ZPAY_KEY=$(rnd 16)
+ZOVO_WEBHOOK_SECRET="whsec_demo_$(rnd 24)"   # demo/CI only: the E2E smoke signs mock-supplier events with it
 BEPUSDT_TOKEN=$(rnd 16)   # demo: shared with the simulator; prod: copy the real token from the BEpusdt console
 # proof-of-work signing key + order access-code HMAC key (base64, 32 random bytes each)
 APP_POW_KEY=$(head -c 32 /dev/urandom | base64 | tr -d '\n')
@@ -92,7 +93,7 @@ user default off
 user health on #$(sha "$R_HEALTH") resetkeys resetchannels -@all +@connection
 user api on #$(sha "$R_API") ~* &* +@all -@dangerous
 user delivery on #$(sha "$R_DELIVERY") ~rl:* ~reveal:* resetchannels &rt:* -@all +@connection +get +set +incr +incrby +decrby +expire +ttl +multi +exec +discard +publish +eval +evalsha
-user procurement on #$(sha "$R_PROCUREMENT") ~rl:proc:* resetchannels -@all +@connection +get +incr +expire +ttl +multi +exec +discard
+user procurement on #$(sha "$R_PROCUREMENT") ~rl:proc:* resetchannels -@all +@connection +get +incr +incrby +expire +ttl +multi +exec +discard
 EOF
 if [[ "$MODE" == "demo" ]]; then
   echo "user mockpay on #$(sha "$R_MOCK") ~mockpay:* resetchannels -@all +@connection +get +set +del +expire +exists +ttl" >> secrets/users.acl
@@ -139,6 +140,8 @@ APP_SEED_ADMIN_EMAIL=$ADMIN_EMAIL
 EOF
 if [[ "$MODE" == "demo" ]]; then
   printf 'APP_SEED_AGENT_PASSWORD=%s\nAPP_SEED_BUYER_PASSWORD=%s\n' "$AGENT_PW" "$BUYER_PW" >> env/seed.env
+  # read by e2e/smoke.py to sign mock-supplier webhook events (same value as in api.env)
+  echo "APP_ZOVOCARD_SANDBOX_WEBHOOK_SECRET=$ZOVO_WEBHOOK_SECRET" >> env/seed.env
 fi
 
 cat > env/api.env <<EOF
@@ -178,6 +181,7 @@ APP_ZPAY_API_BASE=http://mockpay:8002
 APP_BEPUSDT_URL=http://mockusdt:8003
 APP_BEPUSDT_API_TOKEN=$BEPUSDT_TOKEN
 APP_BEPUSDT_SIM_URL=/mockusdt/pay
+APP_ZOVOCARD_SANDBOX_WEBHOOK_SECRET=$ZOVO_WEBHOOK_SECRET
 # demo/CI: mock money, one shared address for testers and the E2E smoke -> looser order throttles
 APP_ORDER_CREATE_PER_USER=30
 APP_ORDER_CREATE_PER_IP=300
@@ -209,6 +213,8 @@ EOF
 #   ZOVOCARD_SANDBOX_APP_SECRET=sk_...   (key from the vendor's sandbox portal)
 # Production supplier keys stay out until the security review (AGENTS.md §1.11), and
 # APP_PROCUREMENT_ALLOW_PRODUCTION_WRITES is never set here.
+ZOVO_SANDBOX_ID=""; ZOVO_SANDBOX_SECRET=""
+if [[ "$MODE" == "demo" ]]; then ZOVO_SANDBOX_ID=mock; ZOVO_SANDBOX_SECRET=sk_mock_ok; fi
 cat > env/procurement.env <<EOF
 APP_ENV=$APP_ENV_NAME
 APP_PROCUREMENT_DATABASE_URL=postgresql+asyncpg://app_procurement:$DB_PROCUREMENT_PW@$PG
@@ -218,9 +224,15 @@ APP_PROCUREMENT_HOST=0.0.0.0
 APP_PROCUREMENT_PORT=8004
 APP_HEALTH_PORT=8004
 APP_VAULT_PUBLIC_KEYS_FILE=/run/secrets/vault_public_keys
-ZOVOCARD_SANDBOX_APP_ID=
-ZOVOCARD_SANDBOX_APP_SECRET=
+APP_VAULT_ACTIVE_KID=$APP_VAULT_ACTIVE_KID
+APP_VAULT_FINGERPRINT_KEY=$APP_VAULT_FINGERPRINT_KEY
+ZOVOCARD_SANDBOX_APP_ID=$ZOVO_SANDBOX_ID
+ZOVOCARD_SANDBOX_APP_SECRET=$ZOVO_SANDBOX_SECRET
 EOF
+if [[ "$MODE" == "demo" ]]; then
+  # demo/CI only: the "sandbox" supplier is the simulator (prod mode never writes these)
+  echo "ZOVOCARD_SANDBOX_BASE_URL=http://mockzovo:8005/openapi/v1" >> env/procurement.env
+fi
 
 if [[ "$MODE" == "prod" ]]; then
   # Settings' prod guard applies to every process that loads app.core.config
@@ -237,6 +249,13 @@ APP_MOCKPAY_HOST=0.0.0.0
 APP_MOCKPAY_PORT=8002
 APP_MOCKPAY_NOTIFY_BASE=http://api:8000
 APP_HEALTH_PORT=8002
+EOF
+cat > env/mockzovo.env <<EOF
+APP_ENV=$APP_ENV_NAME
+APP_MOCKZOVO_HOST=0.0.0.0
+APP_MOCKZOVO_PORT=8005
+APP_MOCKZOVO_SCENARIOS=$([[ "$MODE" == "demo" ]] && echo 1 || echo 0)
+APP_HEALTH_PORT=8005
 EOF
 cat > env/mockusdt.env <<EOF
 APP_ENV=$APP_ENV_NAME

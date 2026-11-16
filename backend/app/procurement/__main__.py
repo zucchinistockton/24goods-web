@@ -4,7 +4,7 @@
 runs one read-only probe with the secrets in the environment (no database needed) and prints a
 redacted JSON report: no secret, no response body. Exit code 0 when the probe is green.
 
-M1 scope (review-v12 §10): no order ever reaches a supplier from this process.
+M2: also runs the upstream_cdk engine (app/procurement/engine.py).
 """
 
 from __future__ import annotations
@@ -33,16 +33,29 @@ async def _serve(settings: ProcurementSettings) -> None:
     from app.core.memtrim import trim
     from app.core.redis import make_redis
     from app.procurement.context import ProcurementContext
+    from app.procurement.engine import run_engine
     from app.procurement.internal import create_procurement_app
+    from app.procurement.keys import SealerConfigError, build_sealer
     from app.procurement.service import run_loop
 
     if len(settings.procurement_token) < 32:
         raise SystemExit("APP_PROCUREMENT_TOKEN (>= 32 chars) is required")
-    engine = make_engine(settings.procurement_database_url, pool_size=2, max_overflow=2)
+    try:
+        sealer = build_sealer(
+            public_keys_file=settings.vault_public_keys_file,
+            active_kid=settings.vault_active_kid,
+            fp_key=settings.vault_fingerprint_key,
+        )
+    except SealerConfigError as exc:
+        raise SystemExit(f"procurement cannot seal: {exc}") from None
+    engine = make_engine(settings.procurement_database_url, pool_size=3, max_overflow=2)
     redis = make_redis(settings.redis_url)
-    ctx = ProcurementContext(settings, make_sessionmaker(engine), redis, environ=os.environ)
+    ctx = ProcurementContext(
+        settings, make_sessionmaker(engine), redis, environ=os.environ, sealer=sealer
+    )
     stop = asyncio.Event()
     loop_task = asyncio.create_task(run_loop(ctx, stop), name="supplier-health")
+    engine_task = asyncio.create_task(run_engine(ctx, stop), name="procurement-engine")
     server = uvicorn.Server(
         uvicorn.Config(
             create_procurement_app(ctx),
@@ -63,9 +76,13 @@ async def _serve(settings: ProcurementSettings) -> None:
         await server.serve()
     finally:
         stop.set()
-        loop_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await loop_task
+        for task in (loop_task, engine_task):
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        for sup in ctx.suppliers.values():
+            with contextlib.suppress(Exception):
+                await sup.aclose()
         await redis.aclose()
         await engine.dispose()
 

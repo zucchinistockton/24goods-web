@@ -19,6 +19,8 @@ from app.core.errors import NotFound, OutOfStock, Validation
 from app.core.i18n import pick
 from app.core.money import fmt
 from app.models import CardStock, Product, ProductVariant
+from app.modules.catalog import upstream
+from app.modules.common.modes import STOCKED_MODES, UPSTREAM_MODES
 from app.modules.common.sitedefaults import resolve_after_sales_hours, resolve_after_sales_months
 from app.modules.reseller.pricing import Pricer
 
@@ -169,8 +171,23 @@ def effective_terms(p: Product, v: ProductVariant | None) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- views
+async def stocked_counts(
+    db: AsyncSession, tenant_id: uuid.UUID, items: Iterable[tuple[Product, list[ProductVariant]]]
+) -> dict[uuid.UUID, int]:
+    """Per-variant numeric stock: pool cards (auto_card) or supplier availability
+    (upstream_cdk, review-v12). Manual variants use ``manual_stock`` instead."""
+    pairs = list(items)
+    out = await card_counts(
+        db, tenant_id, [v.id for p, vs in pairs if p.delivery_mode == "auto_card" for v in vs]
+    )
+    up = [v.id for p, vs in pairs if p.delivery_mode in UPSTREAM_MODES for v in vs]
+    if up:
+        out.update(await upstream.variant_stock(db, up))
+    return out
+
+
 def variant_stock(p: Product, v: ProductVariant, cards: dict[uuid.UUID, int]) -> int | None:
-    if p.delivery_mode == "auto_card":
+    if p.delivery_mode in STOCKED_MODES:
         return cards.get(v.id, 0)
     return v.manual_stock  # None = unlimited
 
@@ -213,8 +230,7 @@ async def decorate(
     if not items:
         return
     by_product = await variants_for(db, tenant_id, [p.id for p, _ in items])
-    auto_ids = [v.id for p, _ in items if p.delivery_mode == "auto_card" for v in by_product[p.id]]
-    cards = await card_counts(db, tenant_id, auto_ids)
+    cards = await stocked_counts(db, tenant_id, [(p, by_product[p.id]) for p, _ in items])
     for p, out in items:
         vs = by_product[p.id]
         out["has_variants"] = bool(vs)
@@ -226,7 +242,7 @@ async def decorate(
         )
         out["price_from"] = len({v.price_minor for v in vs}) > 1
         stocks = [variant_stock(p, v, cards) for v in vs]
-        if p.delivery_mode in ("manual", "auto_card"):
+        if p.delivery_mode in ("manual", *STOCKED_MODES):
             out["stock"] = None if any(s is None for s in stocks) else sum(s for s in stocks if s)
 
 

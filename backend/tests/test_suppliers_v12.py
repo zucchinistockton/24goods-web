@@ -80,6 +80,7 @@ EXPECTED: dict[tuple[int | None, str | None], tuple[Outcome, bool]] = {
     (None, "GPT_RENEW_TARGET_NOT_PRO"): (Outcome.FATAL, False),
     (None, "GPT_RENEW_SUBSCRIPTION_EXPIRED"): (Outcome.FATAL, False),
     (None, "GPT_PREFLIGHT_RATE_LIMITED"): (Outcome.RETRYABLE, False),
+    (None, "IDEMPOTENCY_CONFLICT"): (Outcome.FATAL, False),  # payment audit L7
     (None, "CDK_DISABLE_REJECTED"): (Outcome.FATAL, False),
     (None, "API_SCOPE_UNAVAILABLE"): (Outcome.UNAVAILABLE, True),
     (None, "ORDER_NOT_FOUND"): (Outcome.FATAL, False),
@@ -112,6 +113,7 @@ STATUS_FOR = {
     "product_approval_required": 403,
     "ACCOUNT_UNAVAILABLE": 401,
     "product_policy_outdated": 409,
+    "IDEMPOTENCY_CONFLICT": 409,
     "CDK_DISABLE_REJECTED": 409,
     "GPT_PREFLIGHT_RATE_LIMITED": 429,
     "ORDER_NOT_FOUND": 404,
@@ -129,6 +131,8 @@ def test_error_table_row(key, write):
     outcome, stop = EXPECTED[key]
     if write:
         outcome = WRITE_OUTCOME.get(key, outcome)
+        if key == (None, "request_failed"):
+            stop = False  # a write never stops the whole supplier (payment audit H2)
     status = status if status is not None else STATUS_FOR.get(code or "", 400)
     rule = classify(status, code, write=write)
     assert (rule.outcome, rule.supplier_stop) == (outcome, stop)
@@ -141,7 +145,7 @@ def test_server_errors_and_catch_all_are_ambiguous_on_writes():
     assert classify(500, "internal_error", write=True).outcome is Outcome.AMBIGUOUS
     assert classify(500, "internal_error", write=False).outcome is Outcome.RETRYABLE
     rf = classify(400, "request_failed", write=True)
-    assert rf.outcome is Outcome.AMBIGUOUS and rf.supplier_stop is True
+    assert rf.outcome is Outcome.AMBIGUOUS and rf.supplier_stop is False
     rf = classify(400, "request_failed", write=False)
     assert rf.outcome is Outcome.UNAVAILABLE and rf.supplier_stop is True
     # definite "no charge" codes stay UNAVAILABLE on writes (vendor §3 / A.2)
@@ -579,16 +583,6 @@ async def test_availability_via_adapter():
     assert not (await s.availability(OfferSpec("cdk", {"product": "grok", "plan": "x"}))).available
     assert not (await s.availability(OfferSpec("vcc", {}))).available
     assert not (await s.availability(OfferSpec("cdk", {"product": "x", "plan": "a"}))).available
-
-
-async def test_writes_not_implemented_in_m1():
-    s = _supplier()
-    job = JobSpec("j", "submit", "pj:j:submit", OfferSpec("cdk", {"plan": "plus"}))
-    for op in (s.submit, s.query, s.void):
-        with pytest.raises(NotImplementedError):
-            await op(job)
-    with pytest.raises(NotImplementedError):
-        s.verify_webhook(b"{}", {})
 
 
 # ---------------------------------------------------------------- mock / manual suppliers

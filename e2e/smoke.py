@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import hmac
+import json
 import re
 import sys
 import time
@@ -505,6 +507,154 @@ def v5_commerce(base: str, anon: Client, admin: Client, manual: dict) -> None:
     step("v5 reseller: sign-up paid -> active -> storefront order has markup")
 
 
+def webhook_post(base: str, body: dict, secret: str, *, sig: str | None = None,
+                 tamper: bool = False) -> httpx.Response:
+    """POST a supplier event to the real webhook endpoint (no session, no CSRF header)."""
+    raw = json.dumps(body).encode()
+    signature = sig or hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
+    if tamper:
+        raw += b" "
+    return httpx.post(f"{base}{API}/webhooks/zovocard", content=raw, timeout=15,
+                      headers={"X-Signature": signature, "Content-Type": "application/json"})
+
+
+def wait_for(fn, what: str, timeout: float = 60):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        got = fn()
+        if got:
+            return got
+        time.sleep(1)
+    fail(f"timed out waiting for {what}")
+
+
+def v12_procurement(base: str, admin: Client, category: str, env: dict) -> None:
+    """review-v12 M2 exit: an upstream_cdk order through the ZovoCard simulator (scenario plans)
+    covering timeout-after-send, 409, 202 and a 503 failover, then a duplicate webhook and a
+    forged signature. Needs the demo stack (procurement + mockzovo); skipped without them."""
+    secret = env.get("APP_ZOVOCARD_SANDBOX_WEBHOOK_SECRET")
+    if not secret:
+        print("- procurement scenarios skipped (no webhook secret in the seed env)")
+        return
+    buyer = Client(base)  # a fresh buyer: the order throttles of the earlier steps do not apply
+    buyer.j("POST", "auth/register", json={"email": f"v12-{uuid.uuid4().hex[:8]}@demo.local",
+                                          "password": "correct-horse-battery", "display_name": "V12",
+                                          "locale": "en", "pow": solve_pow(buyer, "register")})
+    # ---- the supplier: reuse the sandbox account if an earlier run created it
+    sups = admin.j("GET", "admin/suppliers")["items"]
+    sup = next((x for x in sups if x["code"] == "zovocard" and x["env"] == "sandbox"), None)
+    if sup is None:
+        sup = admin.j("POST", "admin/suppliers", expect=201,
+                      json={"code": "zovocard", "adapter": "zovocard", "label": "ZovoCard (mock)",
+                            "env": "sandbox", "enabled": True})
+    elif not sup["enabled"]:
+        sup = admin.j("PATCH", f"admin/suppliers/{sup['id']}", json={"enabled": True})
+    probe = admin.j("POST", f"admin/suppliers/{sup['id']}/probe")
+    check(probe["report"]["ok"], f"mock supplier probe failed: {probe['report']}")
+    step("supplier: sandbox account probed green against the simulator")
+
+    tag = uuid.uuid4().hex[:6]
+
+    def product(name: str) -> dict:
+        return admin.j("POST", "admin/products", json={
+            "title_i18n": {"en": f"CDK {name} {tag}", "zh-CN": f"CDK {name} {tag}"},
+            "price": "5.00", "floor_price": "0", "currency": "CNY",
+            "delivery_mode": "upstream_cdk", "category": category, "status": "active"})
+
+    def source(prod: dict, plan: str, priority: int = 10) -> dict:
+        src = admin.j("POST", "admin/procurement/sources", expect=201, json={
+            "product_id": prod["id"], "supplier_id": sup["id"], "params": {"plan": plan},
+            "cost_estimate": "0.15", "priority": priority, "enabled": True})
+        chk = admin.j("POST", f"admin/procurement/sources/{src['id']}/check")
+        check(chk["available"], f"source {plan} not available: {chk}")
+        return src
+
+    scenarios = {"scn_lost": "timeout after send", "scn_409": "409 still processing",
+                 "scn_202": "202 accepted"}
+    orders: dict[str, dict] = {}
+    for plan, label in scenarios.items():
+        p = product(plan)
+        source(p, plan)
+        o = buyer.j("POST", "orders", json={"product_id": p["id"], "qty": 1})
+        pay_with_simulator(buyer, o["id"])
+        orders[plan] = o
+    p503 = product("scn_503")
+    s503 = source(p503, "scn_503", 10)
+    s_ok = source(p503, "plus", 20)
+    o503 = buyer.j("POST", "orders", json={"product_id": p503["id"], "qty": 1})
+    pay_with_simulator(buyer, o503["id"])
+    orders["scn_503"] = o503
+
+    for plan, o in orders.items():
+        done = wait_status(buyer, o["id"], {"delivered", "manual_review"}, timeout=180)
+        check(done["status"] == "delivered", f"{plan}: order ended in {done['status']}")
+        secrets = buyer.req("POST", f"orders/{o['id']}/reveal").json()["secrets"]
+        check(len(secrets) == 1 and secrets[0].startswith("MOCKPLUS-"), f"{plan}: bad code")
+        jobs = admin.j("GET", "admin/procurement/jobs", params={"order_id": o["id"]})["items"]
+        check(len(jobs) == 1 and jobs[0]["state"] == "fulfilled", f"{plan}: job {jobs}")
+        o["job_id"] = jobs[0]["id"]
+        o["secret"] = secrets[0]
+    check(len({o["secret"] for o in orders.values()}) == 4, "every order needs its own code")
+    for plan, label in scenarios.items():
+        step(f"procurement {label}: delivered exactly one code after a same-key replay")
+    detail = admin.j("GET", f"admin/procurement/jobs/{orders['scn_503']['job_id']}")
+    check(detail["offer_id"] == s_ok["id"] and detail["offer_id"] != s503["id"],
+          "503 must fail over to the next source")
+    check(any((t["reason"] or "").startswith("failover") for t in detail["timeline"]),
+          "failover missing from the job timeline")
+    check(all("MOCKPLUS-" not in json.dumps(admin.j("GET", f"admin/procurement/jobs/{o['job_id']}"))
+              for o in orders.values()), "a code leaked into the admin job view")
+    step("procurement 503: failed over to the next source, nothing charged at the first")
+
+    # ---- webhooks: duplicate delivery is stored once, a forged signature is refused
+    def received() -> int:
+        page = admin.j("GET", "admin/audit", params={"action": "supplier.webhook_received",
+                                                      "page_size": 100})
+        return page["total"]
+
+    job = admin.j("GET", f"admin/procurement/jobs/{orders['scn_lost']['job_id']}")
+    ev = {"type": "cdk.consumed", "event_id": f"e2e:{uuid.uuid4().hex}", "cdk_id": job["upstream_ref"],
+          "cdk_status": "consumed", "plan": "scn_lost"}
+    before = received()
+    check(webhook_post(base, ev, secret).status_code == 200, "signed webhook must be accepted")
+    check(received() == before + 1, "first delivery must be stored")
+    check(webhook_post(base, ev, secret).status_code == 200, "duplicate must still answer 200")
+    check(received() == before + 1, "a duplicate delivery must not be stored again")
+    wait_for(lambda: admin.j("GET", f"admin/procurement/jobs/{job['id']}")["upstream_status"] == "consumed",
+             "the webhook to reach the job (re-queried, never trusted blindly)")
+    check(admin.j("GET", f"admin/procurement/jobs/{job['id']}")["state"] == "fulfilled",
+          "a webhook must never change a fulfilled job")
+    step("webhook: duplicate stored once, consumed status reached the job")
+
+    def ledger_rows() -> int:
+        rows = admin.j("GET", "admin/procurement/cost/summary", params={"group": "type"})["items"]
+        return sum(r["count"] for r in rows if r["key"] == "gpt_direct_cdk")
+
+    bc = {"event": "balance_change", "balance_log_id": int(time.time()), "type": "gpt_direct_cdk",
+          "amount": -5.5, "direction": "debit", "currency": "USD", "balance_after": 6.84,
+          "card_number": "4147000000005678", "remark": "card 4147000000005678",
+          "occurred_at": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())}
+    ledger_before = ledger_rows()
+    check(webhook_post(base, bc, secret).status_code == 200, "balance_change must be accepted")
+    check(webhook_post(base, bc, secret).status_code == 200, "duplicate balance_change must be 200")
+
+    wait_for(lambda: ledger_rows() > ledger_before, "the balance_change to reach the cost ledger")
+    time.sleep(3)
+    check(ledger_rows() == ledger_before + 1, "a duplicate balance_change must be booked once")
+    export = admin.req("GET", "admin/procurement/cost/export.csv")
+    check("4147000000005678" not in export.text, "a full card number reached the CSV export")
+    step("cost ledger: balance_change booked once, card number never stored")
+
+    stored = received()
+    forged = webhook_post(base, ev | {"event_id": "e2e:forged"}, secret, sig="0" * 64)
+    tampered = webhook_post(base, ev | {"event_id": "e2e:tampered"}, secret, tamper=True)
+    wrong = webhook_post(base, ev | {"event_id": "e2e:wrong"}, "whsec_not_the_secret")
+    check(all(r.status_code == 401 and r.content == b"" for r in (forged, tampered, wrong)),
+          "forged / tampered / wrongly signed webhooks must be refused with an empty 401")
+    check(received() == stored, "a refused webhook must not be stored")
+    step("webhook: forged, tampered and wrongly signed events refused (401, nothing stored)")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", required=True)
@@ -649,6 +799,7 @@ def main() -> None:
     v3_file_message(buyer, agent, conv)
     v4_commerce(base, anon, buyer, agent, admin, auto, manual, conv)
     v5_commerce(base, anon, admin, manual)
+    v12_procurement(base, admin, auto["category"], env)
 
     # ---- ledger balance -------------------------------------------------------------
     rows, page = [], 1

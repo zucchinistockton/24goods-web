@@ -30,6 +30,7 @@ from app.models import (
 )
 from app.modules.aftersales.schemas import ActionIn, OpenIn
 from app.modules.chat.messages import post_system
+from app.modules.common.modes import UPSTREAM_MODES
 from app.modules.common.orderviews import REFUND_PREFIX
 from app.modules.common.sitedefaults import AFTER_SALES_REOPEN_EXTENSION
 from app.modules.common.views import after_sales_view, iso
@@ -39,6 +40,7 @@ from app.modules.orders.service import get_owned, release_manual_stock
 from app.modules.payments.ledger import Line, post_txn
 from app.modules.payments.settle import payment_for_order, payment_lines
 from app.payments.zpay import CHANNEL
+from app.procurement.engine import close_order_jobs
 
 ELIGIBLE = ("delivered", "completed")
 # From the Nth replacement on (3rd), replacing needs an admin (agents can't loop replacements).
@@ -313,6 +315,13 @@ async def act(
             t.status = "replaced"
             detail["delivery_text_chars"] = len(text)
             event = "after_sales_replaced"
+        elif order.delivery_mode in UPSTREAM_MODES:
+            # a supplier code cannot be swapped from the local pool (review-v12): staff refund
+            # or deliver by hand; procurement-side replacement is not built
+            raise InvalidState(
+                "Supplier-sourced codes cannot be replaced automatically; refund instead",
+                code="replace_not_supported",
+            )
         else:
             live = set(
                 await db.scalars(
@@ -445,6 +454,11 @@ async def refund_order(
         if not reverse_ledger and (pay is None or pay.status != "succeeded"):
             raise InvalidState("No recorded payment for this order; cancel it instead")
         await release_manual_stock(db, order.tenant_id, [order])  # undelivered: stock goes back
+    # an upstream order: its open procurement jobs end here (never sent -> failed; a job that may
+    # have reached the supplier is recovered and its code disabled, never silently dropped)
+    await close_order_jobs(
+        db, order, actor_id=staff.id, actor_role=staff.role, ip=ip, reason="order_refunded"
+    )
     order.status = "refunded"
     order.version += 1
     await add_event(

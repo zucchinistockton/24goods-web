@@ -32,6 +32,7 @@ from app.core.errors import (
 )
 from app.core.ratelimit import enforce
 from app.core.resources import Resources
+from app.core.security import verify_password
 from app.models import SupplierAccount, Tenant, User
 from app.modules.admin.payment_gateways import session_admin
 from app.suppliers.base import clean_detail, supplier_code_problem
@@ -52,6 +53,8 @@ class SupplierIn(BaseModel):
     priority: int = Field(default=100, ge=0, le=10000)
     min_spendable: str = Field(default="0", pattern=AMOUNT_RE)
     enabled: bool = False
+    # required when env=production (review-v12 §10 M2); ignored for sandbox
+    current_password: str | None = Field(default=None, min_length=1, max_length=128, repr=False)
 
 
 class SupplierPatch(BaseModel):
@@ -60,6 +63,7 @@ class SupplierPatch(BaseModel):
     priority: int | None = Field(default=None, ge=0, le=10000)
     min_spendable: str | None = Field(default=None, pattern=AMOUNT_RE)
     enabled: bool | None = None
+    current_password: str | None = Field(default=None, min_length=1, max_length=128, repr=False)
 
 
 def _iso(v: Any) -> str | None:
@@ -82,6 +86,10 @@ def _view(r: SupplierAccount) -> dict[str, Any]:
         "priority": r.priority,
         "min_spendable": _dec(r.min_spendable),
         "currency": r.currency,
+        "breaker_open": r.breaker_open,
+        "breaker_kind": r.breaker_kind,
+        "breaker_reason": r.breaker_reason,
+        "breaker_at": _iso(r.breaker_at),
         "health": r.health,
         "health_detail": r.health_detail,
         "last_probe_at": _iso(r.last_probe_at),
@@ -123,6 +131,13 @@ def _check_production(res: Resources, env: str, enabled: bool) -> None:
             "Production suppliers stay disabled until the security review",
             code="production_locked",
         )
+
+
+async def _require_password(admin: User, password: str | None) -> None:
+    """Same check and error as payment gateways: fresh proof for anything that points real money
+    at a production vendor account."""
+    if not password or not (await verify_password(admin.pw_hash, password))[0]:
+        raise Forbidden("Current password required")
 
 
 async def _get(db: AsyncSession, tenant_id: uuid.UUID, supplier_id: uuid.UUID) -> SupplierAccount:
@@ -173,6 +188,8 @@ async def create_supplier(
             code="supplier_code",
             extra={"reason": problem},
         )
+    if body.env == "production":
+        await _require_password(admin, body.current_password)
     _check_production(res, body.env, body.enabled)
     row = SupplierAccount(
         id=uuid.uuid4(),
@@ -221,9 +238,14 @@ async def update_supplier(
     row = await _get(db, admin.tenant_id, supplier_id)
     before = _snap(row)
     patch = body.model_dump(exclude_unset=True, exclude_none=True)
+    patch.pop("current_password", None)
     env = patch.get("env", row.env)
     enabled = patch.get("enabled", row.enabled)
     _check_production(res, env, enabled)
+    # fresh proof for every step that points jobs at a production account: the switch to
+    # production AND switching an existing production supplier on
+    if env == "production" and (row.env != "production" or (enabled and not row.enabled)):
+        await _require_password(admin, body.current_password)
     if "label" in patch:
         row.label = patch["label"].strip() or row.code
     if "env" in patch:
@@ -316,3 +338,37 @@ async def probe_supplier(
         .execution_options(populate_existing=True)
     )
     return {"report": report, "supplier": _view(fresh) if fresh is not None else None}
+
+
+@router.post("/{supplier_id}/reset-breaker")
+async def reset_breaker(
+    supplier_id: uuid.UUID,
+    request: Request,
+    admin: User = Depends(platform_admin),
+    db: AsyncSession = Depends(get_db),
+    res: Resources = Depends(get_res),
+) -> dict:
+    """Close a breaker by hand. A hard one (a supplier refusal) only closes this way; a balance
+    one would close by itself and opens again at the next refresh if the balance is still low."""
+    await enforce(res.redis, "supplier:config", str(admin.id), 30, 3600)
+    row = await _get(db, admin.tenant_id, supplier_id)
+    if not row.breaker_open:
+        raise InvalidState("The breaker is not open", code="breaker_closed")
+    before = {"breaker_open": True, "kind": row.breaker_kind, "reason": row.breaker_reason}
+    row.breaker_open, row.breaker_kind = False, None
+    row.breaker_reason, row.breaker_at = None, None
+    await audit(
+        db,
+        tenant_id=admin.tenant_id,
+        action="supplier.breaker_reset",
+        actor_id=admin.id,
+        actor_role=admin.role,
+        target=f"supplier:{row.id}",
+        before=before,
+        after={"breaker_open": False},
+        ip=client_ip(request),
+        severity="warning",
+    )
+    await db.commit()
+    await db.refresh(row)
+    return _view(row)

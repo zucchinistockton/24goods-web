@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ProductThumb } from '@24goods/shared/ui'
-import { moneyParts, formatNumber, type ProductSummary } from '@24goods/shared'
+import { isInstantMode, moneyParts, formatNumber, type ProductSummary } from '@24goods/shared'
 import { isSoldOut } from '../lib/stock'
 
 const props = defineProps<{ product: ProductSummary }>()
@@ -19,7 +19,7 @@ const soldOut = computed(() => isSoldOut(props.product))
     </div>
     <div class="pcard-body">
       <div class="pcard-title">
-        <span :class="product.delivery_mode === 'auto_card' ? 'badge-instant' : 'badge-manual'">{{
+        <span :class="isInstantMode(product.delivery_mode) ? 'badge-instant' : 'badge-manual'">{{
           t(`deliveryMode.${product.delivery_mode}`)
         }}</span>
         {{ product.title }}

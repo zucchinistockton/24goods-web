@@ -76,6 +76,10 @@ TEXTS: dict[str, dict[str, str]] = {
         "job.maybe_undelivered": "Order {order} may be undelivered",
         "pay.stale": "Payment attempt for {no} has been unresolved for 24 h",
         "pay.check_gateway": "Check the gateway console",
+        "proc.job_stuck": "Procurement job {job} is {state} ({code})",
+        "proc.order_waits": "Order {order} waits for a supplier code",
+        "proc.supplier_paused": "Supplier {code} ({env}) is paused for new orders",
+        "proc.pause_reason": "Reason: {reason} ({kind})",
         "reminder.title": "Service expiry reminder",
         "reminder.id": "Notification",
         "reminder.service": "Service",
@@ -110,6 +114,10 @@ TEXTS: dict[str, dict[str, str]] = {
         "job.maybe_undelivered": "订单 {order} 可能未发货",
         "pay.stale": "订单 {no} 的付款已超过 24 小时未确认",
         "pay.check_gateway": "请在支付网关后台核对",
+        "proc.job_stuck": "采购任务 {job} 状态为 {state}（{code}）",
+        "proc.order_waits": "订单 {order} 正在等待供应商发码",
+        "proc.supplier_paused": "供应商 {code}（{env}）已暂停接收新订单",
+        "proc.pause_reason": "原因：{reason}（{kind}）",
         "reminder.title": "服务到期提醒",
         "reminder.id": "通知编号",
         "reminder.service": "服务",
@@ -369,7 +377,7 @@ def _outcome_events(res: Resources, orders: list[Any]) -> None:
             else:
                 mode = T("order.manual" if o.delivery_mode == "manual" else "order.auto")
                 order_event(res, o, "order_paid", [mode] if o.kind == "goods" else [o.kind])
-            if o.delivery_mode != "manual" and o.product_id is not None:
+            if o.delivery_mode == "auto_card" and o.product_id is not None:  # pool only
                 spawn(low_stock_check(res, o.tenant_id, o.product_id, o.qty, o.title))
         elif o.status == "manual_review":
             order_event(res, o, "payment_review")

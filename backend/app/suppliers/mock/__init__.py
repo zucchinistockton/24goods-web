@@ -41,7 +41,9 @@ class MockSupplier:
         purchasable: Iterable[str] = ("plus",),
         outcomes: Iterable[Outcome] = (),
         unit_cost: Decimal = Decimal("1.00"),
+        redemption: Money | None = None,
     ) -> None:
+        self.redemption = redemption
         self.code = code
         self.env = env
         self.spendable = spendable
@@ -71,6 +73,9 @@ class MockSupplier:
 
     async def balance(self) -> Balance:
         return Balance(spendable=self.spendable, currency="USD", total=self.spendable)
+
+    async def redemption_cost(self, offer: OfferSpec) -> Money | None:
+        return self.redemption  # tests: None = "use the offer's configured cost"
 
     async def availability(self, offer: OfferSpec) -> Availability:
         plan = offer.params.get("plan")
@@ -111,9 +116,11 @@ class MockSupplier:
 
     async def void(self, job: JobSpec) -> Result:
         self.calls.append(("void", job.idempotency_key))
-        if self.charged.pop(job.idempotency_key, None) is None:
+        ref = job.upstream_ref or ""
+        issued_key = ref.removeprefix("mock:") if ref.startswith("mock:") else job.idempotency_key
+        if self.charged.pop(issued_key, None) is None:
             return Result(outcome=Outcome.FATAL, error_code="mock_not_found")
-        return Result(outcome=Outcome.OK, upstream_ref="mock:" + job.idempotency_key)
+        return Result(outcome=Outcome.OK, upstream_ref="mock:" + issued_key)
 
     def verify_webhook(self, raw: bytes, headers: Mapping[str, str]) -> list[SupplierEvent]:
         raise WebhookRejected("the mock supplier sends no webhooks")

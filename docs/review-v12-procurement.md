@@ -285,6 +285,54 @@ run `python -m app.procurement probe --supplier zovocard --env sandbox`, then th
 The owner's mainland VPS is a last resort for reaching the sandbox and must not hold a long-lived
 connection; nothing is deployed there (AGENTS.md §1.7).
 
+**Sandbox verification (2026-11-15) [V].** Key in `~/.secrets/zovocard.env` (`ZOVOCARD_SANDBOX_APP_ID` /
+`_APP_SECRET`); the account expires 2026-11-18 10:57. From the dev box (IP allowlist on):
+- `python -m app.procurement probe --supplier zovocard --env sandbox` is green: auth OK, IP allowed, direct and
+  card permissions, 5 purchasable plans, 29 card products, balance 50000 USD. **M1 exit criterion met.**
+- One scripted `upstream_cdk` scenario through `ZovoCardSupplier` (plan `plus`, count 1): `submit` -> OK with
+  one code and an upstream id; **same-key replay returns the same id and the same code** (the idempotency
+  cache works as documented, which is what `query()` relies on); `void` (`/disable`) -> OK; a replay after the
+  void still answers from the cache, so it reports the issue, not the current CDK status.
+- Issue cost is reported as 0.00 USD: the charge happens at redemption, so the breaker reserve needs the
+  per-plan redemption cost (§14.3, still open).
+- Webhook endpoint on the demo (M2 branch deployed there, sandbox signing secret configured): signed event
+  -> 200 and stored once; duplicate -> 200, not stored again; forged signature -> 401. Self-signed test event
+  only; a vendor-sent event is still to be observed (redeem a sandbox CDK), and the procurement process is
+  not running on the demo, so events are stored but not consumed there.
+
+**Sandbox scenarios, second pass (2026-11-15 12:07–12:20 UTC) [V].** Scripted, 30 calls, no enumeration.
+- **The sandbox exposes five CDK plans only** (`go`, `plus`, `pro_5x`, `pro_20x`, `pro_50x`; all USD, service
+  fee 0, `expectedAmountMinor` 500 / 2000 / 10000 / 20000 / 10000). Issuing a plan that is not listed
+  (`credit250`) answers **HTTP 400 `request_failed`** ("plan paused"), not `product_unavailable`. Our table maps
+  a write `request_failed` to `AMBIGUOUS` + supplier stop, so the availability check before `submit` is what
+  keeps a paused plan from opening the breaker; the engine must never submit a plan the catalog does not list.
+- **`GET /gpt-direct/cdks` does not expose the idempotency key.** Item fields: `id`, `created_at`, `code`,
+  `code_prefix`, `plan`, `status`, `fee_amount_minor`, `app_id`. An ambiguous issue is recovered only by the
+  same-key replay (verified earlier); the list can confirm a code afterwards, not find it.
+- **Redemption is a mock.** `preview` and `preflight` work (preflight ignores the real account and reports a
+  synthetic `sandbox+…@example.test`, plan `free`; it returns a `preflight_token`, `payment_country`,
+  `payment_currency`, `quotes: null`). `redeem` answers at once with `order.status = "succeeded"`,
+  `sandbox_mock: true`, order id `SBXORD-…`. Nothing else follows: `GET /api/v1/cdk/result` is 404
+  `not_found`, `cdk-orders` stays empty, the balance and `balance-logs` do not move, and the CDK stays
+  `unused` (it could still be disabled afterwards). **The USD redemption cost therefore cannot be measured in
+  the sandbox**; the breaker reserve uses the plan's `expectedAmountMinor` (+ `balanceBufferBps` /
+  `minBalanceBufferUsdMinor`, + `serviceFeeUsdMinor`) from `GET /gpt-direct/plans`, converted to USD only when
+  the plan currency is USD, otherwise the configured per-offer cost. Confirm against the first production
+  redemption.
+- **Cards.** `POST /cards/open` (USMAB01, 10 USD), two `POST /cards/recharge` one second apart, `refund`,
+  `DELETE`: all HTTP 200 `code 0` at once (`recharges[].status = "success"`, `data.pending = false`); a same-key
+  replay of the delete returns the same body. **The recharge-pending 400 does not occur in the sandbox**, so
+  its body stays as documented by the vendor ([I]). `balance-logs` rows carry `id`, `created_at`, `amount`
+  (signed), `before`, `after`, `type` (`open_card`, `card_recharge`, `recharge`, …), `remark`, `ref_id`,
+  `wallet`, and for card rows `card_id` / `card_number` (full PAN: mask before storing). The opening charge is
+  booked as `card_recharge`, the open fee as a separate `open_card` row (amount 0 here).
+- **No vendor-sent webhook arrived** for any of these (CDK issue, disable, mock redemption, card open,
+  recharge, refund, delete): the demo endpoint logged no request from the vendor and `supplier_events` still
+  holds only the self-signed test row. `card_3ds_otp` cannot be triggered from the API either. Either the
+  sandbox does not deliver webhooks, the key has no saved callback / `webhook_events` subscription, or the
+  delivery is stopped before the origin (Cloudflare). Owner to check the sandbox console (Developers → key →
+  Webhook: saved URL, subscribed events, delivery log) before the account expires on 2026-11-18.
+
 ## 13. Added scope (owner, 2026-11-14)
 
 **Optional two-factor authentication (TOTP), own PR `feat/totp-2fa`, after M1.** Buyers and staff may enable
@@ -304,12 +352,101 @@ disabled under `prefers-reduced-motion`). Frontend design is done by the orchest
 
 ## 14. Open items
 
-1. Sandbox ticket approval → sandbox key (§12).
+1. ~~Sandbox ticket approval → sandbox key~~ done 2026-11-15 (§12); webhook test still needs the sandbox
+   signing secret and M2 on the demo.
 2. Rotate the production key and the webhook signing key before go-live (both were pasted into chat).
-3. **[I]** to confirm in sandbox: exact body of the recharge-pending 400; whether `GET /gpt-direct/cdks`
-   exposes the idempotency key or only replay recovers an ambiguous issue; `card_3ds_otp` field names (§7.4);
-   USD redemption cost per plan for the breaker reserve.
+3. Sandbox [I] items, state after the second pass (§12): `GET /gpt-direct/cdks` exposes no idempotency key
+   (**settled**: replay only); USD redemption cost per plan is **not measurable** in the sandbox (mock
+   redemption; use `expectedAmountMinor` + buffers, confirm in production); the recharge-pending 400 body and
+   the `card_3ds_otp` field names **stay [I]** (not reproducible; both are M3). A vendor-sent webhook was not
+   observed (owner to check the console).
 4. **Egress allowlist before go-live:** the `procurement_egress` network has general internet egress. Restrict
    procurement's outbound traffic to the supplier hosts (firewall / egress proxy) before real funds.
 5. Supplier balance is 6.27 USD: below any useful breaker threshold, which is the intended state until the
    security review.
+
+## 15. GPT session checks and the backup supplier (owner, 2026-11-15)
+
+**Session pre-check (built).** `backend/app/suppliers/gpt_session.py::parse_gpt_session` validates a pasted
+`chatgpt.com/api/auth/session` document offline before it is sealed or forwarded: size cap 64 KB, tolerant of
+text around the JSON, requires `sessionToken` + `accessToken`, rejects a bare `eyJ…` access token, checks the
+access-token `exp` and the session `expires`, and that `account.id` matches the token's
+`chatgpt_account_id`. Error codes (to map to i18n keys): `too_large`, `not_json`, `access_token_only`,
+`missing_session_token`, `missing_access_token`, `malformed_access_token`, `expired`, `missing_account`,
+`account_mismatch`. The JWT signature is **not** verified, so the result is a hint; the supplier preflight is
+the truth. The raw session is a credential under the same rule as card secrets: sealed with the procurement
+key (§5), never logged, UI shows `email_masked` and the plan only. To do: wire it into the `upstream_direct`
+checkout and the redemption site (M3).
+
+**Live verification (2026-11-15) [V].** Owner test session (Plus, personal workspace, Google login, no MFA):
+access token valid about 10 days from issue, session cookie until 2027-02-13. Through the ipcook SOCKS5 exit
+(US, residential) `GET /backend-api/me` and `GET /backend-api/accounts/check/v4-2023-04-27` return 200 with a
+plain `Authorization: Bearer` header and the session's own User-Agent; the entitlement shows an active
+`chatgptplusplan`. Both proxy geos tested (`-US_city_LosAngeles`, `-PH`) exit in the named country.
+Read-only calls only; no checkout or payment endpoint was called.
+
+**Backup supplier — future work, parked by the owner on 2026-11-15 (payment instrument and billing
+countries undecided); nothing built.** Owner direction: keep ZovoCard as the primary upstream
+(the protocol changes often, so the vendor absorbs that) and add a second adapter under `suppliers/` that
+performs the subscription itself, using the payment protocol of `gpt-subscribe-studio` and, alternatively,
+browser session injection (currently done by hand with a Chrome extension). Before any code:
+1. Read the fork and write `docs/research/gpt-subscribe-studio.md` (licence, the exact endpoints and payment
+   flow, what it needs from the buyer, failure modes, how often upstream changed).
+2. Decide the trust boundary: it holds buyer sessions and a payment instrument, so it belongs in the
+   `procurement` process (egress, no vault private key), with the proxy as per-supplier settings and
+   credentials in `env/procurement.env`, never in the repo.
+3. Owner decisions needed: which payment instrument funds the purchases, which billing countries are used,
+   and acceptance of the account/terms-of-service risk on the upstream platform. This adapter moves real
+   money, so invariant 11 applies: no production use before the independent security review.
+
+
+## 16. Payment-audit fixes on M2 (2026-11-15)
+
+Engine rules added after the payment-auditor pass (migration `0027`; tests `tests/test_procurement_audit.py`):
+
+- **Order state.** Nothing is bought, replayed or bound for an order that is not `paid`. A held order parks its
+  job in `needs_manual` (`order_not_paid`); a refunded / closed one fails it. A job that may have reached the
+  supplier (`maybe_sent` or `upstream_ref`) is never dropped: `failed` + `recover` makes the engine ask once under
+  the SAME key to learn the reference, then disable the code (`voided`), or end in `needs_manual`. An answer that
+  arrives after the order left `paid` is not sealed; the code is disabled (`void_pending`). Refund and "close held
+  order" close the order's open jobs with audit rows.
+- **Availability first.** `availability()` (read-only) runs before the first send of a job; an unavailable plan
+  fails over (nothing was sent) or goes to `needs_manual` and sets `last_check_ok = false`. An ambiguous
+  `request_failed` on a write stays AMBIGUOUS for money but no longer stops the supplier.
+- **`maybe_sent`** (set in the lease commit, before the first call) replaces the error-code guess: switch,
+  failover and "maybe charged" read it. It is cleared only when the supplier said "nothing happened". `request_hash`
+  is enforced in every mode; a same-key replay older than `APP_REPLAY_MAX_AGE_S` (default 21600 s) is refused
+  (`replay_expired`).
+- **Balance breaker fails closed.** An offer is enabled only with a `cost_estimate` in the supplier's currency or a
+  cost the supplier named itself (`cost_known`); `unknown_cost > 0` opens the (self-closing) balance breaker; no new
+  purchase is leased while the last balance reading is older than `APP_BALANCE_STALE_S` (default 900 s); queued jobs
+  of a supplier held by a balance breaker back off and resume by themselves.
+- **Staff actions.** `fulfil` / `fail` answer 409 `job_in_flight` while the engine's lease is live; for a possibly
+  sent job they schedule the same recovery. `void` also voids the sealed `card_stock` row.
+- **Locks.** One order: job set (one ordered statement), then order, then supplier. Refund / close take the job set
+  `NOWAIT` (409 `procurement_busy`).
+- **Left open.** L3 (release of late-payment upstream orders) and L6 (webhook pulling `next_poll_at` forward on a
+  leased job) are marked `TODO(v12-M3)` in the code. (The earlier note that a hand-fulfilled job's supplier code is
+  disabled by the recovery is superseded by "Re-audit fixes" below.)
+
+### Re-audit fixes (2026-11-16, N1-N8)
+
+- **Recovery policy and cost bound (N1).** The recovery of a closed job (`maybe_sent`, no `upstream_ref`) is one
+  same-key replay -> record the reference -> disable the code. It stays because the replay is the only way to learn
+  whether a code exists (the vendor's CDK list has no idempotency key). Its worst case is ONE issue fee per job (the
+  key makes a second replay a lookup, never a second purchase). It honours the kill switches: no recovery call while
+  the supplier is disabled or its `hard` breaker is open; the job waits (backoff, `RECOVER_BLOCKED_MAX` = 20
+  attempts, about 1.5 h) and then goes `needs_manual` with `recover_blocked`, still flagged maybe charged.
+- **Hand fulfil (N2).** For a hand-fulfilled job the recovery records `upstream_ref` and writes a critical audit row
+  `procurement.recovered_after_manual_fulfil`; it never disables the code (staff may have pasted exactly it).
+  Disabling is an explicit staff `void`. Jobs closed by refund / fail keep the automatic disable.
+- **Freshness (N4).** `last_balance_at` is stamped only after the breaker evaluated the reading; a failed evaluation
+  leaves the gate stale.
+- **Pre-check (N3).** The pre-check before the first send reads a FRESH catalog, so a paused plan is not
+  submitted. A write that fails ambiguously stays ambiguous whatever the catalog says afterwards (a plan can sell
+  out because the write ran): same-key reconcile, never a failover, `needs_manual` flagged maybe charged at the end.
+- **Retries (N6, N7).** The recovery's FATAL path keeps `maybe_sent` on `IDEMPOTENCY_CONFLICT`; a passed pre-check no
+  longer resets the retry counter.
+- **Refund (N5).** `fulfilled`, undelivered units go to `void_pending` (disable + void the `card_stock` row).
+- **Parked jobs (N8).** A queued never-sent job behind a balance breaker fails over when another source exists; the
+  stuck alert also fires for a long park. A `maybe_sent` job with a NULL `request_hash` is treated like a mismatch.

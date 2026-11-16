@@ -12,6 +12,7 @@ from app.core.money import fmt
 from app.core.settings_v5 import manual_eta_hours
 from app.models import AfterSales, Attachment, Message, Order, Product, User
 from app.modules.common.buyerinput import admin_config, public_config
+from app.modules.common.modes import CODE_MODES, STOCKED_MODES
 from app.modules.common.sitedefaults import resolve_after_sales_hours, resolve_after_sales_months
 from app.modules.payments.channels import fee_rate
 
@@ -91,7 +92,7 @@ def product_summary(
         "delivery_mode": p.delivery_mode,
         "stock": p.manual_stock
         if p.delivery_mode == "manual"
-        else (stock if p.delivery_mode == "auto_card" else None),
+        else (stock if p.delivery_mode in STOCKED_MODES else None),
         "category": p.category,
         "sold": p.sold,
         "after_sales_hours": resolve_after_sales_hours(
@@ -155,7 +156,7 @@ def admin_product_view(p: Product, stock: int | None) -> dict[str, Any]:
         "delivery_mode": p.delivery_mode,
         "stock": p.manual_stock
         if p.delivery_mode == "manual"
-        else (stock if p.delivery_mode == "auto_card" else None),
+        else (stock if p.delivery_mode in STOCKED_MODES else None),
         "manual_stock": p.manual_stock,
         "category": p.category,
         "sold": p.sold,
@@ -320,7 +321,7 @@ def order_view(
         "delivery_info": delivery_info(product, lang),
         "manual_delivery": manual,
         "can_reveal": bool(
-            viewer_is_owner and o.delivery_mode == "auto_card" and o.status in REVEALABLE
+            viewer_is_owner and o.delivery_mode in CODE_MODES and o.status in REVEALABLE
         ),
     }
 

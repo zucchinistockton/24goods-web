@@ -139,6 +139,16 @@ class Result:
     secrets: tuple[str, ...] = field(default=(), repr=False)
     cost: Money | None = None
     retry_after: timedelta | None = None
+    supplier_stop: bool = False  # account-level refusal: open the supplier breaker
+
+    @classmethod
+    def from_error(cls, exc: SupplierError) -> Result:
+        return cls(
+            outcome=exc.outcome,
+            error_code=exc.reason,
+            retry_after=exc.retry_after,
+            supplier_stop=exc.supplier_stop,
+        )
 
 
 @dataclass(frozen=True)
@@ -146,6 +156,21 @@ class Balance:
     spendable: Decimal
     currency: str
     total: Decimal | None = None
+
+
+@dataclass(frozen=True)
+class LedgerRow:
+    """One vendor balance-log row, normalised (review-v12 §6). ``card_mask`` is already masked:
+    a full card number never leaves the adapter. ``currency`` empty = the supplier's currency."""
+
+    external_id: str
+    type: str
+    amount: Decimal  # signed: positive = credit, negative = debit
+    currency: str
+    occurred_at: datetime | None
+    balance_after: Decimal | None = None
+    ref_id: str | None = None
+    card_mask: str | None = None
 
 
 @dataclass(frozen=True)

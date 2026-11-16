@@ -28,13 +28,27 @@ class ProcurementSettings:
     procurement_host: str = "127.0.0.1"
     procurement_port: int = 8004
     balance_interval_s: float = 300.0  # review-v12 §6: balance refreshed every 5 min
+    ledger_interval_s: float = 600.0  # review-v12 §6: balance-logs backfill every 10 min
     probe_timeout_s: float = 45.0
     probes_per_supplier_10min: int = 10
     # review-v12 §11: writes to a production supplier need this explicit opt-in (no dev/demo
     # env file sets it). M1 makes no write calls at all.
     procurement_allow_production_writes: bool = False
-    # vault PUBLIC keys (seal only, used from M2 on); a private key file is never configured here
+    # vault PUBLIC keys + fingerprint key (seal only); a private key file is never configured here
     vault_public_keys_file: str = ""
+    vault_active_kid: str = ""
+    vault_fingerprint_key: str = ""
+    # engine (review-v12 §3, §6)
+    jobs_poll_s: float = 2.0
+    job_lease_s: float = 120.0
+    # How long a same-key replay (reconcile / resubmit / poll) is still trusted after the first
+    # send. The vendor's idempotency cache is not documented to live forever: beyond this age a
+    # replay could execute a SECOND purchase, so the job goes to needs_manual (maybe charged)
+    # instead. Default 6 h (review-v12 §6: the engine gives up on unresolved sends in ~30 min).
+    replay_max_age_s: float = 21600.0
+    # No NEW purchase is leased while a supplier's last good balance reading is older than this
+    # (default 3 balance intervals): without a fresh balance the breaker is blind (fail closed).
+    balance_stale_s: float = 900.0
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> ProcurementSettings:

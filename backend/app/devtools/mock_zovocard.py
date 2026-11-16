@@ -17,6 +17,12 @@ Fixtures are synthetic and only *shaped* like real responses: camelCase ``plans{
 ``acc_plan_key`` (Claude/Grok), a non-purchasable plan and a registry row without
 ``purchasable``.
 
+Scenario plans (``MockZovo.scenarios`` / ``APP_MOCKZOVO_SCENARIOS=1``, used by the E2E smoke so
+no control channel is needed): GPT plans ``scn_lost`` (answer lost after execution: 504, the
+same-key replay returns the code), ``scn_409`` (first attempt 409, then executes), ``scn_202``
+(executed, first answer ``202`` without an envelope), ``scn_503`` (always ``503
+channel_unavailable``, nothing charged).
+
 Force a quirk from tests with ``MockZovo.force(path, name)`` or, on a running dev server,
 ``POST /__mock/force {"path": "/balance", "quirk": "429"}``. Refuses to start unless
 ``APP_ENV`` is dev or test.
@@ -54,6 +60,8 @@ QUIRKS: dict[str, tuple[int, dict[str, Any]]] = {
         {"code": 503, "error_code": "channel_unavailable", "msg": "channel temporarily down"},
     ),
     "200_code_404": (200, {"code": 404, "msg": "card not found"}),
+    # the request is EXECUTED (and its 2xx cached) but the answer is lost: timeout after send
+    "lost_response": (504, {}),
     "403_access_denied": (
         403,
         {"code": 403, "error_code": "GPT_DIRECT_ACCESS_DENIED", "msg": "direct not enabled"},
@@ -101,7 +109,10 @@ def _reg(key: str, product: str, acc: str, currency: str, amount: int, **extra: 
     return row
 
 
-def plans_fixture(product: str) -> dict[str, Any]:
+SCENARIO_PLANS = ("scn_lost", "scn_409", "scn_202", "scn_503")
+
+
+def plans_fixture(product: str, scenarios: bool = False) -> dict[str, Any]:
     """Synthetic plans payload. GPT: ``plus`` and ``go`` purchasable; ``pro_5x_renew`` has
     ``purchasable: false``; ``pro_20x`` has the registry flag but its plan is disabled;
     ``credit250`` lacks ``purchasable`` entirely. Claude/Grok keys differ from acc_plan_key."""
@@ -143,6 +154,10 @@ def plans_fixture(product: str) -> dict[str, Any]:
             credit,
         ]
         regions = [{"country": "PH", "currency": "PHP"}, {"country": "US", "currency": "USD"}]
+        if scenarios:
+            for key in SCENARIO_PLANS:
+                plans[key] = _plan(key, key, "PHP", 30000)
+                registry.append(_reg(key, "gpt", key, "PHP", 30000))
     return {
         "version": 7,
         "updatedAt": 1700000000000,
@@ -200,6 +215,14 @@ class MockZovo:
     forced: dict[str, deque[str]] = field(default_factory=lambda: defaultdict(deque))
     hits: dict[str, deque[float]] = field(default_factory=lambda: defaultdict(deque))
     requests: list[tuple[str, str, dict[str, str]]] = field(default_factory=list)
+    # writes (M2): idempotency cache of 2xx answers only (vendor §4), issued CDKs by id
+    idem: dict[str, tuple[str, dict[str, Any]]] = field(default_factory=dict)
+    cdks: dict[int, dict[str, Any]] = field(default_factory=dict)
+    next_cdk: int = 1000
+    balance_logs: list[dict[str, Any]] = field(default_factory=list)  # newest first
+    scenarios: bool = False  # E2E scenario plans (scn_*), see the module docstring
+    scn_seen: set[str] = field(default_factory=set)
+    executions: int = 0  # how many issue requests really ran (tests: never twice per key)
 
     def force(self, path: str, quirk: str, times: int = 1) -> None:
         if quirk not in QUIRKS:
@@ -244,10 +267,55 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
             return JSONResponse(QUIRKS["429"][1], status_code=429, headers={"Retry-After": "30"})
         window.append(now)
         queue = mock.forced.get(path)
-        if queue:
+        if queue and queue[0] != "lost_response":
             status, body = QUIRKS[queue.popleft()]
             return JSONResponse(body, status_code=status)
         return None
+
+    def _issue(request_body: dict[str, Any]) -> JSONResponse:
+        plan = request_body.get("plan")
+        count = request_body.get("count", 1)
+        if request_body.get("funding_confirmed") is not True:
+            return JSONResponse({"code": 400, "msg": "funding must be confirmed"}, status_code=400)
+        if not isinstance(count, int) or not 1 <= count <= 50:
+            return JSONResponse({"code": 400, "msg": "at most 50 per request"}, status_code=400)
+        gpt = plans_fixture("gpt", mock.scenarios)
+        reg = {r["key"]: r for r in gpt["registry"]}
+        row = reg.get(plan) if isinstance(plan, str) else None
+        if row is None or row.get("purchasable") is not True:
+            return JSONResponse({"code": 400, "msg": "unknown plan"}, status_code=400)
+        mock.executions += 1
+        issued = []
+        for _ in range(count):
+            mock.next_cdk += 1
+            cid = mock.next_cdk
+            code = f"MOCKPLUS-{cid:010X}-{(cid * 7919) & 0xFFFFFFFFFF:010X}"
+            mock.cdks[cid] = {"id": cid, "code": code, "plan": plan, "status": "unused"}
+            issued.append(
+                {
+                    "id": cid,
+                    "code": code,
+                    "code_prefix": code[:12],
+                    "plan": plan,
+                    "fee_amount_minor": 15,
+                }
+            )
+        return JSONResponse(_env(0, {"requested": count, "issued": issued}))
+
+    def _write(request: Request, path: str, body: dict[str, Any]) -> JSONResponse:
+        if path == "/gpt-direct/cdks":
+            return _issue(body)
+        m = re.fullmatch(r"/gpt-direct/cdks/([0-9]{1,12})/disable", path)
+        if m:
+            cdk = mock.cdks.get(int(m.group(1)))
+            if cdk is None or cdk["status"] != "unused":
+                return JSONResponse(
+                    {"code": 409, "error_code": "CDK_DISABLE_REJECTED", "msg": "not unused"},
+                    status_code=409,
+                )
+            cdk["status"] = "disabled"
+            return JSONResponse(_env(0, {"id": cdk["id"], "status": "disabled"}))
+        return JSONResponse({"code": 404, "msg": "not implemented in mock"}, status_code=404)
 
     async def dispatch(request: Request) -> JSONResponse:
         path = "/" + request.path_params["path"]
@@ -261,7 +329,47 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
         if blocked is not None:
             return blocked
         if request.method != "GET":
-            return JSONResponse({"code": 404, "msg": "not implemented in mock"}, status_code=404)
+            idem = request.headers.get("idempotency-key")
+            if not idem:
+                return JSONResponse({"code": 400, "msg": "Idempotency-Key required"}, 400)
+            try:
+                body = json.loads(await request.body() or b"{}")
+            except ValueError:
+                body = None
+            if not isinstance(body, dict):
+                return JSONResponse({"code": 400, "error_code": "invalid_argument"}, 400)
+            fingerprint = json.dumps(body, sort_keys=True)
+            cached = mock.idem.get(idem)
+            if cached is not None:
+                if cached[0] != fingerprint:
+                    return JSONResponse(
+                        {"code": 409, "error_code": "IDEMPOTENCY_CONFLICT",
+                         "msg": "key reused with another body"}, 409,
+                    )  # fmt: skip
+                return JSONResponse(cached[1], headers={"Idempotent-Replayed": "true"})
+            scn = str(body.get("plan", "")) if mock.scenarios and path == "/gpt-direct/cdks" else ""
+            first = scn.startswith("scn_") and idem not in mock.scn_seen
+            if scn == "scn_503":
+                return JSONResponse(QUIRKS["503"][1], status_code=503)
+            if first:
+                mock.scn_seen.add(idem)
+                if scn == "scn_409":  # not executed: the next attempt runs
+                    return JSONResponse(QUIRKS["409"][1], status_code=409)
+            resp = _write(request, path, body)
+            if 200 <= resp.status_code < 300:  # only 2xx is cached (vendor A.1)
+                mock.idem[idem] = (fingerprint, json.loads(resp.body))
+            if first and scn == "scn_lost":  # executed and cached, the answer never arrives
+                return JSONResponse({}, status_code=504)
+            if first and scn == "scn_202":  # executed and cached, the first answer is "accepted"
+                return JSONResponse({"msg": "accepted"}, status_code=202)
+            queue = mock.forced.get(path)
+            if queue and queue[0] == "lost_response":
+                queue.popleft()
+                return JSONResponse({}, status_code=504)
+            return resp
+        if path == "/gpt-direct/cdks":
+            items = sorted(mock.cdks.values(), key=lambda c: -c["id"])
+            return JSONResponse(_env(0, {"total": len(items), "list": items}))
         if path == "/balance":
             return JSONResponse(_env(0, BALANCE_FIXTURE))
         if path == "/products":
@@ -273,7 +381,7 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
                     {"code": 400, "error_code": "INVALID_REQUEST", "msg": "unknown product"},
                     status_code=400,
                 )
-            return JSONResponse(_env(0, plans_fixture(product)))
+            return JSONResponse(_env(0, plans_fixture(product, mock.scenarios)))
         if path == "/gpt-direct/card-products":
             items = [
                 {
@@ -292,7 +400,18 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
         if path == "/vip":
             return JSONResponse(_env(0, {"tier": "none", "is_svip": False}))
         if path == "/balance-logs":
-            return JSONResponse(_env(0, {"total": 0, "list": [], "spendable_balance": 12.34}))
+            try:
+                page = max(1, int(request.query_params.get("page", "1")))
+                size = min(200, max(1, int(request.query_params.get("page_size", "20"))))
+            except ValueError:
+                return JSONResponse({"code": 400, "msg": "bad paging"}, status_code=400)
+            chunk = mock.balance_logs[(page - 1) * size : page * size]
+            return JSONResponse(
+                _env(
+                    0,
+                    {"total": len(mock.balance_logs), "list": chunk, "spendable_balance": 12.34},
+                )
+            )
         return JSONResponse({"code": 404, "msg": "not found"}, status_code=404)
 
     async def force(request: Request) -> JSONResponse:
@@ -328,9 +447,10 @@ async def _main() -> None:
         raise SystemExit("mock_zovocard only runs with APP_ENV=dev|test")
     host = os.environ.get("APP_MOCKZOVO_HOST", "127.0.0.1")
     port = int(os.environ.get("APP_MOCKZOVO_PORT", "8005"))
+    state = MockZovo(scenarios=os.environ.get("APP_MOCKZOVO_SCENARIOS", "") == "1")
     server = uvicorn.Server(
         uvicorn.Config(
-            create_mock_zovocard(),
+            create_mock_zovocard(state),
             host=host,
             port=port,
             access_log=False,
