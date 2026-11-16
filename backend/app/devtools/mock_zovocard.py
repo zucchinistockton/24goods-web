@@ -543,6 +543,10 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
             items = sorted(mock.cdks.values(), key=lambda c: -c["id"])
             return JSONResponse(_env(0, {"total": len(items), "list": items}))
         if path == "/balance":
+            if mock.scenarios:  # the E2E smoke buys cards: enough wallet for the balance breaker
+                return JSONResponse(
+                    _env(0, {**BALANCE_FIXTURE, "balance": 5000, "spendable_balance": 5000})
+                )
             return JSONResponse(_env(0, BALANCE_FIXTURE))
         if path == "/products":
             return JSONResponse(_env(0, products_fixture()))
