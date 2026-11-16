@@ -143,5 +143,6 @@ class SupplierLedgerEntry(Base):
     job_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("procurement_jobs.id"))
     ref_id: Mapped[str | None] = mapped_column(String(64))
     card_mask: Mapped[str | None] = mapped_column(String(24))
+    card_id: Mapped[str | None] = mapped_column(String(64))  # 0028: vendor card id of card rows
     occurred_at: Mapped[datetime]
     created_at: Mapped[datetime] = created_at()

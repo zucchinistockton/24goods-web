@@ -198,6 +198,7 @@ class LedgerRow:
     balance_after: Decimal | None = None
     ref_id: str | None = None
     card_mask: str | None = None
+    card_id: str | None = None  # card rows: the vendor card id (links the row to its job)
 
 
 @dataclass(frozen=True)

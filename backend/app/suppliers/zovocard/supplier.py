@@ -201,8 +201,11 @@ def parse_balance_logs(data: Any) -> tuple[list[LedgerRow], int | None]:
         after = _dec_or_none(item.get("after"))
         ref = item.get("ref_id")
         card = item.get("card_id")
-        if str(item.get("type") or "") in CARD_ROW_TYPES and isinstance(card, (int, str)):
-            ref = card if str(card) else ref  # card rows link to their job by card id
+        card_id = (
+            str(card)[:64]
+            if isinstance(card, (int, str)) and not isinstance(card, bool) and str(card)
+            else None
+        )
         rows.append(
             LedgerRow(
                 external_id=str(rid).strip()[:64],
@@ -213,6 +216,7 @@ def parse_balance_logs(data: Any) -> tuple[list[LedgerRow], int | None]:
                 balance_after=after,
                 ref_id=str(ref)[:64] if isinstance(ref, (int, str)) and ref != "" else None,
                 card_mask=mask_pan(item["card_number"]) if item.get("card_number") else None,
+                card_id=card_id,
             )
         )
     total = data.get("total")

@@ -33,13 +33,9 @@ log = logging.getLogger("app.procurement.ledger")
 
 LINK_TYPE_PREFIX = "gpt_direct"  # ref_id of these rows is the CDK / direct order, not a card id
 # card rows (review-v12 §12): the opening charge is booked as ``card_recharge``, the open fee as a
-# separate ``open_card`` row. Their ``ref_id`` field is the vendor's own and not a card id, so a
-# card row is stored with ``ref_id = card_id`` (the job's ``upstream_ref``) and the PAN masked.
+# separate ``open_card`` row. Their ``ref_id`` is the vendor's own and is NOT the card id, so a card
+# row links to its job through ``card_id`` (= the job's ``upstream_ref`` of a ``vcc`` job).
 CARD_TYPES = CARD_ROW_TYPES
-
-
-def links_to_job(row_type: str) -> bool:
-    return row_type.startswith(LINK_TYPE_PREFIX) or row_type in CARD_TYPES
 
 
 MAX_ABS = Decimal("1000000000000")
@@ -66,8 +62,11 @@ def row_from_event(payload: Mapping[str, Any]) -> LedgerRow | None:
         pass
     ref = payload.get("ref_id")
     card = payload.get("card_id")
-    if str(payload.get("type") or "") in CARD_TYPES and isinstance(card, (int, str)) and card != "":
-        ref = card
+    card_id = (
+        str(card)[:64]
+        if isinstance(card, (int, str)) and not isinstance(card, bool) and card != ""
+        else None
+    )
     mask = payload.get("card_number")
     cur = payload.get("currency")
     return LedgerRow(
@@ -79,6 +78,7 @@ def row_from_event(payload: Mapping[str, Any]) -> LedgerRow | None:
         balance_after=after,
         ref_id=str(ref)[:64] if isinstance(ref, (int, str)) and ref != "" else None,
         card_mask=mask[:24] if isinstance(mask, str) else None,
+        card_id=card_id,
     )
 
 
@@ -97,12 +97,20 @@ async def record_rows(
         if abs(r.amount) >= MAX_ABS:
             continue
         job_id = None
-        if r.ref_id and links_to_job(r.type):
+        link = (
+            r.card_id
+            if r.type in CARD_TYPES
+            else r.ref_id
+            if r.type.startswith(LINK_TYPE_PREFIX)
+            else None
+        )
+        if link:
             job_id = await db.scalar(
                 select(ProcurementJob.id).where(
                     ProcurementJob.tenant_id == tenant_id,
                     ProcurementJob.supplier_id == supplier_id,
-                    ProcurementJob.upstream_ref == r.ref_id,
+                    ProcurementJob.upstream_ref == link,
+                    *((ProcurementJob.kind == "vcc",) if r.type in CARD_TYPES else ()),
                 )
             )
         inserted = await db.scalar(
@@ -119,6 +127,7 @@ async def record_rows(
                 job_id=job_id,
                 ref_id=r.ref_id,
                 card_mask=r.card_mask,
+                card_id=r.card_id,
                 occurred_at=r.occurred_at or fallback_time or datetime.now(timezone.utc),
             )
             .on_conflict_do_nothing(index_elements=["supplier_id", "external_id"])
@@ -149,13 +158,36 @@ async def link_rows(db: AsyncSession, tenant_id: uuid.UUID, supplier_id: uuid.UU
             SupplierLedgerEntry.supplier_id == supplier_id,
             SupplierLedgerEntry.job_id.is_(None),
             SupplierLedgerEntry.ref_id.is_not(None),
-            SupplierLedgerEntry.type.like(LINK_TYPE_PREFIX + "%")
-            | SupplierLedgerEntry.type.in_(sorted(CARD_TYPES)),
+            SupplierLedgerEntry.type.like(LINK_TYPE_PREFIX + "%"),
             job.is_not(None),
         )
         .values(job_id=job)
     )
-    return int(res.rowcount or 0)  # type: ignore[attr-defined]
+    card_job = (
+        select(ProcurementJob.id)
+        .where(
+            ProcurementJob.tenant_id == tenant_id,
+            ProcurementJob.supplier_id == supplier_id,
+            ProcurementJob.kind == "vcc",
+            ProcurementJob.upstream_ref == SupplierLedgerEntry.card_id,
+        )
+        .order_by(ProcurementJob.created_at)
+        .limit(1)
+        .scalar_subquery()
+    )
+    cards = await db.execute(
+        update(SupplierLedgerEntry)
+        .where(
+            SupplierLedgerEntry.tenant_id == tenant_id,
+            SupplierLedgerEntry.supplier_id == supplier_id,
+            SupplierLedgerEntry.job_id.is_(None),
+            SupplierLedgerEntry.card_id.is_not(None),
+            SupplierLedgerEntry.type.in_(sorted(CARD_TYPES)),
+            card_job.is_not(None),
+        )
+        .values(job_id=card_job)
+    )
+    return int(res.rowcount or 0) + int(cards.rowcount or 0)  # type: ignore[attr-defined]
 
 
 async def handle_balance_event(

@@ -332,14 +332,16 @@ async def test_each_balance_log_row_is_booked_once_and_linked_to_its_job(env, vu
     assert await ledger.backfill(vup.ctx, ref, "USD") == 3  # opening charge, open fee, top-up
     assert await ledger.backfill(vup.ctx, ref, "USD") == 0  # the same rows never book twice
     rows = await _rows(
-        env, "SELECT type, amount, job_id, ref_id FROM supplier_ledger ORDER BY external_id::int"
+        env, "SELECT type, amount, job_id FROM supplier_ledger ORDER BY external_id::int"
     )
     assert [(r.type, r.amount) for r in rows] == [
         ("card_recharge", Decimal("-20")),  # the opening charge is booked as card_recharge ...
         ("open_card", Decimal("-1.5")),  # ... and the open fee as a separate row
         ("card_recharge", Decimal("-10")),
     ]
-    assert {r.job_id for r in rows} == {job.id} and {r.ref_id for r in rows} == {job.upstream_ref}
+    assert {r.job_id for r in rows} == {job.id}  # linked by card id, never by the vendor's ref_id
+    ids = await _rows(env, "SELECT card_id FROM supplier_ledger")
+    assert {r.card_id for r in ids} == {job.upstream_ref}
 
 
 async def test_card_webhooks_duplicate_and_late_status(env, vup):
@@ -405,3 +407,247 @@ async def test_cross_tenant_card_job_is_invisible(env, vup):
         seen = (await db.execute(text("SELECT count(*) FROM procurement_jobs"))).scalar_one()
     assert seen == 1
     assert await env.scalar("SELECT count(*) FROM card_stock WHERE order_id IS NOT NULL") == 1
+
+
+# ------------------------------------------------------------------ 3DS one-time codes
+
+OTP = "Zq7Kx9m2"  # letters + digits: cannot collide with an id, a timestamp or a number
+
+
+async def _deliver_card(env, vup, vendor):
+    from tests.helpers import buy, pay_order
+
+    buyer, user = await env.login("buyer")
+    order = await buy(buyer, vup.product, 1)
+    await pay_order(env, buyer, order)
+    await env.drain()
+    return buyer, user, order
+
+
+def _otp_event(card_id: str, otp: str = OTP, matrix: str = "MI1") -> dict:
+    return {"event": "card_3ds_otp", "otp": otp, "matrix_id": matrix, "card_id": int(card_id),
+            "masked_card_no": "411111******1111", "merchant_name": f"Shop {otp}"}  # fmt: skip
+
+
+async def test_3ds_code_reaches_only_the_card_owner_and_is_never_stored(env, vup, caplog):
+    from app.modules.realtime.publish import user_channel
+
+    caplog.set_level(logging.DEBUG)
+    env.res.settings = env.res.settings.model_copy(
+        update={"zovocard_sandbox_webhook_secret": WEBHOOK_SECRET}
+    )
+    vendor = MockZovo()
+    await _zovo(vup, vendor, OPEN)
+    buyer, user, order = await _deliver_card(env, vup, vendor)
+    # not delivered yet: a code for a card the buyer does not hold yet is dropped
+    await vup.run()
+    job = await _job(vup, order)
+    c = env.client(csrf=False)
+    raw, h = _signed(_otp_event(job.upstream_ref, matrix="MI0"))
+    assert (await c.post("/api/v1/webhooks/zovocard", content=raw, headers=h)).status_code == 200
+    assert (await buyer.get(f"/api/v1/orders/{order['id']}/card-otp")).json()["items"] == []
+    await _deliver(env, vup, order, buyer)
+    pubsub = env.s.redis.pubsub()
+    await pubsub.subscribe(user_channel(user.id))
+    await pubsub.get_message(timeout=1)  # the subscribe ack
+    raw, h = _signed(_otp_event(job.upstream_ref))
+    for _ in range(2):  # at-least-once delivery: forwarded once
+        assert (
+            await c.post("/api/v1/webhooks/zovocard", content=raw, headers=h)
+        ).status_code == 200
+    r = await buyer.get(f"/api/v1/orders/{order['id']}/card-otp")
+    assert r.headers["cache-control"].startswith("no-store")
+    (item,) = r.json()["items"]
+    assert item["otp"] == OTP and 0 < item["expires_in"] <= 300 and "****" in item["card"]
+    msg = await pubsub.get_message(timeout=2)
+    assert msg is not None and OTP in msg["data"].decode() and "card_otp" in msg["data"].decode()
+    assert (
+        await env.scalar("SELECT count(*) FROM audit_log WHERE action = 'card.otp_forwarded'") == 1
+    )
+    await pubsub.aclose()
+    # another buyer cannot read it, and an unknown order is a 404
+    other, _ = await env.login("buyer")
+    assert (await other.get(f"/api/v1/orders/{order['id']}/card-otp")).status_code == 404
+    # the code is in no table, no log line, no outbox payload
+    for table in ("supplier_events", "audit_log", "outbox", "procurement_jobs", "messages"):
+        sql = f"SELECT count(*) FROM {table} WHERE row_to_json({table})::text LIKE :c"  # noqa: S608
+        assert await env.scalar(sql, c=f"%{OTP}%") == 0, table
+    assert OTP not in caplog.text
+    # Redis keeps it only briefly (TTL <= 5 min)
+    (key,) = [k async for k in env.s.redis.scan_iter(match="otp3ds:*")]
+    assert 0 < await env.s.redis.ttl(key) <= 300
+
+
+async def test_3ds_code_for_an_unknown_card_is_dropped(env, vup):
+    env.res.settings = env.res.settings.model_copy(
+        update={"zovocard_sandbox_webhook_secret": WEBHOOK_SECRET}
+    )
+    await _zovo(vup, MockZovo(), OPEN)
+    c = env.client(csrf=False)
+    raw, h = _signed(_otp_event("987654"))
+    assert (await c.post("/api/v1/webhooks/zovocard", content=raw, headers=h)).status_code == 200
+    assert [k async for k in env.s.redis.scan_iter(match="otp3ds:*")] == []
+
+
+# ---------------------------------------------------------------- manual fulfil, sources, products
+
+JOBS = "/api/v1/admin/procurement/jobs"
+
+
+async def test_manual_fulfil_seals_a_card_like_an_automatic_one(env, vup):
+    vendor = MockZovo()
+    vendor.force("/cards/open", "401", times=3)  # refused every time: the job needs staff
+    await _zovo(vup, vendor, OPEN)
+    buyer, order = await vup.paid_order()
+    await vup.run()
+    await env.drain()
+    job = await _job(vup, order)
+    assert job.state == "needs_manual"
+    staff, _ = await env.login("agent")
+    bad = await staff.post(f"{JOBS}/{job.id}/fulfil", json={"code": "just-a-code-123"})
+    assert bad.status_code == 422 and bad.json()["error"]["code"] == "bad_card"
+    pan = "4111111111111111"
+    r = await staff.post(f"{JOBS}/{job.id}/fulfil", json={"code": f"{pan}----08/31----123"})
+    assert r.status_code == 200, r.text
+    assert r.json()["card_mask"] == "411111****1111" and pan not in r.text
+    await env.drain()
+    assert await _status(buyer, order) == "delivered"
+    cards = (await buyer.post(f"/api/v1/orders/{order['id']}/reveal")).json()["cards"]
+    assert [c["code"] for c in cards] == [f"{pan}----08/31----123"]
+    for table in ("audit_log", "outbox", "procurement_jobs"):
+        sql = f"SELECT count(*) FROM {table} WHERE row_to_json({table})::text LIKE :c"  # noqa: S608
+        assert await env.scalar(sql, c=f"%{pan}%") == 0, table
+
+
+async def test_card_sources_and_products_are_validated_server_side(env):
+    from tests.test_procurement_v12 import _create
+
+    admin, _ = await env.login("admin")
+    sid = (await _create(admin))["id"]
+    # a virtual-card product: the separator is fixed and a label set is always present
+    r = await admin.post(
+        "/api/v1/admin/products",
+        json={
+            "title_i18n": {"en": "Virtual card $20", "zh-CN": "虚拟卡 $20"},
+            "price": "25.00", "floor_price": "25.00", "delivery_mode": "upstream_vcc",
+            "category": "accounts", "delivery_separator": ",",
+        },
+    )  # fmt: skip
+    assert r.status_code in (200, 201), r.text
+    pid = r.json()["id"]
+    got = r.json()
+    assert got["delivery_mode"] == "upstream_vcc" and got["delivery_separator"] == "----"
+    assert got["delivery_format"] == "Card number----Expiry (MM/YY)----CVV"
+    src = "/api/v1/admin/procurement/sources"
+    ok = {"product_code": "MOCK01", "init_amount": "20", "recharge_amount": "10.50"}
+    r = await admin.post(
+        src, json={"product_id": pid, "supplier_id": sid, "params": ok, "cost_estimate": "22.00"}
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["kind"] == "vcc" and r.json()["params"] == ok
+    for bad in (
+        {"product_code": "MOCK01"},  # no amount
+        {"product_code": "MOCK01", "init_amount": "0"},
+        {"product_code": "MOCK01", "init_amount": "20.123"},
+        {"product_code": "bad code!", "init_amount": "20"},
+        {"plan": "plus"},  # a CDK plan on a card product
+    ):
+        r = await admin.post(src, json={"product_id": pid, "supplier_id": sid, "params": bad})
+        assert r.status_code in (400, 422), bad
+
+
+async def test_catalog_reports_card_amount_outside_the_catalogue_unavailable(env, vup):
+    vendor = MockZovo()
+    await _zovo(vup, vendor, {"product_code": "MOCK01", "init_amount": "5"})  # below the 10 floor
+    _buyer, order = await vup.paid_order()
+    await vup.run()
+    await env.drain()
+    job = await _job(vup, order)
+    assert vendor.card_opens == 0 and job.state == "needs_manual"  # never sent, no source left
+    assert not job.maybe_sent
+
+
+# ------------------------------------------------------------------ migration 0028
+
+
+async def test_migration_0028_up_and_down(services):
+    import asyncio
+    import os
+
+    import asyncpg
+    from alembic import command
+    from alembic.config import Config
+
+    from tests.conftest import ALEMBIC_INI, OWNER_PW, _with_db
+
+    db_name = "g24_mig0028"
+    dsn = os.environ["TEST_DATABASE_URL"]
+    plain = dsn.replace("postgresql+asyncpg://", "postgresql://")
+    admin = await asyncpg.connect(plain, timeout=5)
+    try:
+        await admin.execute(f"DROP DATABASE IF EXISTS {db_name} WITH (FORCE)")
+        await admin.execute(f"CREATE DATABASE {db_name} OWNER app_owner")
+    finally:
+        await admin.close()
+    owner_url = _with_db(dsn, "app_owner", OWNER_PW, db_name)
+
+    async def alembic(target: str, down: bool = False) -> None:
+        prev = os.environ.get("APP_MIGRATE_DATABASE_URL")
+        os.environ["APP_MIGRATE_DATABASE_URL"] = owner_url
+        try:
+            fn = command.downgrade if down else command.upgrade
+            await asyncio.to_thread(fn, Config(str(ALEMBIC_INI)), target)
+        finally:
+            if prev is None:
+                os.environ.pop("APP_MIGRATE_DATABASE_URL", None)
+            else:
+                os.environ["APP_MIGRATE_DATABASE_URL"] = prev
+
+    async def q(sql: str, *args):
+        conn = await asyncpg.connect(owner_url.replace("+asyncpg", ""), timeout=5)
+        try:
+            return await conn.fetchval(sql, *args)
+        finally:
+            await conn.close()
+
+    async def cols() -> int:
+        return await q(
+            "SELECT count(*) FROM information_schema.columns WHERE "
+            "(table_name = 'procurement_jobs' AND column_name = 'card_mask') OR "
+            "(table_name = 'supplier_ledger' AND column_name = 'card_id')"
+        )
+
+    try:
+        await alembic("head")
+        assert await cols() == 2
+        assert await q(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+            "WHERE conname = 'products_delivery_mode_check'"
+        ) and "upstream_vcc" in await q(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+            "WHERE conname = 'orders_delivery_mode_check'"
+        )
+        assert await q(  # FORCE RLS stays on every table involved
+            "SELECT bool_and(relforcerowsecurity) FROM pg_class WHERE relname IN "
+            "('procurement_jobs', 'supplier_ledger', 'card_stock', 'orders', 'products')"
+        )
+        assert await q(
+            "SELECT has_column_privilege('app_api', 'procurement_jobs', 'card_mask', 'UPDATE')"
+        )
+        assert not await q(  # the engine-owned columns stay engine-owned
+            "SELECT has_column_privilege('app_api', 'procurement_jobs', 'maybe_sent', 'UPDATE')"
+        )
+        await alembic("0027_procurement_audit_fixes", down=True)
+        assert await cols() == 0
+        assert "upstream_vcc" not in await q(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+            "WHERE conname = 'products_delivery_mode_check'"
+        )
+        await alembic("head")
+        assert await cols() == 2
+    finally:
+        admin = await asyncpg.connect(plain, timeout=5)
+        try:
+            await admin.execute(f"DROP DATABASE IF EXISTS {db_name} WITH (FORCE)")
+        finally:
+            await admin.close()
