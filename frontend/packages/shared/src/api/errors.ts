@@ -75,6 +75,11 @@ export const API_ERROR_CODES = [
   'hostname_reserved',
   'domain_provider_error',
   'domain_no_cf_id',
+  // optional two-factor login
+  'two_factor_invalid',
+  'two_factor_expired',
+  'two_factor_enabled',
+  'two_factor_not_enabled',
 ] as const
 export const CLIENT_ERROR_CODES = ['network', 'server_error', 'timeout', 'unknown'] as const
 export type ContractErrorCode = (typeof API_ERROR_CODES)[number]

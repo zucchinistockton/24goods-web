@@ -18,12 +18,12 @@ import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import httpx
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import RedirectResponse
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -36,7 +36,8 @@ from app.core.ratelimit import enforce
 from app.core.resources import Resources
 from app.core.security import STAFF_ROLES, hash_password
 from app.core.settings_v5 import section
-from app.models import User
+from app.models import User, UserTotp
+from app.modules.auth import twofactor
 from app.modules.auth.schemas import normalize_email
 from app.modules.content.site import tenant_settings
 
@@ -235,6 +236,12 @@ async def callback(
                 # it, so their password and sessions are void once the real owner links Google
                 user.pw_hash = await hash_password(secrets.token_urlsafe(32))
                 revoke_sessions = True
+                # ... and so is a second factor they enrolled: it would lock the real owner out
+                await db.execute(
+                    delete(UserTotp).where(
+                        UserTotp.user_id == user.id, UserTotp.tenant_id == tenant_id
+                    )
+                )
             user.google_sub = sub
             user.email_verified = True
         else:
@@ -264,7 +271,10 @@ async def callback(
     if user.status != "active":
         raise Forbidden("Account is not active")
     await suspend.enforce(db, user)
-    user.last_login_at = datetime.now(timezone.utc)
+    second_factor = await twofactor.enabled(db, user)
+    login_ident = user.handle or user.email
+    if not second_factor:
+        user.last_login_at = datetime.now(timezone.utc)
     await audit(
         db,
         tenant_id=tenant_id,
@@ -273,12 +283,24 @@ async def callback(
         actor_role=user.role,
         target=f"user:{user.id}",
         ip=ip,
-        detail={"created": created},
+        detail={"created": created} | ({"second_factor": "required"} if second_factor else {}),
     )
     uid = user.id
     await db.commit()
     if revoke_sessions:
         await res.sessions.revoke_user_sessions(uid)
+    if second_factor:
+        # Google proved the first factor only. The pending token travels in the URL fragment
+        # (never sent to a server, never logged) and is useless without a code.
+        keys = twofactor.limiter_keys(tenant_id, login_ident, ip)
+        pending = await twofactor.start_pending(res.redis, user, keys)
+        resp = RedirectResponse(
+            "/login#2fa=" + pending + "&next=" + quote(safe_next(saved.get("next")), safe=""),
+            status_code=302,
+        )
+        resp.headers["Cache-Control"] = "no-store"
+        resp.delete_cookie(STATE_COOKIE, path="/api/v1/auth/oauth/google")
+        return resp
     await res.sessions.delete(res.sessions.token_from(request.cookies))
     token = await res.sessions.create(user.id, user.tenant_id, user.role)
     resp = RedirectResponse(safe_next(saved.get("next")), status_code=302)

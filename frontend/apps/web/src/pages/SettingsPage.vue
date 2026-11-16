@@ -199,6 +199,7 @@ onMounted(() => {
       <h2 class="group-title">{{ t('me.accountSecurity') }}</h2>
       <van-cell-group :border="false">
         <van-cell :title="auth.user.is_instant ? t('me.secureTitle') : t('me.changePassword')" icon="lock" is-link @click="openCred" />
+        <van-cell :title="t('twoFactor.title')" :label="t('twoFactor.cellHint')" icon="shield-o" is-link :to="{ name: 'two-factor' }" />
         <van-cell :title="t('me.changeEmail')" :label="auth.user.email || undefined" icon="envelop-o" is-link @click="openMail" />
         <van-cell :title="t('me.deleteAccount')" icon="delete-o" is-link class="danger" @click="openDelete" />
       </van-cell-group>

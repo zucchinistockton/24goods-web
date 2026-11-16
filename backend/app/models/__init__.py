@@ -28,7 +28,7 @@ from app.models.procurement import (
 )
 from app.models.system import AuditLog, Outbox
 from app.models.tenancy import CustomDomain, Tenant
-from app.models.users import AgentStatus, User
+from app.models.users import AgentStatus, User, UserTotp
 
 __all__ = [
     "AfterSales",
@@ -79,6 +79,7 @@ __all__ = [
     "Tenant",
     "TenantSecret",
     "User",
+    "UserTotp",
 ]
 
 from app.models.operations import (

@@ -22,7 +22,7 @@ No new ``delivery_mode`` values yet (M2). The role is left in place on downgrade
 cluster-wide, like app_api/app_delivery in 0001); its grants and policies are removed.
 
 Revision ID: 0023_procurement
-Revises: 0022_v11_content_ops
+Revises: 0022a_user_totp
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "0023_procurement"
-down_revision = "0022_v11_content_ops"
+down_revision = "0022a_user_totp"
 branch_labels = None
 depends_on = None
 
