@@ -9,6 +9,11 @@
   --a-line: #e5e7eb;
   --a-accent: #ffd60a;
   --a-price: #e8590c;
+  --a-fill: #f3f4f6; /* neutral fill */
+  --a-hover: #f8fafc; /* row hover, quiet panels */
+  --a-selected: #eff6ff; /* selected row */
+  --a-glow: #e0e7ff; /* login backdrop */
+  --a-veil: rgba(255, 255, 255, 0.85);
   --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'PingFang SC',
     'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif;
   /* Element Plus: neutral, professional */
@@ -28,6 +33,65 @@
   --gc-accent-ink: #92400e;
   --gc-avatar-bg: #e5e7eb;
   --gc-avatar-fg: #374151;
+  --gc-fill: var(--a-fill);
+  --gc-panel: var(--a-surface);
+  --gc-surface: var(--a-surface);
+  --gc-card-bg: var(--a-surface);
+  --gc-card-border: var(--a-line);
+  --gc-btn-bg: var(--a-surface);
+  --gc-btn-border: var(--a-line);
+  --gc-skeleton: var(--a-fill);
+  --gc-system-bg: var(--gc-tint);
+  --gc-chip-bg: var(--gc-tint);
+  --gc-tint: rgba(0, 0, 0, 0.06);
+  --gc-accent: #2563eb;
+  --gc-danger: #d03050;
+  --a-nav-title: #8b95a5; /* sidebar group title on the dark sidebar (6:1) */
+  --gc-line: var(--a-line);
+}
+/* Dark theme (follows the system; Element Plus switches on the same `html.dark`). */
+:root:root.dark {
+  color-scheme: dark;
+  --a-bg: #0f1115;
+  --a-surface: #171a21;
+  --a-sidebar: #0b0d12;
+  --a-text: #e5e7eb;
+  --a-muted: #9ca3af;
+  --a-line: #2a2f3a;
+  --a-price: #ff8a4c;
+  --a-fill: #1f2430;
+  --a-hover: #1b1f28;
+  --a-selected: #172554;
+  --a-glow: #1e1b4b;
+  --a-veil: rgba(23, 26, 33, 0.85);
+  /* white on this blue is 4.6:1; links and plain text use the lighter step below */
+  --el-color-primary: #2f6fed;
+  --el-color-primary-light-3: #2a59b8;
+  --el-color-primary-light-5: #244690;
+  --el-color-primary-light-7: #1c3468;
+  --el-color-primary-light-8: #182b54;
+  --el-color-primary-light-9: #142240;
+  --el-color-primary-dark-2: #6b9cf5;
+  --el-link-text-color: #7fb0ff;
+  --gc-accent: #7fb0ff;
+  --gc-danger: #ff8a8a;
+  --gc-primary-bg: #2f6fed;
+  --el-bg-color: var(--a-surface);
+  --el-bg-color-overlay: #1c2029;
+  --el-bg-color-page: var(--a-bg);
+  --gc-self-bg: #1e3a5f;
+  --gc-self-fg: #e5e7eb;
+  --gc-other-bg: #1f2430;
+  --gc-list-bg: #12151b;
+  --gc-accent-soft: #3a2f10;
+  --gc-accent-ink: #fcd34d;
+  --gc-avatar-bg: #2a2f3a;
+  --gc-avatar-fg: #d1d5db;
+  --gc-tint: rgba(255, 255, 255, 0.08);
+  --gc-ok-soft: #14301f;
+  --gc-ok-ink: #7bdca6;
+  --gc-warn-soft: #3a2a10;
+  --gc-warn-ink: #ffc266;
 }
 *,
 *::before,
@@ -98,4 +162,11 @@ body {
   .page {
     padding: 12px;
   }
+}
+/* Dark theme: the primary blue as TEXT on a dark surface is under 4.5:1; link, text and plain
+   buttons use the lighter step (7:1) and keep the solid blue for filled buttons. */
+:root.dark .el-button--primary.is-link,
+:root.dark .el-button--primary.is-text,
+:root.dark .el-button--primary.is-plain {
+  --el-button-text-color: #7fb0ff;
 }

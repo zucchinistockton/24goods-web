@@ -99,6 +99,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     "notifications": {
         "telegram_enabled": False,
         "telegram_chat_ids": [],  # int-like strings (users 123, groups -100123), at most 10
+        "telegram_language": "en",  # language of the staff messages (en | zh-CN)
         "event_order_paid": True,
         "event_chat_message": True,
         "event_after_sales": True,
@@ -219,6 +220,7 @@ _ENUMS: dict[tuple[str, str], tuple[str, ...]] = {
     ("security", "challenge_preset"): ("low", "standard", "high"),
     ("legal", "mode"): ("checkbox", "modal"),
     ("defaults", "locale"): LOCALES,
+    ("notifications", "telegram_language"): LOCALES,
     ("email", "security"): ("starttls", "ssl", "none"),
     ("import", "markup_kind"): ("percent", "fixed"),
     ("resellers", "default_markup_kind"): ("percent", "fixed"),

@@ -4,6 +4,274 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 ## Current state — hand-off (read this first in a new session)
 
+**Hand-off 2026-11-16 (this block supersedes the ones below).**
+
+- **M2 audit work is finished.** The re-audit findings N1–N8 and the `request_hash` rule are fixed (`eca5b8b`..
+  `1887c6c`, tests in `tests/test_procurement_audit.py`, rules in spec §16 "Re-audit fixes", no migration).
+  A second payment-auditor pass over those commits closed all of them except the write-side half of N3, which
+  it failed (**F1, High**: "plan not offered after an ambiguous write" could clear `maybe_sent` after the
+  supplier had issued a code, then buy again elsewhere). That half is removed in `560896f`: the fresh-catalog
+  pre-check stays, an ambiguous write keeps the same-key reconcile and never fails over. Auditor notes left
+  open (Low): no separate alert when the supplier refuses the void of a refunded order's code (`_apply_void`
+  puts the job back to `fulfilled`); pre-check retries use the submit retry budget; the catalog pre-check and
+  the submit share one 120 s lease.
+- **Next, in order:** (1) squash-merge PR #2 into `feat/v12-procurement` once CI on the head is green;
+  (2) update the demo to that build (migration 0027, Redis ACL `INCRBY` for the `procurement` user, both
+  sandbox webhook keys comma-separated) and look at dark mode there in both themes; (3) sandbox webhook
+  (below; the account expires **2026-11-18 10:57**); (4) redemption site (spec §8, own PR); (5) TOTP 2FA
+  frontend (below); (6) deploy dark mode + Telegram language to production.
+- **Re-audit verdict (2026-11-15, head `2895860`): pass with notes — no Critical/High, no path to a double
+  purchase or double delivery.** Original findings: H1, M1, M2, M4, M5, L1, L2, L4, L7 closed; H2, M3, L5
+  partly; L3 and L6 deferred (`TODO(v12-M3)`). New findings and the decided fixes (paths under
+  `backend/app/`):
+  - **N1 (Medium)** the recovery of a closed job (`maybe_sent`, no `upstream_ref`) replays the key and can buy
+    for a refunded order, and skips the kill switches (`procurement/engine.py` `_offer_any`,
+    `_lease_detached`). Decision (orchestrator; **the owner may overrule**): the replay stays, because it is
+    the only way to learn whether a code exists, and the cost is bounded at one issue fee per job. It must
+    wait while the supplier is disabled or its `hard` breaker is open, then end in `needs_manual` with
+    `recover_blocked` (maybe charged). Document in §16.
+  - **N2 (Medium)** the recovery of a hand-fulfilled job can disable the code the buyer received
+    (`modules/admin/procurement_jobs.py` `_schedule_recovery`, `engine.py` dvoid). Fix: record `upstream_ref`
+    and write a critical audit row (`procurement.recovered_after_manual_fulfil`); never disable. Disabling
+    stays an explicit staff `void`. Jobs closed by refund / fail keep the disable.
+  - **N3 (Medium)** the pre-check uses the 60 s plan cache, so a just-paused plan still ends as maybe-sent
+    after ~27 min (`suppliers/zovocard/supplier.py`). Fix: fresh catalog in the pre-check; after an ambiguous
+    `request_failed` on a write, one fresh availability check — plan definitely not offered => `_unsent`,
+    `last_check_ok=false`, fail over.
+  - **N4 (Medium)** `last_balance_at` is stamped before `evaluate()`, whose errors are swallowed
+    (`procurement/service.py`). Fix: stamp only after a successful evaluation (or gate on `last_eval_at`).
+  - **N5 (Low)** a refund leaves `fulfilled` but undelivered units valid at the supplier. Fix: move them to
+    `void_pending` (disable + void the `card_stock` row) with audit rows; delivered units untouched.
+  - **N6 (Low)** the recovery's FATAL path clears `maybe_sent` on `IDEMPOTENCY_CONFLICT`; mirror the main path.
+  - **N7 (Low)** a passed pre-check resets `attempts`, so a RETRYABLE submit retries forever. Do not reset.
+  - **N8 (Low)** a queued, never-sent job parked behind a balance breaker never moves to a healthy source.
+    Fix: fail over when another usable source exists; the job-stuck alert also fires for a long park.
+  - **M5 caveat** a `maybe_sent` job with `request_hash` NULL is treated like a mismatch (`needs_manual`,
+    maybe charged); a never-sent job gets its hash at first lease.
+  - **N9–N11: no code change** (fail-closed `unknown_cost`, the 0027 trigger trusting `app_api`-writable job
+    columns, the conservative `first_sent_at` backfill). Optional one-liner: put `unknown_cost` and the
+    offending count into the breaker reason text.
+  - Tests the auditor asked for: stale-cache paused plan (N3); recovery vs disabled supplier and `hard`
+    breaker (N1); hand-fulfil where the recovered code is the pasted one (N2); failed evaluation after a good
+    balance read (N4); unbounded RETRYABLE (N7); parked job with a healthy alternative (N8); refund with a
+    fulfilled-undelivered unit (N5); recovery `IDEMPOTENCY_CONFLICT` (N6). The fresh pre-check adds one
+    `GET /gpt-direct/plans` per first send: check the mock's rate limit and the e2e scenario plans.
+- **Done in the 2026-11-15 night session.** Audit fixes for H1, H2, M1–M5, L1, L2, L4, L5, L7 (`38754af`..
+  `6469097`, migration 0027, 40 tests); admin page handles the new codes (`5531880`); `main` merged into the
+  branch and procurement alerts moved to the Telegram message catalog (`2895860`). Behaviour change: a source
+  cannot be switched on without a cost estimate unless the supplier reports its own USD price. On `main`:
+  dark mode (#6, `3ce457e`) and the Telegram language switch (#7, `faaa5bf`), CI green, images published,
+  **deployed nowhere**; dark mode has never been seen in a browser.
+- **Sandbox webhook: the vendor does send, but the signature did not verify.** 2026-11-16 01:39:10–16 UTC the
+  demo API logged three `POST /api/v1/webhooks/zovocard` (one event, two retries after 2 s and 4 s), all 401
+  "bad signature". They arrived 40 s BEFORE this session's sandbox calls, so something else triggered them
+  (most likely a save in the vendor console). Two scripted passes afterwards (issue / disable / enable /
+  disable, CDK ids 275 and 276) produced no delivery within 4 minutes. The demo image knows one key only
+  (the API-key-level key, `ZOVOCARD_SANDBOX_KEY_WEBHOOK_SECRET`); the event was probably signed with the
+  general-callback key, or the console issued a new key on save. Next: deploy the merged M2 build to the demo
+  with BOTH sandbox keys, ask the owner what was done in the console at 02:39 Berlin time and whether the
+  signing keys shown there still match `~/.secrets/zovocard.env`, then repeat that action. A packet capture of
+  requests to the demo API ran until about 07:45 UTC on 2026-11-16 (`all.pcap` in that session's scratchpad;
+  delete it after use: it also holds demo logins). The signing keys were pasted in chat: rotate them with the
+  other ZovoCard keys before go-live.
+- **TOTP 2FA (spec §13): backend built, frontend not started.** Branch `feat/totp-2fa` (worktree
+  `.claude/worktrees/totp`, from `main`), commits `547564f` (core) and `58e10e9`: migration `0022a_user_totp`
+  (FORCE RLS, app_api only; **when v12 reaches `main`, `0023_procurement` must revise `0022a_user_totp`**),
+  `app/modules/auth/twofactor.py`, `POST /auth/login` answers `{two_factor_required, pending_token}` for an
+  enrolled account, `POST /auth/login/2fa`, `/me/2fa` (status, `setup`, `enable`, `disable`,
+  `recovery-codes`), `POST /admin/users/{id}/2fa/reset` (admin only), Google sign-in redirects to
+  `/login#2fa=<token>&next=…`, a Google takeover of an unverified account drops its second factor.
+  `tests/test_twofactor.py` (11) + auth / me / v5 tests pass locally; no CI run yet (no PR). Not done: buyer
+  and console UI (login second step, settings page with a locally drawn QR, recovery codes), en + zh-CN
+  strings, API contract doc, the "require 2FA for staff" setting, security-reviewer pass, ADR.
+- **Deployed:** production (c4) `d881dfa`; demo = local image `goods24-api:m2-demo` (`15d7f22`, an M2 build
+  from before the audit fixes; no migration 0027). Unchanged: do not use `scripts/prod.sh deploy` until its
+  registry login is fixed.
+- Housekeeping: `docs/research/zovocard/` is untracked in the main checkout (vendor docs; decide whether it
+  belongs in git); stale local branches `worktree-agent-*`, `fix/pay-ux`, `docs/deploy-*` can be deleted.
+
+**Hand-off 2026-11-15 evening (superseded by the block above; kept for the M2 build notes and the original
+audit findings).**
+
+- **START HERE.** Branch `feat/v12-procurement-m2` (worktree `.claude/worktrees/agent-af3aa371765135692`,
+  draft PR #2). Order:
+  1. Check CI on the branch head (`gh run list --branch feat/v12-procurement-m2`). The run on `1430b47` had
+     frontend + E2E green and the backend suite still running; the head after it adds the security fixes
+     (`7eef58c`) and this note, so read the newest run. Fix what fails.
+  2. Payment-auditor findings: **fixed 2026-11-15** (commits `38754af`..`6469097`, migration 0027, 40 tests in
+     `tests/test_procurement_audit.py`; rules in spec §16; L3 and L6 left as `TODO(v12-M3)`). **Re-run the
+     payment-auditor on the fixes** and close what it still finds before merging.
+  3. Merge `main` into `feat/v12-procurement` (it is behind), take PR #2 out of draft and **squash-merge** it
+     into `feat/v12-procurement` (this removes the WIP commit `68ca6df`).
+  4. Redemption site (spec §8) as its own PR, after M2 is merged (owner decision).
+  5. Own PRs: dark mode, Telegram notification language switch, optional TOTP 2FA (spec §13).
+  Owner standing instructions (2026-11-15): merge green PRs to `main` without asking; deploy to demo and
+  production once tested (tag rollback images first); English only.
+- **M2 state: everything in spec §10 except the redemption site is built.** Backend (implementer, 8 commits
+  `1543fcf`..`1d4a037`): admin password for production suppliers; cost ledger (`procurement/ledger.py`, one
+  unique insert for webhook + `balance-logs` backfill, migration 0025); balance breaker
+  (`procurement/breaker.py`, kinds `hard` / `balance`, auto-recovery, staff alert); admin API under
+  `/api/v1/admin/procurement` (`/sources`, `/jobs` with requery / retry / switch / fulfil / void / fail,
+  `/cost` summary / margin / unreconciled / CSV; migration 0026 grants); `POST /admin/suppliers/{id}/reset-breaker`;
+  procurement + `mockzovo` in `scripts/dev.sh`, compose demo profile, `bootstrap.sh`, and
+  `e2e/smoke.py::v12_procurement` (timeout-after-send, 409, 202, 503 failover, duplicate webhook, forged
+  signature). Orchestrator: several webhook signing keys per environment (comma-separated), admin console
+  page `ProcurementPage.vue` (jobs / sources / costs) + `api-procurement.ts`, Suppliers page password field and
+  breaker reset, product dialog offers `upstream_cdk`, buyer app shows `upstream_cdk` as instant
+  (`isInstantMode`), en + zh-CN strings. Not done: `docs/dev-setup.md` for the two new dev processes;
+  ADR-038 update for M2; the admin UI was typechecked by CI only and not looked at in a browser.
+- **Payment-auditor on M2 (2026-11-15): FAIL for real-money use; no double purchase or double delivery
+  found under normal operation.** Open findings (paths under `backend/app/`):
+  - **H1** a reconcile/verify call can buy after the order left `paid`, and `_fulfil` ignores order status
+    (`procurement/engine.py` `_lease` order check only in the submit branches, `_fulfil`;
+    `aftersales/service.py` `refund_order` never touches jobs). Refund during a reconcile => supplier paid,
+    buyer refunded, code sealed to a refunded order. Fix: order check for every executing mode; `_fulfil`
+    refuses a non-paid order, stores `upstream_ref`, goes `void_pending`; refund moves open jobs to
+    failed / void.
+  - **H2** a paused plan (HTTP 400 `request_failed`) opens the HARD breaker for the whole supplier and the
+    job replays ~27 min, then is stuck as maybe-charged (`suppliers/zovocard/errors.py`, `engine.py`
+    `_open_breaker`, `candidates`, `_lease`). Fix: `availability()` before the first submit; no
+    supplier-wide breaker from an ambiguous `request_failed` (per-offer stop, `last_check_ok=false`).
+  - **M1** staff `fulfil` / `fail` while the supplier call is in flight orphans a charged code
+    (`modules/admin/procurement_jobs.py`; the engine then drops its OK result, `upstream_ref` never stored).
+    Fix: refuse while the lease is live, or reconcile once to record the ref and void.
+  - **M2** a stale `procure.failed` strands an order in `manual_review` with every job fulfilled
+    (`delivery/worker.py` `handle_procure_failed` / `handle_procured`). Fix: ignore the event when no job is
+    unresolved; deliver an order held for `procurement_failed` once all units are bound.
+  - **M3** the balance breaker fails open (unknown reserve counts 0; `min_spendable` default 0; no
+    evaluation when the balance read fails) and its recovery does not resume jobs that were failed over
+    (`procurement/breaker.py`, `engine.py`). Fix: fail closed (cost estimate or known plan cost required to
+    enable an offer; unknown cost opens the breaker; stale balance => no lease); back off queued jobs on a
+    balance breaker instead of failing them over.
+  - **M4** `maybe_charged` is a heuristic over `error_code`, so "switch" can reach a second supplier after
+    the first may have charged (retry/requery clear the code; `offer_missing` not listed). Fix: persist a
+    `maybe_sent` flag in the `_lease` commit and base switch / failover on it.
+  - **M5** reconcile/verify do not compare `request_hash` (an edited offer replays another body under the
+    same key) and there is no maximum age for a same-key replay. Fix: enforce the hash in every mode; add
+    and document a replay age limit.
+  - **Low:** L1 store `upstream_ref` before any early exit in `_fulfil` (and cap that loop); L2 void does
+    not void the `card_stock` row, touch the order or allow a replacement job, and voids a maybe-charged
+    job without a supplier call; L3 late-payment upstream orders in `manual_review` cannot be released;
+    L4 lock order job->order->siblings (admin) vs job->siblings (engine) can deadlock; L5 ledger backfill
+    stops at the first page without new rows, naive timestamps assumed UTC, `ref_id` = CDK id unverified,
+    silent CSV / summary truncation, margin includes refunded orders; L6 `handle_event` pulls
+    `next_poll_at` forward on a leased job (matters for M3); L7 409 `IDEMPOTENCY_CONFLICT` should be FATAL
+    + maybe charged, not "still running".
+  - **Test gaps:** refund or hold during a reconcile; paused plan vs breaker; staff action racing an
+    in-flight call; stale `procure.failed`.
+- **CI findings fixed on the way:** `ruff format` on 0025; the `procurement` Redis ACL user lacked `INCRBY`
+  (the rate limiter in the probe route answered 503 in the E2E stack; `deploy/bootstrap.sh`). **An already
+  bootstrapped stack (demo, later production) needs the Redis ACL line updated by hand.**
+- **Security-reviewer on M2: pass with notes, no critical/high.** Fixed in `7eef58c`: password also required
+  to switch an existing production supplier on (M1 of the report); `code_prefix` no longer stored from CDK
+  events; production and sandbox webhook keys must differ (settings validator, >= 32 chars in prod); CSV
+  currency cell guarded; mock scenario plans only in demo mode. Left as notes: manual fulfil answers 409
+  `duplicate_code` (a slow existence oracle for staff, rate limited); engine/ledger queries rely on the RLS
+  pin without an explicit `tenant_id` filter (defence in depth); any staff role may fulfil manually (as
+  specified).
+- **Sandbox (expires 2026-11-18 10:57): second pass recorded in spec §12 / §14.3.** Settled: the CDK list
+  exposes no idempotency key. Not measurable there: redemption cost (mock redemption), recharge-pending 400,
+  `card_3ds_otp`. **No vendor-sent webhook has reached the demo yet.** Owner saved a key-level subscription;
+  its signing key is in `~/.secrets/zovocard.env` (`ZOVOCARD_SANDBOX_KEY_WEBHOOK_SECRET`) and is what the demo
+  API now verifies with (`/opt/24goods-demo/deploy/env/api.env`, backup `api.env.bak-20261115b`). Open
+  questions to the owner: the key-level callback URL was pasted as `demo.kestv.com` (must be
+  `demo.kesiv.com`); which of the two general-callback keys is the sandbox one. When answered, re-run the four
+  sandbox calls (issue, disable, enable, disable) and watch `supplier_events` on the demo. The demo still
+  runs the M2 image of `d043908` (single key per environment, no procurement process).
+- **Production (c4) runs `d881dfa`** (PR #3 email redesign + #88), deployed 2026-11-15 by hand; rollback images
+  `goods24-{api,web}:rollback-222b03b` on c4; details in the block on `main` (#5). Do not use
+  `scripts/prod.sh deploy` until its registry login is fixed (dead token, and its logout removes c4's working
+  login). Production webhook callback: leave blank until v12 is deployed there. To rotate before go-live: the
+  ZovoCard production API key and signing key (pasted in chat), `APP_OWNER_PASSWORD` on c4 (printed once in a
+  session log).
+- **CI triggers work again** on the new repository (`push` and `pull_request` start runs).
+
+**Hand-off 2026-11-15 (session ended early on quota; read this block first).**
+
+- **START HERE (next session).** Work on `feat/v12-procurement-m2` (worktree
+  `.claude/worktrees/agent-af3aa371765135692`, draft PR #2, CI green at `d043908`). Order: (1) finish M2 per
+  spec §10 — check each item against the code first: admin-password confirmation for production suppliers,
+  procurement + `mock_zovocard` in `scripts/dev.sh` and the e2e smoke, manual fulfil/void/switch, cost report,
+  redemption site; (2) while the sandbox lives (until 2026-11-18 10:57) settle the [I] items of §14.3 and get
+  one vendor-sent webhook (redeem a sandbox CDK); (3) security-reviewer + payment-auditor on M2, squash the
+  WIP commit, merge into `feat/v12-procurement`; (4) security-reviewer on PR #3 (email redesign), merge;
+  (5) own PRs: dark mode, Telegram language switch, TOTP 2FA. Local test loop without the full dev stack:
+  `docker start kesiv-dev-pg kesiv-dev-redis`, then pytest with `TEST_DATABASE_URL` on port 55440 and
+  `TEST_REDIS_URL` on 56390 (passwords in `.dev/.secrets`), under `flock .dev/heavy.lock`; stop the two
+  containers afterwards. CI on the new repo: `gh workflow run CI --ref <branch>`.
+- **Demo runs the M2 branch (2026-11-15):** `/opt/24goods-demo` is on local branch `demo-m2`
+  (= `origin/feat/v12-procurement-m2` at `d043908`, remote switched to the new repo), images
+  `goods24-{api,web}:m2-demo` loaded from the CI artifacts of run 43674783330 (`gh run download <run> -n
+  image-api -n image-web`, `docker load`, no local build), migration `0024` applied, `deploy/.env` backup
+  `.env.bak-20261115`. Added: `APP_DB_PROCUREMENT_PASSWORD` (migrate.env) and
+  `APP_ZOVOCARD_SANDBOX_WEBHOOK_SECRET` (api.env); a `zovocard` sandbox supplier row was inserted by SQL. The
+  procurement process is **not** running there (no `env/procurement.env`, no Redis ACL user), so stored
+  events stay queued. Webhook verified through Cloudflare at `https://demo.kesiv.com/api/v1/webhooks/zovocard`:
+  signed -> 200 and stored once, duplicate -> 200 and not stored again, forged -> 401. That was a self-signed
+  test event (`selftest:20261115-1`); a vendor-sent event has not been observed yet. To return the demo to
+  `main`: restore `.env`, check out `main`, load or pull the `main` images.
+- **CI triggers and publishing (settled 2026-11-15):** on the new repo no check suite is created for any
+  push or PR, so `push` / `pull_request` never start workflows; only `workflow_dispatch` runs. Repository
+  settings are normal (Actions enabled, workflows active, account publicly visible), so this is an
+  account-level restriction on the new GitHub account (inference; nothing to configure). **Procedure:** for a
+  PR `gh workflow run CI --ref <branch>`; after merging to `main`, `gh workflow run CI --ref main`, which now
+  also publishes the images (#4). First publish done: `ghcr.io/zucchinistockton/goods24-{api,web}:main` and
+  `:75163f3` (run 43678521886, all green). c4 has a persistent `docker login ghcr.io` with a `read:packages`
+  token and can read both images (checked with `docker manifest inspect`). Production itself still runs
+  the old `arifulcrypto` `:main` images; nothing was deployed. There is no `rollback-*` image on c4: tag the
+  running images before the next deploy. `~/.secrets/ghcr_token` on the dev box is still the dead token;
+  `prod.sh`'s transient login will fail until it is replaced (or skip it, c4 is already logged in).
+- **Repository moved (2026-11-15):** the old account `arifulcrypto` is suspended (appeal filed, answer
+  expected in 3–5 business days). Development continues at **`zucchinistockton/24goods-web`** (private; remote
+  `origin`; the dead remote is kept as `old`). Pushed: `main` (`19c7625`), `feat/v12-procurement`,
+  `feat/v12-procurement-m2`. PR #1 moves the owner/image references (`ghcr.io/zucchinistockton/...`), PR #2
+  is the M2 draft. Old PR/issue numbers (#1–#89) refer to the old repository and are not migrated.
+  **Not done yet:** branch protection on `main` (needs a paid plan while the repo is private); Dependabot and
+  `ENABLE_CODEQL` settings; a GHCR token from the new account on c4 (`~/.secrets/ghcr_token` is the old,
+  dead PAT) — **production cannot pull new images until that exists**; the demo updater's token likewise.
+  PR events did not start CI on the first PRs; `gh workflow run CI --ref <branch>` does.
+- **ZovoCard sandbox (account valid until 2026-11-18 10:57): probe green and one CDK scenario verified**
+  (issue, same-key replay, void; spec §12). Key in `~/.secrets/zovocard.env`. Open: webhook test (needs the
+  sandbox signing secret, the demo stack running and M2 deployed there), the remaining [I] items of §14.3.
+- **Checked 2026-11-15:** production (c4) serves normally on the old images `ghcr.io/arifulcrypto/...:main`
+  (containers up 4 days, disk 82 %); the `rollback-*` images were pruned, so **there is no local rollback
+  image: tag the running images before the next deploy**. c4 has `gh` logged in as the new account but no
+  Docker registry login; `prod.sh` logs in transiently with `~/.secrets/ghcr_token`, which is still the dead
+  token (a new one needs `read:packages`). **No image exists under the new owner yet:** on the new repo only
+  `workflow_dispatch` starts CI (0 push / pull_request runs, also for the merge of #1), and the GHCR push job
+  runs only on a push event to `main`. Likely an account-level restriction (inference): verify the account
+  email, then push to `main` again; otherwise allow the push job on a manual run. The demo stack on the dev
+  box is stopped (exited 2 days ago). Repo-local git identity now `zucchinistockton` (noreply address).
+- **Branches (local):** `main` is 2 behind `origin/main` (`19c7625`, which already contains pay-ux #88;
+  `fix/pay-ux` has no diff against it and can be deleted). v12 M1 is merged into **`feat/v12-procurement`**
+  (#89, `a00b58e`), **not into `main`**. M2 lives on `feat/v12-procurement-m2` in the worktree
+  `.claude/worktrees/agent-af3aa371765135692`.
+- **v12 M2 state (updated 2026-11-15):** draft PR #2 on the new repo; **full CI green** (run 43674783330:
+  backend suite incl. `tests/test_procurement_m2.py`, frontend, Semgrep, gitleaks, images, E2E smoke). Fixed
+  on the way: 0024 lacked an UPDATE policy for the outbox claim (`procurement_claim`; `SELECT ... FOR UPDATE`
+  must pass one, so the engine saw no work), a late non-terminal webhook status no longer replaces
+  `consumed`/`disabled`, four test corrections. `68ca6df` is still a WIP snapshot: squash before merge.
+  **Still open for M2 (spec §10), verify each against the code before building:** admin-password confirmation
+  for production suppliers, procurement + `mock_zovocard` in `scripts/dev.sh` and the e2e smoke, manual
+  fulfil/void/switch, cost report, redemption site; then security-reviewer + payment-auditor. PR #3 (email
+  redesign, CI green) touches `app/core` and waits for the security-reviewer pass before merge.
+- **Done this session:** `app/suppliers/gpt_session.py` (`0bfcd4e`) — offline pre-check of a pasted ChatGPT
+  session, 18 unit tests green, not wired to any endpoint yet. Live checks (spec §15): test session valid,
+  ipcook SOCKS5 exits work. Credentials saved: `~/.secrets/gpt-test-session.json`, `~/.secrets/ipcook.env`.
+- **Queue (owner, 2026-11-15), each its own PR, none started:**
+  1. Dark mode for the buyer app and console, following the system theme (`prefers-color-scheme`); validate on
+     the demo.
+  2. Optional TOTP 2FA (`feat/totp-2fa`, spec §13).
+  3. Telegram notifications: English by default, language (en / zh-CN) selectable in the admin console,
+     texts through i18n.
+  4. Email templates: redesign the outgoing emails (clearer subjects, formatted HTML body with a plain-text
+     part, key information first). Owner confirmed 2026-11-15: a design/content upgrade, no new behaviour.
+  5. Second GPT supplier adapter built on the open-source payment protocol
+     (`crhywun/gpt-subscribe-studio-1`; owner fork `arifulcrypto/gpt-subscribe-studio-dev`, local `/opt/gss/src`)
+     plus the browser-session-injection path, as a backup to ZovoCard. **Future work, parked** (owner,
+     2026-11-15: payment instrument and billing countries undecided; spec §15).
+  6. ~~ZovoCard sandbox probe~~ done (see above).
+
 **v12 procurement M1 — built (2026-11-14, branch `feat/v12-procurement-m1`, ADR-038, migration
 `0023_procurement`):** `app/suppliers/` (protocol, ZovoCard read-only client with the status/error-code
 table, mock + manual suppliers), `app/procurement/` (health loop, internal probe API on :8004, CLI
@@ -26,6 +294,53 @@ Order of work: M1 (adapter + probe + process + admin Suppliers page) -> M2 (CDK,
 ops, redemption site) -> M3 (VCC, 3DS, direct top-up). Side PRs: `fix/pay-ux-reco` (USDT/Alipay pay UX,
 exclude-from-recommendations flag), `feat/totp-2fa` (optional TOTP, spec §13). Status of each: see the
 spec's §10 and the open PRs.
+**Telegram notification language (2026-11-15, PR `feat/tg-language`).** Staff alerts are English by
+default; `notifications.telegram_language` (`en` | `zh-CN`, Settings → Notifications) switches them. All
+sentences live in one catalog (`app/core/notify_tg.py` `TEXTS`; callers pass `T(key, …)` and plain strings
+only for data), rendered when the message goes out and HTML-escaped after rendering. The service-expiry
+reminder uses the same setting for Telegram (e-mail keeps the staff owner's locale). A test keeps the
+zh-CN catalog complete and its placeholders equal to English. No migration.
+**Dark mode (2026-11-15, PR `feat/dark-mode`).** Both apps follow the system theme
+(`prefers-color-scheme`, live; no manual switch, nothing stored). `followSystemTheme()` in
+`packages/shared/src/theme.ts` sets `html.dark` (+ `van-theme-dark` in the buyer app) before mount and keeps
+`theme-color` in step. Buyer app: dark values for every token in `styles/tokens.css` plus new semantic tokens
+(`--c-fill`, `--c-chip`, `--c-hero-*`, `--c-note-*`, `--c-warn/ok/bad/info-soft|ink`, …) replacing ~70
+hard-coded colours; QR codes keep a white plate. Console: Element Plus dark variables + `--a-*` dark values.
+Shared chat/UI components read `--gc-*` tokens with the old light values as fallbacks. No `color-mix()` (older
+mobile browsers). Typechecked and built by CI only; **look at both themes on the demo before production**.
+
+**Production deploy 2026-11-15: `d881dfa` (pay-page fixes #88, email redesign #3; no migration).**
+Images `ghcr.io/zucchinistockton/goods24-{api,web}:main`; c4 `.env` now points at the new owner (backup
+`.env.bak-20261115`). Rollback images kept on c4: `goods24-api:rollback-222b03b`, `goods24-web:rollback-222b03b`
+(to roll back: set `API_IMAGE` / `WEB_IMAGE` to them, `compose up -d --wait`). Deployed by hand (sync, pull,
+migrate, up) because `prod.sh deploy` logs in with `~/.secrets/ghcr_token` (dead) and then logs c4 out of its
+working registry login: fix `prod.sh` or replace the token before using it again. `prod.sh smoke`: all pass.
+`push` and `pull_request` events start CI again on the new repository (seen on #3 and on `main`).
+PR #3 security review: pass, two low findings fixed (a code can no longer reach a subject; test send brand).
+
+**Email redesign (2026-11-15, branch `feat/email-design`):** every outgoing mail (verification code, password
+reset, order paid, order delivered, and the admin test send) is now a complete HTML document with a
+plain-text part: site-name header, the admin-editable body, one focal block (the code in a large box; for
+orders a summary table — order number, item, amount, status — and a "View order" button), a safety note and a
+footer; light/dark via `prefers-color-scheme`, table layout with inline styles, no remote assets. New default
+subjects and bodies in en / zh-CN (codes are not placed in subjects). Templates stay editable in Settings;
+stored values that equal the previous built-in text follow the new defaults (`_LEGACY`), real edits are kept.
+No migration, no API change. `tests/test_email_layout.py`. Not done: a rendered preview in the console.
+
+**Production deployed 2026-11-10 16:24 UTC: `222b03b`** (v11 #82 + #83 + #84, migrations 0020–0022) from
+`5f709d3`. Pre-deploy backups (v1 script, sha256-verified off-host copies, `pg_restore --list` OK);
+rollback images `goods24-{api,web}:rollback-5f709d3`. Smoke all pass; order / payment / card / ledger
+counts identical to the pre-deploy baseline (ledger sum 0); FORCE RLS intact on the new and touched
+tables; the existing service record got ref `SV-3EUADH`.
+**Incident (same day, ~2–3 min downtime):** the first attempt (`cd90d33`) failed at 0022 — FORCE RLS
+also binds the migrate role, so the `ref` backfill saw no rows and `SET NOT NULL` failed; compose had
+already removed the running api/web, so the site returned 521 until api/delivery/web were rolled back
+to `5f709d3` (DB at 0021, additive; data unchanged). Fixed in #84: data steps run with FORCE lifted
+inside the transaction, a regression test migrates a DB with pre-existing rows, and `prod.sh deploy`
+now runs the migration as a one-off **before** recreating containers. Rule for future migrations:
+any data backfill on a FORCE-RLS table must lift FORCE (see 0022 `_owner_sees_all_rows`).
+Follow-ups (owner): Cloudflare rewrites `Cache-Control` to a 4 h browser TTL (`/sw.js` is `no-cache` at
+the origin; harmless for service-worker updates); old rollback images on c4 can be pruned (disk 87 %).
 
 **v11 features (2026-11-10, branch `feat/v11-features`, PR #82, spec `docs/review-v11-features.md`,
 ADR-037, migrations `0020_product_variants`, `0021_chat_v11`, `0022_v11_content_ops`):** product

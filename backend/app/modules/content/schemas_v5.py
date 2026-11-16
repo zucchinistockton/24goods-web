@@ -192,6 +192,7 @@ class EmailIn(BaseModel):
 class NotificationsIn(BaseModel):
     telegram_enabled: bool | None = None
     telegram_chat_ids: list[str] | None = Field(None, max_length=10)
+    telegram_language: Literal["en", "zh-CN"] | None = None
     event_order_paid: bool | None = None
     event_chat_message: bool | None = None
     event_after_sales: bool | None = None

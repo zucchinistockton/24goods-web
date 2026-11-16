@@ -528,7 +528,6 @@ export default {
     network: 'Network',
     address: 'Receiving address',
     amount: 'Send exactly',
-    copy: 'Copy',
     copied: 'Copied',
     expiresIn: 'Time left',
     expired: 'This payment window has expired.',
@@ -542,6 +541,9 @@ export default {
     loadFail: 'Could not load the payment details.',
     simulate: 'Simulate payment (demo only)',
     qrAlt: 'QR code of the receiving address',
+    copyAmount: 'Copy amount',
+    copyAddress: 'Copy address',
+    verify: 'Before sending, check that the first and last {n} characters match {short}.',
   },
   fee: {
     discount: 'Discount',

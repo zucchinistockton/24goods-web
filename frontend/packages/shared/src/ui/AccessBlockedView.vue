@@ -35,8 +35,8 @@ const suspended = computed(() => props.block.kind === 'account_suspended')
   display: grid;
   place-items: center;
   padding: 24px 16px;
-  background: #fff;
-  color: #1f2328;
+  background: var(--gc-other-bg, #fff);
+  color: var(--gc-text, #1f2328);
   overflow: auto;
 }
 .box {
@@ -56,12 +56,12 @@ dl {
   text-align: left;
   margin: 16px 0;
   padding: 12px 16px;
-  background: #f6f8fa;
+  background: var(--gc-fill, #f6f8fa);
   border-radius: 8px;
 }
 dt {
   font-size: 12px;
-  color: #656d76;
+  color: var(--gc-muted, #656d76);
 }
 dd {
   margin: 0 0 8px;
@@ -69,6 +69,6 @@ dd {
 }
 .hint {
   font-size: 13px;
-  color: #656d76;
+  color: var(--gc-muted, #656d76);
 }
 </style>

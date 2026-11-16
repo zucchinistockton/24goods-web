@@ -46,6 +46,15 @@ const clock = computed(() => `${String(Math.floor(left.value / 60)).padStart(2, 
 const paid = computed(() => !!view.value && PAID.has(view.value.status))
 const review = computed(() => view.value?.status === 'manual_review')
 const expired = computed(() => !!view.value && !paid.value && !review.value && (view.value.expired || left.value === 0))
+/** Head and tail emphasised (what a wallet shows as `TXyz12…9aBcDe`), middle in groups of 4. */
+const EDGE = 6
+const addr = computed(() => {
+  const a = view.value?.address ?? ''
+  if (a.length <= 16) return { head: a, mid: [] as string[], tail: '', short: a }
+  const head = a.slice(0, EDGE)
+  const tail = a.slice(-EDGE)
+  return { head, mid: a.slice(EDGE, -EDGE).match(/.{1,4}/g) ?? [], tail, short: `${head}…${tail}` }
+})
 const qr = computed(() => (view.value ? `data:image/svg+xml;base64,${btoa(view.value.qr_svg)}` : ''))
 
 const timer = setInterval(() => {
@@ -95,28 +104,36 @@ async function retry() {
           <van-button type="primary" round block @click="retry">{{ t('pay.retry') }}</van-button>
         </template>
         <template v-else>
+          <button type="button" class="amount" @click="copy(view.usdt_amount)">
+            <span class="cap">{{ t('pay.amount') }}</span>
+            <span class="num">{{ view.usdt_amount }}<small>USDT</small></span>
+            <span class="hint">{{ t('pay.copyAmount') }}</span>
+          </button>
+          <div class="meta">
+            <span class="cap">{{ t('pay.expiresIn') }}</span>
+            <span class="clock" :class="{ low: left < 60 }">{{ clock }}</span>
+          </div>
           <img class="qr" :src="qr" :alt="t('pay.qrAlt')" width="180" height="180" />
-          <div class="row">
-            <span class="muted">{{ t('pay.amount') }}</span>
-            <button type="button" class="val big" @click="copy(view.usdt_amount)">{{ view.usdt_amount }} USDT</button>
+          <div class="addr-block">
+            <span class="cap">{{ t('pay.address') }}</span>
+            <button type="button" class="addr" :aria-label="`${t('pay.copyAddress')}: ${view.address}`" @click="copy(view.address)">
+              <b>{{ addr.head }}</b>
+              <span v-for="(g, i) in addr.mid" :key="i" class="g">{{ g }}</span>
+              <b v-if="addr.tail" class="g">{{ addr.tail }}</b>
+            </button>
+            <p v-if="addr.tail" class="verify">{{ t('pay.verify', { short: addr.short, n: EDGE }) }}</p>
           </div>
-          <div class="row col">
-            <span class="muted">{{ t('pay.address') }}</span>
-            <button type="button" class="val addr" @click="copy(view.address)">{{ view.address }}</button>
-          </div>
-          <div class="row">
-            <span class="muted">{{ t('pay.expiresIn') }}</span>
-            <span class="val">{{ clock }}</span>
-          </div>
-          <div class="row">
-            <span class="muted">{{ t('order.amount') }}</span>
+          <div class="meta">
+            <span class="cap">{{ t('order.amount') }}</span>
             <span class="val">{{ formatMoney(fromMinor(BigInt(view.fiat_amount_minor)), view.currency, locale) }}</span>
           </div>
           <p class="state wait"><van-loading size="16" /> {{ t('pay.waiting') }}</p>
-          <p class="muted small">{{ t('pay.exact') }}</p>
-          <p class="muted small" data-testid="usdt-confirm-tip">{{ t('pay.confirmTip') }}</p>
-          <van-button round block @click="copy(view.address)">{{ t('pay.copy') }}</van-button>
-          <van-button round block plain type="primary" @click="orderLink">{{ t('pay.viewOrder') }}</van-button>
+          <div class="notes">
+            <p class="muted small">{{ t('pay.exact') }}</p>
+            <p class="muted small" data-testid="usdt-confirm-tip">{{ t('pay.confirmTip') }}</p>
+          </div>
+          <van-button type="primary" round block @click="copy(view.address)">{{ t('pay.copyAddress') }}</van-button>
+          <van-button round block plain @click="orderLink">{{ t('pay.viewOrder') }}</van-button>
           <a v-if="view.sim_url" class="sim" :href="view.sim_url">{{ t('pay.simulate') }}</a>
         </template>
       </div>
@@ -130,7 +147,7 @@ async function retry() {
   padding-bottom: calc(var(--safe-bottom) + 16px);
 }
 .pad {
-  padding: 14px 16px;
+  padding: 16px;
 }
 .center {
   text-align: center;
@@ -138,48 +155,125 @@ async function retry() {
 .box {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 20px;
   align-items: stretch;
+  padding: 24px 20px;
 }
 .net {
   margin: 0;
-  font-weight: 700;
-  text-align: center;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--c-muted);
 }
-.qr {
-  align-self: center;
-  background: #fff;
-  padding: 6px;
-  border-radius: 8px;
+.cap {
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: var(--c-muted);
 }
-.row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-  min-height: 44px;
-}
-.row.col {
-  flex-direction: column;
-  align-items: stretch;
-}
-.val {
+.amount,
+.addr {
   background: none;
   border: 0;
   padding: 0;
   color: inherit;
   font: inherit;
-  font-weight: 600;
-  text-align: right;
+  text-align: left;
   cursor: pointer;
 }
-.val.big {
-  font-size: 20px;
-}
-.val.addr {
-  text-align: left;
-  word-break: break-all;
+.amount {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   min-height: 44px;
+}
+.num {
+  font-size: clamp(2rem, 10vw, 2.75rem);
+  font-weight: 700;
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.num small {
+  margin-left: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--c-muted);
+}
+.hint {
+  font-size: 12px;
+  color: var(--c-muted);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  padding-top: 16px;
+  border-top: 1px solid var(--c-line);
+}
+.clock,
+.val {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.clock.low {
+  color: var(--c-danger);
+}
+.qr {
+  align-self: center;
+  background: #fff;
+  padding: 8px;
+  border-radius: var(--radius-s);
+}
+.addr-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 16px;
+  border-top: 1px solid var(--c-line);
+}
+.addr {
+  min-height: 44px;
+  padding: 12px 14px;
+  border: 1px solid var(--c-line);
+  border-radius: var(--radius-s);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--c-muted);
+  word-break: break-all;
+  transition: border-color 0.15s;
+}
+.addr:active {
+  border-color: var(--c-text);
+}
+.addr b {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--c-text);
+}
+.addr .g {
+  margin-left: 0.5ch;
+}
+.verify {
+  margin: 0;
+  font-size: 12px;
+  color: var(--c-muted);
+}
+.notes {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.notes p {
+  margin: 0;
+  line-height: 1.5;
 }
 .state {
   margin: 0;
@@ -191,9 +285,14 @@ async function retry() {
   line-height: 44px;
 }
 .state.ok {
-  color: var(--van-success-color, #07c160);
+  color: var(--c-success);
 }
 .state.warn {
-  color: var(--van-danger-color, #ee0a24);
+  color: var(--c-danger);
+}
+@media (prefers-reduced-motion: reduce) {
+  .addr {
+    transition: none;
+  }
 }
 </style>

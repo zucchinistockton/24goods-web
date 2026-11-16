@@ -80,7 +80,10 @@ async def apply(
         res,
         user.tenant_id,
         "reseller_application",
-        [f"Store: {body.slug}", f"Applicant: {notify_tg.mask_email(user.email)}"],
+        [
+            notify_tg.T("reseller.store", slug=body.slug),
+            notify_tg.T("reseller.applicant", who=notify_tg.mask_email(user.email)),
+        ],
         link=notify_tg.admin_link(res, "resellers"),
         once=(f"reseller:{r.id}", 86400),
     )

@@ -286,7 +286,7 @@ async function logout() {
   overflow-y: auto;
 }
 .menu :deep(.el-menu-item-group__title) {
-  color: #6b7280;
+  color: var(--a-nav-title);
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.05em;

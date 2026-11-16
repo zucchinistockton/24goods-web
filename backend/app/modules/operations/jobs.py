@@ -165,7 +165,14 @@ async def send_reminder(
             "due": "到期时间",
         },
     }
-    words = labels.get(owner.locale, labels["en"])
+    # e-mail goes to the staff owner (their locale); Telegram goes to the shared staff chats
+    # (the tenant's notification language)
+    lang = (
+        owner.locale
+        if reminder.kind.endswith(":email")
+        else notify_tg.language(section(ts, "notifications"))
+    )
+    words = labels.get(lang, labels["en"])
     title = f"[{res.settings.env}] {words['title']}"
     lines = [
         title,
@@ -197,7 +204,7 @@ async def send_reminder(
         )
         if not cfg["telegram_enabled"] or not cfg["telegram_chat_ids"] or not token:
             raise ReminderSendError("invalid_configuration")
-        message = notify_tg.build_text(words["title"], lines)
+        message = notify_tg.build_text("reminder", lines, label=words["title"])
         results = [
             await notify_tg._post(res, token, chat, message) for chat in cfg["telegram_chat_ids"]
         ]

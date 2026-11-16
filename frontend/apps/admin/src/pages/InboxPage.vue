@@ -527,7 +527,7 @@ function openProduct(id: string) {
   width: 100%;
   padding: 10px 12px;
   border: 0;
-  border-bottom: 1px solid #f1f2f4;
+  border-bottom: 1px solid var(--a-line);
   background: none;
   text-align: start;
   cursor: pointer;
@@ -535,10 +535,10 @@ function openProduct(id: string) {
   color: inherit;
 }
 .conv:hover {
-  background: #f8fafc;
+  background: var(--a-hover);
 }
 .conv.on {
-  background: #eff6ff;
+  background: var(--a-selected);
 }
 .conv-main {
   flex: 1;
@@ -585,7 +585,7 @@ function openProduct(id: string) {
   padding: 8px;
 }
 .chat-pane {
-  background: #f3f4f6;
+  background: var(--a-fill);
 }
 .chat-head {
   display: flex;

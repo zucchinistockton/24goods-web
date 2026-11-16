@@ -118,7 +118,10 @@ async def email_test(
             ts,
             body.template,
             body.locale,
-            {**email_templates.SAMPLE, "site_name": email_templates.site_name(ts, body.locale)},
+            {
+                **email_templates.SAMPLE,
+                "site_name": email_templates.site_name(ts, body.locale, res.settings.brand_name),
+            },
         )
     try:
         await mailer.send_mail(cfg, body.to, subject, text, html)

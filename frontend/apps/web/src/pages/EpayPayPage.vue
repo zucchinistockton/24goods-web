@@ -59,8 +59,40 @@ onBeforeUnmount(() => clearInterval(timer))
 </template>
 
 <style scoped>
-.pay-card { margin: 16px; text-align: center; }
-.wallet-link { display: block; padding: 14px; min-height: 44px; }
-.pay-card img { max-width: 100%; height: auto; }
-.pay-card .van-button { margin-top: 12px; }
+.pay-card {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin: 16px;
+  padding: 24px 20px;
+  text-align: center;
+}
+.pay-card h2 {
+  margin: 0;
+  font-size: clamp(2rem, 10vw, 2.75rem);
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+.pay-card p {
+  margin: 0;
+  line-height: 1.5;
+}
+.pay-card img {
+  align-self: center;
+  max-width: 100%;
+  height: auto;
+  padding: 8px;
+  background: #fff;
+  border-radius: var(--radius-s);
+}
+.wallet-link {
+  display: block;
+  min-height: 44px;
+  padding: 12px;
+  border: 1px solid var(--c-line);
+  border-radius: var(--radius-s);
+  font-weight: 600;
+  color: inherit;
+}
 </style>

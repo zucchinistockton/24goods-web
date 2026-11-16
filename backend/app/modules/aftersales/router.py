@@ -52,7 +52,11 @@ async def open_after_sales(
         res,
         order.tenant_id,
         "after_sales",
-        [f"Order {order.order_no}", order.title, f"Reason: {t.reason}"],
+        [
+            notify_tg.T("order.no", no=order.order_no),
+            order.title,
+            notify_tg.T("aftersales.reason", reason=t.reason),
+        ],
         link=notify_tg.admin_link(res, "after-sales"),
         once=(f"aftersales:{t.id}", 86400),
     )

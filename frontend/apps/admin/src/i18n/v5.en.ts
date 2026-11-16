@@ -176,6 +176,8 @@ export default {
     chatsHint: "A user id such as 123456789, or a group id such as -1001234567890. Start the bot in each chat first.",
     chatsInvalid: "Chat IDs must be integers (max 10).",
     tokenRequired: "A bot token is required to enable notifications.",
+    language: "Message language",
+    languageHint: "Language of the alerts sent to the staff chats. Product titles and order data are not translated.",
     buyerTitle: "Buyer chat alerts",
     buyerNote: "Defaults for buyers when support replies and the chat is not open. Each buyer can change them in Settings.",
     buyerSound: "Message sound (default on)",

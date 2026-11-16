@@ -95,7 +95,7 @@ onBeforeUnmount(() => {
 .gc-menu.sheet { position: static; width: 100%; max-width: none; min-width: 0; border-radius: 16px 16px 0 0; padding: 8px 0 calc(8px + env(safe-area-inset-bottom, 0px)); max-height: 70vh; overflow-y: auto }
 .gc-menu-row { display: flex; align-items: center; gap: 14px; width: 100%; min-height: 44px; padding: 0 18px; border: 0; background: transparent; color: inherit; font: inherit; text-align: start; cursor: pointer }
 .gc-menu-row:hover, .gc-menu-row:focus-visible { background: rgb(127 127 127 / 0.14); outline: none }
-.gc-menu-row.danger { color: #d03050 }
+.gc-menu-row.danger { color: var(--gc-danger, #d03050) }
 .gc-menu-ico { width: 22px; text-align: center; font-size: 17px; flex: none }
 .gc-menu-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
 </style>

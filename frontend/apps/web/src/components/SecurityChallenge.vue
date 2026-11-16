@@ -30,4 +30,4 @@ onBeforeUnmount(cancelChallenge)
     </div>
   </Teleport>
 </template>
-<style scoped>.challenge-overlay{position:fixed;inset:0;background:#0008;z-index:9999;display:grid;place-items:center;padding:16px}.challenge-overlay section{width:min(360px,100%);background:var(--c-panel,#fff);color:var(--c-text,#222);border-radius:16px;padding:20px;max-height:90vh;overflow:auto}.van-button{margin-top:10px}</style>
+<style scoped>.challenge-overlay{position:fixed;inset:0;background:#0008;z-index:9999;display:grid;place-items:center;padding:16px}.challenge-overlay section{width:min(360px,100%);background:var(--c-surface, #fff);color:var(--c-text,#222);border-radius:16px;padding:20px;max-height:90vh;overflow:auto}.van-button{margin-top:10px}</style>
