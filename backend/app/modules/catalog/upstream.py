@@ -22,7 +22,7 @@ from app.modules.common.modes import MAX_UPSTREAM_QTY
 def _usable():  # type: ignore[no-untyped-def]
     return (
         SupplierOffer.enabled.is_(True),
-        SupplierOffer.kind == "cdk",
+        SupplierOffer.kind.in_(("cdk", "vcc")),
         SupplierOffer.last_check_ok.is_(True),
         SupplierAccount.enabled.is_(True),
         SupplierAccount.breaker_open.is_(False),

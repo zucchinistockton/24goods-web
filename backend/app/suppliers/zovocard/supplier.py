@@ -199,6 +199,9 @@ def parse_balance_logs(data: Any) -> tuple[list[LedgerRow], int | None]:
             continue
         after = _dec_or_none(item.get("after"))
         ref = item.get("ref_id")
+        card = item.get("card_id")
+        if str(item.get("type") or "") in CARD_ROW_TYPES and isinstance(card, (int, str)):
+            ref = card if str(card) else ref  # card rows link to their job by card id
         rows.append(
             LedgerRow(
                 external_id=str(rid).strip()[:64],
@@ -665,6 +668,7 @@ def parse_cdk_issue(data: Any) -> Result:
 
 
 # ---------------------------------------------------------------- upstream_vcc helpers
+CARD_ROW_TYPES = frozenset({"open_card", "card_recharge", "card_refund", "card_fee", "card_delete"})
 _RECHARGE_OK = frozenset({"success", "succeeded", "completed", "done"})
 _RECHARGE_FAILED = frozenset({"failed", "fail", "failure", "rejected", "cancelled", "canceled"})
 _PRODUCT_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")

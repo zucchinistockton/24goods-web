@@ -27,11 +27,21 @@ from app.procurement.context import ProcurementContext
 from app.procurement.service import SupplierRef, make_supplier
 from app.suppliers.base import LedgerRow, clean_detail, dec
 from app.suppliers.registry import SupplierConfigError
-from app.suppliers.zovocard.supplier import parse_time
+from app.suppliers.zovocard.supplier import CARD_ROW_TYPES, parse_time
 
 log = logging.getLogger("app.procurement.ledger")
 
 LINK_TYPE_PREFIX = "gpt_direct"  # ref_id of these rows is the CDK / direct order, not a card id
+# card rows (review-v12 §12): the opening charge is booked as ``card_recharge``, the open fee as a
+# separate ``open_card`` row. Their ``ref_id`` field is the vendor's own and not a card id, so a
+# card row is stored with ``ref_id = card_id`` (the job's ``upstream_ref``) and the PAN masked.
+CARD_TYPES = CARD_ROW_TYPES
+
+
+def links_to_job(row_type: str) -> bool:
+    return row_type.startswith(LINK_TYPE_PREFIX) or row_type in CARD_TYPES
+
+
 MAX_ABS = Decimal("1000000000000")
 BACKFILL_PAGE_SIZE = 100
 BACKFILL_MAX_PAGES = 50  # hard cap per pass (5000 rows)
@@ -55,6 +65,9 @@ def row_from_event(payload: Mapping[str, Any]) -> LedgerRow | None:
     except ValueError:
         pass
     ref = payload.get("ref_id")
+    card = payload.get("card_id")
+    if str(payload.get("type") or "") in CARD_TYPES and isinstance(card, (int, str)) and card != "":
+        ref = card
     mask = payload.get("card_number")
     cur = payload.get("currency")
     return LedgerRow(
@@ -84,7 +97,7 @@ async def record_rows(
         if abs(r.amount) >= MAX_ABS:
             continue
         job_id = None
-        if r.ref_id and r.type.startswith(LINK_TYPE_PREFIX):
+        if r.ref_id and links_to_job(r.type):
             job_id = await db.scalar(
                 select(ProcurementJob.id).where(
                     ProcurementJob.tenant_id == tenant_id,
@@ -136,7 +149,8 @@ async def link_rows(db: AsyncSession, tenant_id: uuid.UUID, supplier_id: uuid.UU
             SupplierLedgerEntry.supplier_id == supplier_id,
             SupplierLedgerEntry.job_id.is_(None),
             SupplierLedgerEntry.ref_id.is_not(None),
-            SupplierLedgerEntry.type.like(LINK_TYPE_PREFIX + "%"),
+            SupplierLedgerEntry.type.like(LINK_TYPE_PREFIX + "%")
+            | SupplierLedgerEntry.type.in_(sorted(CARD_TYPES)),
             job.is_not(None),
         )
         .values(job_id=job)

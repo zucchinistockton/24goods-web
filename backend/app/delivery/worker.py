@@ -56,7 +56,7 @@ PROCURE_REQUESTED = "procure.requested"
 PROCURE_FULFILLED = "procure.fulfilled"
 PROCURE_FAILED = "procure.failed"
 TOPICS = (TOPIC, REPLACE_TOPIC, PROCURE_FULFILLED, PROCURE_FAILED)
-UPSTREAM_MODES = ("upstream_cdk",)
+UPSTREAM_MODES = ("upstream_cdk", "upstream_vcc")
 MAX_ATTEMPTS = 8
 
 
@@ -280,7 +280,7 @@ async def handle_procured(db: AsyncSession, payload: dict) -> JobResult:
         order,
         card_ids,
         JobResult(order),
-        mode="upstream_cdk",
+        mode=order.delivery_mode,
         from_status="manual_review" if held else "paid",
     )
 

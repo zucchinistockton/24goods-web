@@ -107,6 +107,14 @@ async def list_products(db: AsyncSession, page: Page, q: str | None, status: str
     return page.wrap(outs, int(total))
 
 
+def _card_format(p: Product) -> None:
+    """A virtual-card product reveals ``<pan>----<MM/YY>----<cvv>``: the separator is fixed (the
+    sealed secret and the buyer's field split depend on it) and a label set is always present."""
+    if p.delivery_mode == "upstream_vcc":
+        p.delivery_separator = "----"
+        p.delivery_format = p.delivery_format or "Card number----Expiry (MM/YY)----CVV"
+
+
 async def create(db: AsyncSession, body: ProductIn, admin: User, ip: str | None) -> Product:
     try:
         price = parse_amount(body.price)
@@ -150,6 +158,7 @@ async def create(db: AsyncSession, body: ProductIn, admin: User, ip: str | None)
             else None
         ),
     )
+    _card_format(p)
     db.add(p)
     await db.flush()
     await audit(
@@ -241,6 +250,7 @@ async def patch(
     if data.get("usage_i18n") is not None:
         p.usage_i18n = data["usage_i18n"]
         p.usage_html_i18n = render_i18n(data["usage_i18n"])
+    _card_format(p)
     p.price_minor, p.floor_price_minor = price, floor
     await audit(
         db,
