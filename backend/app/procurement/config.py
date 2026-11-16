@@ -49,6 +49,24 @@ class ProcurementSettings:
     # No NEW purchase is leased while a supplier's last good balance reading is older than this
     # (default 3 balance intervals): without a fresh balance the breaker is blind (fail closed).
     balance_stale_s: float = 900.0
+    # CDK redemption proxy (review-v12 §8): a SECOND, public listener, off by default. It never
+    # serves the internal API; the internal API never serves it.
+    redeem_enabled: bool = False
+    redeem_host: str = "127.0.0.1"
+    redeem_port: int = 8006
+    # constant X-Redemption-Device sent to the vendor on every step (per deployment, not per buyer)
+    redeem_device: str = ""
+    # "" = the one enabled ZovoCard supplier of the platform tenant; "sandbox"/"production" pins it
+    redeem_supplier_env: str = ""
+    # proxies whose X-Forwarded-For is believed (comma-separated CIDRs); "" = use the peer address
+    redeem_trusted_proxies: str = ""
+    redeem_upstream_timeout_s: float = 20.0
+    # per-IP per-minute limits by step, then ONE shared budget per step for all buyers: the vendor
+    # limits per egress IP (preview 30, redeem 20, result 60 per minute) and every buyer shares ours
+    redeem_ip_limits: str = "preview=10,preflight=10,redeem=6,result=40"
+    redeem_global_limits: str = "preview=25,preflight=20,redeem=15,result=50"
+    redeem_code_per_10min: int = 10  # preview attempts per code (hashed) before a cool-down
+    redeem_token_per_min: int = 40  # per redemption token (hashed), all steps
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> ProcurementSettings:
