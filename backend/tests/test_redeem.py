@@ -260,7 +260,7 @@ async def test_wrong_credential_and_expired_session(rig):
             "preflight",
             {
                 "redemption_token": "rt_" + "a" * 32,
-                "credential": {"mode": "session", "session": "x" * 16385},
+                "credential": {"mode": "session", "session": "x" * 65537},
             },
         ),
         (
@@ -308,14 +308,14 @@ async def test_invalid_input_never_reaches_the_vendor(rig, step, body):
 
 
 async def test_body_cap_content_type_and_bad_json(rig):
-    big = json.dumps({"code": "MOCKPLUS-ABCDEFGH", "pad": "x" * 30000})
+    big = json.dumps({"code": "MOCKPLUS-ABCDEFGH", "pad": "x" * 100000})
     r = await rig.client.post(
         "/redeem/preview", content=big, headers={"content-type": "application/json"}
     )
     assert r.status_code == 413 and _err(r) == "payload_too_large"
 
     async def chunks():  # no Content-Length: the streaming cap must hold too
-        for _ in range(40):
+        for _ in range(120):
             yield b"x" * 1024
 
     r = await rig.client.post(
@@ -731,3 +731,18 @@ async def test_result_is_post_only(rig):
     """A token must not travel in a URL on our side: the GET form is gone."""
     r = await rig.client.get("/redeem/result", params={"token": "rt_" + "a" * 32})
     assert r.status_code == 405 and _err(r) == "method_not_allowed"
+
+
+async def test_a_real_sized_session_is_accepted(rig):
+    """A real ChatGPT session text is about 37 KB of JSON (quotes double when embedded)."""
+    session = json.dumps(
+        {"accessToken": "a" * 1800, "sessionToken": "s" * 3900, "pad": ['"x"'] * 4500}
+    )
+    assert 36_000 < len(session) < 65_536
+    r = await rig.client.post("/redeem/preview", json={"code": rig.add_cdk()})
+    tok = r.json()["data"]["redemption_token"]
+    r = await rig.client.post(
+        "/redeem/preflight",
+        json={"redemption_token": tok, "credential": {"mode": "session", "session": session}},
+    )
+    assert r.status_code == 200, _err(r)
