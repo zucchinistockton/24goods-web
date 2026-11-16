@@ -6,20 +6,36 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 **Hand-off 2026-11-16 (this block supersedes the ones below).**
 
-- **M2 audit work is finished.** The re-audit findings N1–N8 and the `request_hash` rule are fixed (`eca5b8b`..
-  `1887c6c`, tests in `tests/test_procurement_audit.py`, rules in spec §16 "Re-audit fixes", no migration).
-  A second payment-auditor pass over those commits closed all of them except the write-side half of N3, which
-  it failed (**F1, High**: "plan not offered after an ambiguous write" could clear `maybe_sent` after the
-  supplier had issued a code, then buy again elsewhere). That half is removed in `560896f`: the fresh-catalog
-  pre-check stays, an ambiguous write keeps the same-key reconcile and never fails over. Auditor notes left
-  open (Low): no separate alert when the supplier refuses the void of a refunded order's code (`_apply_void`
-  puts the job back to `fulfilled`); pre-check retries use the submit retry budget; the catalog pre-check and
-  the submit share one 120 s lease.
-- **Next, in order:** (1) squash-merge PR #2 into `feat/v12-procurement` once CI on the head is green;
-  (2) update the demo to that build (migration 0027, Redis ACL `INCRBY` for the `procurement` user, both
-  sandbox webhook keys comma-separated) and look at dark mode there in both themes; (3) sandbox webhook
-  (below; the account expires **2026-11-18 10:57**); (4) redemption site (spec §8, own PR); (5) TOTP 2FA
-  frontend (below); (6) deploy dark mode + Telegram language to production.
+- **v12 M2 is merged into `feat/v12-procurement`** (PR #2, squash `bfbd21c`, CI green incl. E2E on the same
+  tree). Work on v12 continues on `feat/v12-procurement` (branch from it; this worktree,
+  `.claude/worktrees/agent-af3aa371765135692`, now has it checked out). `feat/v12-procurement` contains `main`
+  up to `faaa5bf`; it is **not** in `main` yet (waits for M3 and the M1 exit gate, AGENTS.md §1.11).
+- **Audit trail.** Re-audit findings N1–N8 and the `request_hash` rule fixed (`eca5b8b`..`1887c6c`). A second
+  payment-auditor pass closed all of them except the write-side half of N3, which it failed (**F1, High**:
+  "plan not offered after an ambiguous write" could clear `maybe_sent` after the supplier had issued a code,
+  then buy again elsewhere). That half was removed (`560896f`): the fresh-catalog pre-check stays, an
+  ambiguous write keeps the same-key reconcile and never fails over. F1's fix was not re-audited (it deletes
+  the path, as the auditor proposed). Auditor notes left open (Low, M3): no separate alert when the supplier
+  refuses the void of a refunded order's code (`_apply_void` puts the job back to `fulfilled`); pre-check
+  retries use the submit retry budget; the catalog pre-check and the submit share one 120 s lease.
+- **Demo (`demo.kesiv.com`) runs the merged M2 build** (CI images of run 43789343563 loaded as
+  `goods24-{api,web}:m2-demo`; previous ones kept as `:demo-prev`; migration `0027`; checkout
+  `/opt/24goods-demo` on branch `demo-m2` = `origin/feat/v12-procurement`). New there: the **procurement
+  process and the `mockzovo` simulator run** (`env/procurement.env`, `env/mockzovo.env`, Redis ACL user
+  `procurement`, `APP_PROCUREMENT_URL/TOKEN` in `api.env`); the API verifies webhooks with **both** sandbox
+  keys (key-level first, then general). Backups: `/root/demo-backups/demo-20261116T*.dump`,
+  `deploy/env.bak-20261116T*`. Checked in a browser on the demo: buyer home, product, login and order lookup
+  in dark and light, console Procurement and Suppliers pages in dark — all render correctly. Not exercised by
+  hand: an `upstream_cdk` purchase on the demo (the E2E smoke covers it in CI).
+- **Production (c4) still runs `d881dfa`.** Dark mode (#6) and the Telegram language switch (#7) are on `main`
+  (`:main` images = `faaa5bf`, no migration, `deploy/` unchanged, so no sync). The deploy was **not done**:
+  the session's permission system refused the production command. To deploy (owner, or a session with that
+  permission): on c4 tag `goods24-{api,web}:rollback-d881dfa` from the running `:main`, `compose pull api
+  web`, `run --rm migrate`, `up -d --wait`, then `scripts/prod.sh smoke`. Do not use `scripts/prod.sh deploy`
+  (dead registry token).
+- **Next, in order:** (1) production deploy of `main` (above); (2) sandbox webhook (below; the account
+  expires **2026-11-18 10:57**); (3) TOTP 2FA frontend + PR (below); (4) redemption site (spec §8, own PR
+  from `feat/v12-procurement`); (5) M3.
 - **Re-audit verdict (2026-11-15, head `2895860`): pass with notes — no Critical/High, no path to a double
   purchase or double delivery.** Original findings: H1, M1, M2, M4, M5, L1, L2, L4, L7 closed; H2, M3, L5
   partly; L3 and L6 deferred (`TODO(v12-M3)`). New findings and the decided fixes (paths under
@@ -68,8 +84,8 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
   (most likely a save in the vendor console). Two scripted passes afterwards (issue / disable / enable /
   disable, CDK ids 275 and 276) produced no delivery within 4 minutes. The demo image knows one key only
   (the API-key-level key, `ZOVOCARD_SANDBOX_KEY_WEBHOOK_SECRET`); the event was probably signed with the
-  general-callback key, or the console issued a new key on save. Next: deploy the merged M2 build to the demo
-  with BOTH sandbox keys, ask the owner what was done in the console at 02:39 Berlin time and whether the
+  general-callback key, or the console issued a new key on save. Done since: the demo runs the merged build with BOTH sandbox keys (self-signed events with either
+  key -> 200, forged -> 401); a third scripted pass (CDK id 277) again produced no delivery. Next: ask the owner what was done in the console at 02:39 Berlin time and whether the
   signing keys shown there still match `~/.secrets/zovocard.env`, then repeat that action. A packet capture of
   requests to the demo API ran until about 07:45 UTC on 2026-11-16 (`all.pcap` in that session's scratchpad;
   delete it after use: it also holds demo logins). The signing keys were pasted in chat: rotate them with the
