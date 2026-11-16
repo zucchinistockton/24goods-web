@@ -404,9 +404,13 @@ async def close_order_jobs(
         if job.state in CLOSABLE:
             await close_job(db, job, reason, actor_id=actor_id, actor_role=actor_role, ip=ip)
             n += 1
-        elif job.state == "fulfilled" and undelivered:
-            # a code bound but never handed over (N5): never leave it valid at the supplier
-            await _void_fulfilled(db, job, reason, actor_id, actor_role, ip)
+        elif job.state == "fulfilled" and (undelivered or job.kind == "vcc"):
+            # a code bound but never handed over (N5): never leave it valid at the supplier. A
+            # CARD is live money even once delivered: a refund deletes it (the supplier returns
+            # whatever balance remains), unlike a delivered CDK code which after-sales handles.
+            await _void_fulfilled(
+                db, job, reason, actor_id, actor_role, ip, delivered=not undelivered
+            )
             n += 1
     return n
 
@@ -421,11 +425,25 @@ async def _void_fulfilled(
     actor_id: uuid.UUID | None,
     actor_role: str,
     ip: str | None,
+    *,
+    delivered: bool = False,
 ) -> None:
     """``fulfilled`` but undelivered unit of a refunded order: disable the code at the supplier
     (``void_pending``; ``voided`` at once when there is nothing to disable) and void the sealed
     ``card_stock`` row. Delivered units are never touched here (after-sales handles them)."""
     job.error_code = clean_detail(reason)
+    if delivered:
+        await audit(
+            db,
+            tenant_id=job.tenant_id,
+            action="procurement.delivered_card_voided",
+            actor_id=actor_id,
+            actor_role=actor_role,
+            target=f"procurement_job:{job.id}",
+            detail={"order_id": str(job.order_id), "reason": clean_detail(reason)},
+            severity="critical",
+            ip=ip,
+        )
     if job.upstream_ref and job.offer_id is not None:
         job.step, job.attempts, job.next_poll_at = "void", 0, utcnow()
         to = "void_pending"
