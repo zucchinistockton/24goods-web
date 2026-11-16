@@ -44,7 +44,7 @@ def check(cond: object, msg: str) -> None:
         fail(msg)
 
 
-def solve_pow(client: "Client", scope: str) -> dict[str, str]:
+def solve_pow(client: Client, scope: str) -> dict[str, str]:
     """Fetch and solve a proof-of-work challenge (docs/api-contract.md, 'Proof of work')."""
     ch = client.j("GET", f"pow/challenge?scope={scope}")
     n = 0
