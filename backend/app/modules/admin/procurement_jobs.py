@@ -702,6 +702,9 @@ async def fulfil_manually(
             severity="critical",
             ip=ip,
         )
+    if mask is not None and body.card_id and not job.upstream_ref:
+        # the vendor card id staff named is recorded, so a funding card can never be this card
+        job.upstream_ref = body.card_id
     job.manual_by = staff.id
     job.error_code, job.step, job.next_poll_at = None, "done", None
     recovering = _schedule_recovery(job)  # the supplier's own code, if any, is disabled

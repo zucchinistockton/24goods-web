@@ -60,7 +60,12 @@ from app.models import (
 )
 from app.procurement import ledger
 from app.procurement.context import ProcurementContext
-from app.procurement.funding import card_in_flight, funding_card_clash, lock_card
+from app.procurement.funding import (
+    card_in_flight,
+    funding_card_clash,
+    funding_mask_clash,
+    lock_card,
+)
 from app.procurement.service import SupplierRef, make_supplier, refresh_balance
 from app.suppliers.base import (
     JobSpec,
@@ -1411,7 +1416,7 @@ async def _availability_result(sup: Supplier, offer: OfferSpec) -> Result:
     fn = getattr(sup, "availability_fresh", None) or sup.availability
     av = await fn(offer)
     if av.available is True:
-        return Result(Outcome.OK)
+        return Result(Outcome.OK, funding_mask=av.funding_mask)
     reason = clean_detail(av.reason or "unavailable")
     # only the catalog's own "no" is definite; a failed lookup says nothing about the plan
     definite = reason in PLAN_REFUSALS
@@ -1877,6 +1882,12 @@ async def _apply(ctx: ProcurementContext, lease: Lease, res: Result) -> None:
             await db.commit()
             return
         if lease.mode == "precheck":
+            if (
+                job.kind == "direct"
+                and res.outcome is Outcome.OK
+                and await funding_mask_clash(db, job.tenant_id, res.funding_mask)
+            ):  # the funding card is a card bought for a buyer (number match): never use it
+                res = Result(Outcome.UNAVAILABLE, error_code="funding_card_invalid")
             await _apply_precheck(ctx, db, job, order, res, now)
             await db.commit()
             return

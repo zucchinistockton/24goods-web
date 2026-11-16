@@ -774,12 +774,16 @@ class ZovoCardSupplier:
             cost = await self._direct_cost(offer)
         except SupplierError:
             cost = None
-        problem = await self._funding_card_problem(spec, cost)
+        problem, mask = await self._funding_card_problem(spec, cost)
         if problem is not None:
-            return Availability(False, problem, cost_estimate=cost, checked_at=now)
-        return Availability(True, cost_estimate=cost, checked_at=now)
+            return Availability(
+                False, problem, cost_estimate=cost, checked_at=now, funding_mask=mask
+            )
+        return Availability(True, cost_estimate=cost, checked_at=now, funding_mask=mask)
 
-    async def _funding_card_problem(self, spec: dr.DirectSpec, cost: Money | None) -> str | None:
+    async def _funding_card_problem(
+        self, spec: dr.DirectSpec, cost: Money | None
+    ) -> tuple[str | None, str | None]:
         """The funding card must be OURS (``GET /cards/{id}`` answers for our account only: a
         404 means it is not ours), ACTIVE, hold at least the order's cost (USD) and have capacity
         left under the vendor's usage cap (``GET /gpt-direct/cards/{id}/usage``, [I] shape: an
@@ -787,10 +791,11 @@ class ZovoCardSupplier:
         try:
             resp = await self.client.get(f"/cards/{spec.card_id}")
         except SupplierError as exc:
-            return "funding_card_invalid" if exc.status in (400, 404) else exc.reason
+            return ("funding_card_invalid" if exc.status in (400, 404) else exc.reason), None
         detail = parse_card_detail(resp.data)
         if detail is None:
-            return "funding_card_invalid"
+            return "funding_card_invalid", None
+        mask = detail.mask
         enough = cost is None or detail.available >= cost.amount
         try:
             usage = await self.client.get(
@@ -799,7 +804,7 @@ class ZovoCardSupplier:
             remaining = dr.usage_remaining(usage.data, spec.plan)
         except SupplierError:
             remaining = None
-        return dr.funding_card_problem(detail.status, enough, remaining)
+        return dr.funding_card_problem(detail.status, enough, remaining), mask
 
     async def _preflight(self, spec: dr.DirectSpec, credential: str) -> dr.Preflight | Result:
         """``POST /gpt-direct/preflight``: validates the credential and quotes (read-only upstream;

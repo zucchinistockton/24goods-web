@@ -166,6 +166,7 @@ class Result:
     # direct: masked account e-mail the supplier's preflight reported, and the token's expiry
     account_mask: str | None = None
     preflight_expires_at: datetime | None = None
+    funding_mask: str | None = None  # availability only; never recorded on a job
     # direct: short machine summary of the vendor order (``status:fee_status``), shown to staff
     detail: str | None = None
 
@@ -226,6 +227,9 @@ class Availability:
     reason: str | None = None  # machine string when unavailable
     cost_estimate: Money | None = None
     checked_at: datetime | None = None
+    # direct: masked number of the funding card (first 6 + last 4), so the caller can refuse a card
+    # that was bought for a buyer
+    funding_mask: str | None = None
 
 
 @dataclass(frozen=True)

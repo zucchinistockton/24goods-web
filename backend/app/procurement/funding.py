@@ -25,9 +25,26 @@ async def funding_card_clash(
     n = await db.scalar(
         select(func.count(ProcurementJob.id)).where(
             ProcurementJob.tenant_id == tenant_id,
-            ProcurementJob.supplier_id == supplier_id,
+            # a hand-pasted card job has no supplier: its vendor card id counts for every supplier
+            (ProcurementJob.supplier_id == supplier_id) | ProcurementJob.supplier_id.is_(None),
             ProcurementJob.kind == "vcc",
             ProcurementJob.upstream_ref == str(card_id),
+        )
+    )
+    return bool(n)
+
+
+async def funding_mask_clash(db: AsyncSession, tenant_id: uuid.UUID, mask: str | None) -> bool:
+    """True when the funding card's masked number equals the ``card_mask`` of any non-voided card
+    job of the tenant (catches a card pasted by hand whose vendor id was never recorded)."""
+    if not mask:
+        return False
+    n = await db.scalar(
+        select(func.count(ProcurementJob.id)).where(
+            ProcurementJob.tenant_id == tenant_id,
+            ProcurementJob.kind == "vcc",
+            ProcurementJob.card_mask == mask,
+            ProcurementJob.state != "voided",
         )
     )
     return bool(n)

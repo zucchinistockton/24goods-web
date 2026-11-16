@@ -713,3 +713,66 @@ async def test_scenarios_mock_seeds_the_funding_card_the_smoke_uses(env):
     av = await sup.availability(OfferSpec(kind="direct", params=params))
     assert av.available, av.reason
     assert not MockZovo().cards  # only scenarios mode seeds it
+
+
+async def test_a_hand_pasted_card_id_and_a_matching_mask_both_block_a_funding_card(env, dup):
+    from app.procurement.funding import funding_card_clash
+    from app.suppliers.zovocard.webhook import mask_pan
+    from tests.test_procurement_vcc import vup  # noqa: F401
+
+    vendor = _vendor()
+    sid, _ = await _zovo(dup, vendor, CLAUDE)
+    # (1) a card job pasted by hand WITH the vendor card id records it, whatever its supplier
+    buyer0 = await env.user("buyer")
+    p = await env.product(mode="upstream_vcc")
+    oid, vid = uuid.uuid4(), uuid.uuid4()
+    async with env.owner_session() as db:
+        await db.execute(
+            text(
+                "INSERT INTO orders (id, tenant_id, order_no, buyer_id, product_id, title, qty, "
+                "amount_minor, subtotal_minor, currency, status, delivery_mode) VALUES "
+                "(:i, :t, :n, :b, :p, 'x', 1, 100, 100, 'CNY', 'paid', 'upstream_vcc')"
+            ),
+            {"i": oid, "t": env.tenant_id, "n": "G" + uuid.uuid4().hex[:12],
+             "b": buyer0.id, "p": p.id},
+        )  # fmt: skip
+        await db.execute(
+            text(
+                "INSERT INTO procurement_jobs (id, tenant_id, order_id, unit_no, kind, state, "
+                "step, idempotency_key) VALUES (:j, :t, :o, 1, 'vcc', 'needs_manual', 'submit', :k)"
+            ),
+            {"j": vid, "t": env.tenant_id, "o": oid, "k": "pj:" + vid.hex + ":submit"},
+        )
+        await db.commit()
+    admin, _ = await env.login("admin")
+    r = await admin.post(
+        f"{JOBS}/{vid}/fulfil",
+        json={"code": "4242424242424242----09/32----456", "card_id": "4242",
+              "reason": "pasted by hand"},
+    )  # fmt: skip
+    assert r.status_code == 200, r.text
+    ref = await env.scalar("SELECT upstream_ref FROM procurement_jobs WHERE id = :j", j=vid)
+    assert ref == "4242"  # a hand-pasted card with no supplier still records its vendor id
+    async with env.api_session() as db:
+        assert await funding_card_clash(db, env.tenant_id, sid, 4242)
+    # the source is refused at save too
+    r = await admin.post(
+        "/api/v1/admin/procurement/sources",
+        json={"product_id": str(dup.product.id), "supplier_id": str(sid),
+              "params": {**CLAUDE, "plan": "max_5x"}, "cost_estimate": "120", "enabled": False},
+    )  # fmt: skip
+    assert r.status_code == 422 and r.json()["error"]["code"] == "funding_card_invalid"
+    # (2) a card whose NUMBER matches a live card job's mask is never a funding card either,
+    # even when its vendor id was never recorded
+    mask = mask_pan(vendor.cards[4242]["card_number"])
+    await _sql(
+        env,
+        "UPDATE procurement_jobs SET upstream_ref = NULL, card_mask = :m WHERE kind = 'vcc'",
+        m=mask,
+    )
+    buyer, order = await dup.paid_direct(claude_session(new_marker()))
+    await dup.run()
+    job = await _job(dup, order)
+    assert job.state == "needs_manual" and job.error_code == "no_source:plan_unavailable"
+    assert not job.maybe_sent and vendor.direct_executions == 0
+    assert buyer is not None
