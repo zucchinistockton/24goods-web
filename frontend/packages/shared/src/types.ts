@@ -5,6 +5,26 @@
 
 export type Locale = 'en' | 'zh-CN'
 export type Role = 'buyer' | 'agent' | 'admin'
+/** `POST /auth/login` for an account with two-factor login: no session yet. */
+export interface TwoFactorChallenge {
+  two_factor_required: true
+  pending_token: string
+  expires_in: number
+}
+export function isTwoFactorChallenge(v: unknown): v is TwoFactorChallenge {
+  return typeof v === 'object' && v !== null && (v as TwoFactorChallenge).two_factor_required === true
+}
+export interface TwoFactorStatus {
+  enabled: boolean
+  enabled_at: string | null
+  recovery_codes_left: number
+}
+export interface TwoFactorSetup {
+  secret: string
+  otpauth_uri: string
+  qr_svg: string
+}
+
 export interface User {
   id: string
   email: string

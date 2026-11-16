@@ -29,6 +29,7 @@ from app.modules.me.schemas import (
     EmailChangeIn,
     ProfileIn,
 )
+from app.modules.payments.usdt import qr_svg
 from app.modules.uploads.avatar import avatar_from_upload, avatar_mime
 from app.modules.uploads.router import get_store
 from app.modules.uploads.storage import FileStore
@@ -267,7 +268,8 @@ async def two_factor_setup(
     out = await twofactor.begin_setup(
         db, res.redis, res.settings, user, body.password, issuer, client_ip(request)
     )
-    return _no_store(out)
+    # drawn by our own server from our own data: no third-party QR service ever sees the secret
+    return _no_store({**out, "qr_svg": qr_svg(out["otpauth_uri"])})
 
 
 @router.post("/2fa/enable")

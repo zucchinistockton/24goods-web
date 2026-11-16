@@ -3,7 +3,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { LogoMark, TurnstileWidget } from '@24goods/shared/ui'
-import { isApiError, safeRedirect, turnstileNeeded, type SiteInfo } from '@24goods/shared'
+import { isApiError, isTwoFactorChallenge, safeRedirect, turnstileNeeded, type SiteInfo } from '@24goods/shared'
 import { client } from '../api'
 import { useAuthStore } from '../stores/auth'
 import { setLocale } from '../locale'
@@ -29,12 +29,41 @@ onMounted(async () => {
   }
 })
 
+/** Two-factor accounts: the password yields a pending token; the code below finishes the login. */
+const pending = ref<string | null>(null)
+const code = ref('')
+const useRecovery = ref(false)
+
+async function verify() {
+  if (busy.value || !pending.value || code.value.trim().length < 6) return
+  busy.value = true
+  error.value = ''
+  try {
+    await auth.loginSecondFactor(pending.value, code.value.trim())
+    await router.replace(safeRedirect(route.query.redirect, '/'))
+  } catch (e) {
+    if (isApiError(e) && e.code === 'not_staff') error.value = t('login.notStaff')
+    else if (isApiError(e) && e.code === 'two_factor_expired') {
+      pending.value = null
+      error.value = t('errors.two_factor_expired')
+    } else if (isApiError(e) && e.code === 'two_factor_invalid') error.value = t('errors.two_factor_invalid')
+    else toastError(e)
+  } finally {
+    busy.value = false
+    code.value = ''
+  }
+}
+
 async function submit() {
   if (busy.value || !form.email || !form.password) return
   busy.value = true
   error.value = ''
   try {
-    await auth.login(form.email.trim(), form.password, token.value || undefined)
+    const out = await auth.login(form.email.trim(), form.password, token.value || undefined)
+    if (isTwoFactorChallenge(out)) {
+      pending.value = out.pending_token
+      return
+    }
     await router.replace(safeRedirect(route.query.redirect, '/'))
   } catch (e) {
     if (isApiError(e) && e.code === 'not_staff') error.value = t('login.notStaff')
@@ -53,10 +82,28 @@ async function submit() {
   <div class="login">
     <div class="login-card">
       <div class="brand"><LogoMark :size="36" />{{ t('app.title') }}</div>
-      <h1>{{ t('login.title') }}</h1>
-      <p class="muted">{{ t('login.subtitle') }}</p>
+      <h1>{{ pending ? t('twoFactor.loginTitle') : t('login.title') }}</h1>
+      <p class="muted">{{ pending ? t('twoFactor.loginSubtitle') : t('login.subtitle') }}</p>
       <el-alert v-if="error" :title="error" type="error" show-icon :closable="false" class="err" />
-      <el-form label-position="top" @submit.prevent="submit">
+      <el-form v-if="pending" label-position="top" @submit.prevent="verify">
+        <el-form-item :label="useRecovery ? t('twoFactor.recoveryLabel') : t('twoFactor.codeLabel')">
+          <el-input
+            v-model="code"
+            size="large"
+            class="code"
+            :maxlength="useRecovery ? 16 : 6"
+            :inputmode="useRecovery ? 'text' : 'numeric'"
+            :autocomplete="useRecovery ? 'off' : 'one-time-code'"
+            autofocus
+          />
+        </el-form-item>
+        <el-button type="primary" native-type="submit" size="large" :loading="busy" class="submit">{{ t('twoFactor.verify') }}</el-button>
+        <div class="alt">
+          <el-button link @click="((useRecovery = !useRecovery), (code = ''))">{{ useRecovery ? t('twoFactor.useApp') : t('twoFactor.useRecovery') }}</el-button>
+          <el-button link @click="pending = null">{{ t('twoFactor.startOver') }}</el-button>
+        </div>
+      </el-form>
+      <el-form v-else label-position="top" @submit.prevent="submit">
         <el-form-item :label="t('login.email')">
           <el-input v-model="form.email" type="email" autocomplete="username" size="large" />
         </el-form-item>
@@ -85,6 +132,17 @@ async function submit() {
 </template>
 
 <style scoped>
+.code :deep(input) {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.2em;
+  text-align: center;
+}
+.alt {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 12px;
+}
 .login {
   min-height: 100vh;
   display: grid;

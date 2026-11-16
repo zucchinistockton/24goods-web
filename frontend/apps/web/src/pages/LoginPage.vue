@@ -1,12 +1,13 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { isApiError, safeRedirect } from '@24goods/shared'
+import { isApiError, isTwoFactorChallenge, safeRedirect } from '@24goods/shared'
 import { api } from '../api'
 import AuthShell from '../components/AuthShell.vue'
 import PowStatus from '../components/PowStatus.vue'
 import TurnstileBox from '../components/TurnstileBox.vue'
+import TwoFactorCode from '../components/TwoFactorCode.vue'
 import { useTurnstile } from '../composables/useTurnstile'
 import { useSiteStore } from '../stores/site'
 import { isPowAbort, usePow } from '../composables/usePow'
@@ -36,20 +37,64 @@ const oauthError = computed(() => {
   return e === 'terms_required' || e === 'oauth_failed' || e === 'feature_disabled' ? `errors.${e}` : null
 })
 
+/** Two-factor accounts: the password (or Google) yields a pending token; the code finishes it. */
+const pending = ref<string | null>(null)
+const next = ref<string | null>(null)
+const codeBox = ref<InstanceType<typeof TwoFactorCode> | null>(null)
+const verifying = ref(false)
+
+// Google sign-in of a two-factor account lands here as /login#2fa=<token>&next=<path>. The
+// fragment never reaches a server; it is taken out of the address bar at once.
+onMounted(() => {
+  const m = /^#2fa=([A-Za-z0-9_-]{20,128})(?:&next=([^&]*))?$/.exec(window.location.hash)
+  if (!m) return
+  pending.value = m[1]
+  try {
+    next.value = m[2] ? decodeURIComponent(m[2]) : null
+  } catch {
+    next.value = null
+  }
+  window.history.replaceState(window.history.state, '', window.location.pathname + window.location.search)
+})
+
+async function done() {
+  showSuccessToast(t('auth.loggedIn'))
+  await router.replace(safeRedirect(next.value ?? route.query.redirect, '/'))
+}
+
+async function verify(code: string) {
+  if (verifying.value || !pending.value) return
+  verifying.value = true
+  try {
+    await auth.loginSecondFactor(pending.value, code)
+    await done()
+  } catch (e) {
+    codeBox.value?.clear()
+    if (isApiError(e) && e.code === 'two_factor_expired') pending.value = null
+    toastError(e)
+  } finally {
+    verifying.value = false
+  }
+}
+
 async function submit() {
   if (busy.value) return
   busy.value = true
   try {
     const token = ts.require()
+    let out
     try {
-      await auth.login(email.value.trim(), password.value, undefined, token)
+      out = await auth.login(email.value.trim(), password.value, undefined, token)
     } catch (e) {
       // after repeated failures the server asks for a proof-of-work (review-v3 §3)
       if (!(isApiError(e) && e.code === 'pow_required')) throw e
-      await auth.login(email.value.trim(), password.value, await pow.run('login'), token)
+      out = await auth.login(email.value.trim(), password.value, await pow.run('login'), token)
     }
-    showSuccessToast(t('auth.loggedIn'))
-    await router.replace(safeRedirect(route.query.redirect, '/'))
+    if (isTwoFactorChallenge(out)) {
+      pending.value = out.pending_token
+      return
+    }
+    await done()
   } catch (e) {
     if (isPowAbort(e)) return
     if (isApiError(e) && e.code === 'unauthorized') showFailToast(t('auth.loginFailed'))
@@ -63,7 +108,13 @@ async function submit() {
 </script>
 
 <template>
-  <AuthShell :title="t('auth.loginTitle')" :subtitle="t('auth.loginSubtitle')">
+  <AuthShell v-if="pending" :title="t('twoFactor.loginTitle')" :subtitle="t('twoFactor.loginSubtitle')">
+    <TwoFactorCode ref="codeBox" :busy="verifying" @submit="verify" />
+    <template #foot>
+      <button type="button" class="link restart" @click="pending = null">{{ t('twoFactor.startOver') }}</button>
+    </template>
+  </AuthShell>
+  <AuthShell v-else :title="t('auth.loginTitle')" :subtitle="t('auth.loginSubtitle')">
     <div v-if="oauthError" class="oauth-err" role="alert">{{ t(oauthError) }}</div>
     <van-form @submit="submit">
       <van-field
@@ -130,6 +181,14 @@ async function submit() {
   padding: 10px 4px;
   font-weight: 700;
   text-decoration: none;
+}
+.restart {
+  margin: 0;
+  min-height: 44px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font-size: 14px;
 }
 .ts {
   padding: 0 16px;
