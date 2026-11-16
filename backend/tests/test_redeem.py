@@ -746,3 +746,25 @@ async def test_a_real_sized_session_is_accepted(rig):
         json={"redemption_token": tok, "credential": {"mode": "session", "session": session}},
     )
     assert r.status_code == 200, _err(r)
+
+
+def test_redeem_answer_in_the_vendors_real_shape():
+    """Shape seen in the vendor sandbox on 2026-11-16: the order id is data.order.id."""
+    from app.procurement.redeem import shape_redeem
+
+    real = {
+        "events": [{"at": "2026-11-15T12:10:00Z", "type": "created"}],
+        "order": {
+            "client_request_id": "x",
+            "id": "SBXORD-b5020d12a1a8a9a0",
+            "product": "gpt",
+            "sandbox_mock": True,
+            "status": "succeeded",
+        },
+    }
+    assert shape_redeem(real) == {
+        "order_id": "SBXORD-b5020d12a1a8a9a0",
+        "status": "succeeded",
+        "stage": None,
+        "terminal": True,
+    }

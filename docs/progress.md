@@ -43,10 +43,25 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
   (shapers in `redeem.py` may need adjusting on the first real redemption); `/recover-subscription` is not
   proxied. **To go live it needs a DNS name** (`redeem.<domain>` in Cloudflare → the origin) and
   `REDEEM_HOST` + the `APP_REDEEM_*` lines (see `deploy/bootstrap.sh`).
-- **Demo** runs `196ace4` (v12 + two-factor login + redemption site). There the mock supplier row is enabled
-  and the redemption page answers on `redeem.localhost` (Host header; `curl -H 'Host: redeem.localhost'
-  http://127.0.0.1:18888/`): walked in a real browser at 390 px (wrong code, account step, confirm, result,
-  zh-CN), no console or CSP errors. `user_totp` was created by hand on the demo (it was already past 0022a).
+- **`https://redeem.kesiv.com` is live (2026-11-16) on the DEMO stack against the vendor SANDBOX**, not
+  production: real customer codes cannot be redeemed there until v12 is in production. Setup: Cloudflare DNS
+  `redeem.kesiv.com` → this box (proxied, zone mode Full strict); TLS ends at the box's own Caddy
+  (`/etc/caddy/sites/redeem.kesiv.com.conf`, Cloudflare Origin CA wildcard certificate, Cloudflare-only),
+  which forwards to the demo stack on `127.0.0.1:18888`; demo `deploy/.env` `REDEEM_HOST=redeem.kesiv.com`.
+  A "flexible" (plain HTTP to origin) rule was NOT used: the page carries account credentials. The demo's
+  procurement process now talks to the **real ZovoCard sandbox** (`env/procurement.env`; backup
+  `env.bak-20261116T10*`) instead of the simulator: **put the simulator lines back after the sandbox expires
+  on 2026-11-18 10:57** (`ZOVOCARD_SANDBOX_APP_ID=mock`, `_APP_SECRET=sk_mock_ok`,
+  `_BASE_URL=http://mockzovo:8005/openapi/v1`). Because every request reaches the demo's Caddy from the box's
+  Caddy, per-IP limits there collapse into one bucket (stricter, acceptable for a demo).
+  **Verified against the real sandbox through that host with a real session text:** preview, preflight
+  (`preflight_token`, `payment_country`, `payment_currency`, `subscription_recovery_required`), redeem
+  (`status: succeeded`), result 404 (as documented for the sandbox); no credential in any log. Two defects
+  found and fixed that way: a real session text is ~37 KB and was refused with 413 (#16: session 64 KiB, body
+  96 KiB, Caddy 128 KB); the order id is `data.order.id` and was dropped (this PR). Still unverified: the
+  result shape (the sandbox never has one) and a non-mock redemption.
+- **Demo** runs the v12 branch incl. two-factor login and the redemption site (CI images loaded by hand).
+  `user_totp` was created by hand there (it was already past 0022a). The mock supplier row is enabled.
 - **M3 part 1 (`upstream_vcc`) is in progress**: implementer on `feat/v12-m3-vcc` (worktree
   `.claude/worktrees/m3`), backend only; then payment-auditor + security-reviewer, then the UI. `upstream_direct`
   is M3 part 2, not started.

@@ -240,6 +240,8 @@ style-src 'self'; img-src 'self' data:; connect-src 'self'; ...`, strips `Cookie
 proxy, forwards only the four paths below and answers any other `/redeem/*` with 404. Same origin, so the proxy
 sends **no CORS headers** and refuses a POST whose `Origin` differs from `Host` (403 `forbidden`).
 
+**Verified against the vendor sandbox (2026-11-16, through `redeem.kesiv.com`, real session text) [V].** Preview and preflight field names as listed below; redeem answers `data.order.{id,status,...}` plus `data.events[]` (the order id is `data.order.id`); a real ChatGPT session text is about 37 KB. The result shape is still unverified (the sandbox answers 404).
+
 **Which supplier.** The proxy cannot tell cheaply and safely which environment issued a code (card rows hold
 sealed secrets; `app_procurement` cannot read them). It uses the **single enabled ZovoCard supplier of the
 platform tenant** (a reseller's supplier is never used); if none or more than one `(code, env)` is enabled
