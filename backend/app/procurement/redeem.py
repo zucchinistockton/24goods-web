@@ -206,7 +206,10 @@ def shape_redeem(data: Any) -> dict[str, Any]:
     order = _dict(d.get("order"))
     status = _s(order.get("status") or d.get("status"))
     return {
-        "order_id": _s(order.get("order_id") or d.get("id") or d.get("order_id"), 80),
+        # the vendor nests it as data.order.id (verified in the sandbox 2026-11-16)
+        "order_id": _s(
+            order.get("order_id") or order.get("id") or d.get("id") or d.get("order_id"), 80
+        ),
         "status": status,
         "stage": _s(order.get("stage") or d.get("stage")),
         "terminal": status in TERMINAL,
