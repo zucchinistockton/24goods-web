@@ -421,3 +421,16 @@ Decision:
 
 Consequences: every sale of a variant product is unambiguous about stock and price; legacy product-level cards stay sellable only to variant-less orders until moved. Chat edits keep the original in the audit trail only. Migrations 0020–0022 are additive; downgrading 0022 deletes standalone service records and notices.
 
+### ADR-039: Optional two-factor login (TOTP) (review-v12 §13, issue #72 S8)
+
+Context: staff and buyers log in with a password only (Google for buyers). #72 S8 asked for a second factor for staff; the owner wants it optional for everyone, never a condition for logging in. (ADR-038 is the v12 procurement record on `feat/v12-procurement`.)
+
+Decision:
+- RFC 6238 (SHA-1, 6 digits, 30 s, ±1 step) with the standard library only (`app/core/totp.py`); no new dependency.
+- `user_totp` (migration `0022a_user_totp`, FORCE RLS, `app_api` only): secret sealed with AES-256-GCM under a key derived from the settings key and bound to tenant and user (the card vault is not involved); ten recovery codes stored as keyed hashes; `last_step` moves forward in one conditional UPDATE, so a code is accepted once.
+- Login is two requests: a correct password for an enrolled account returns a pending token (Redis, 300 s, single use, five wrong codes) and **no session**; `POST /auth/login/2fa` turns token + code into the session. Wrong codes count against the password step's limiter keys plus a per-account counter. Google sign-in of an enrolled account is redirected to the same second step with the token in the URL fragment.
+- Enrolment needs the password (except one-tap and Google-linked accounts), shows the secret once with a QR drawn by our own server, and ends the account's other sessions. Turning it off needs a code or a recovery code. An admin can reset another user's second factor (audit severity critical, sessions ended); nobody can reset their own without a code.
+- A Google link that takes over an unverified-email account also deletes a second factor enrolled by whoever registered the address first.
+
+Consequences: a stolen password alone no longer opens an enrolled account. A lost phone is covered by recovery codes, then by an admin reset; an admin who loses both needs another admin or a database-level reset. "Require 2FA for staff" is not built (it needs a forced-enrolment flow). The migration id sorts before the v12 chain: when v12 reaches `main`, `0023_procurement` must revise `0022a_user_totp`.
+
