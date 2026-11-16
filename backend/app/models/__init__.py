@@ -20,6 +20,7 @@ from app.models.ledger import LedgerEntry
 from app.models.orders import Checkout, Order, OrderEvent, Payment
 from app.models.payment_config import LegacyPayUrl, PaymentAttempt, PaymentGateway, PaymentTest
 from app.models.procurement import (
+    ProcurementCredential,
     ProcurementJob,
     SupplierAccount,
     SupplierLedgerEntry,
@@ -59,6 +60,7 @@ __all__ = [
     "PaymentAttempt",
     "PaymentGateway",
     "PaymentTest",
+    "ProcurementCredential",
     "ProcurementJob",
     "Product",
     "ProductVariant",

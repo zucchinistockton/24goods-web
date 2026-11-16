@@ -113,6 +113,10 @@ def _card_format(p: Product) -> None:
     if p.delivery_mode == "upstream_vcc":
         p.delivery_separator = "----"
         p.delivery_format = p.delivery_format or "Card number----Expiry (MM/YY)----CVV"
+    elif p.delivery_mode == "upstream_direct":
+        # the "delivery" is one short non-secret text: plan, masked account, supplier order
+        p.delivery_separator = "----"
+        p.delivery_format = p.delivery_format or "Plan----Account----Supplier order"
 
 
 async def create(db: AsyncSession, body: ProductIn, admin: User, ip: str | None) -> Product:

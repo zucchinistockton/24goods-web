@@ -180,9 +180,10 @@ WHERE p.tenant_id = :tid AND p.status = 'active'
   AND (p.delivery_mode = 'manual' OR EXISTS (
         SELECT 1 FROM card_stock cs WHERE cs.product_id = p.id AND cs.status = 'available'
           AND (cs.expires_at IS NULL OR cs.expires_at > now()))
-       OR (p.delivery_mode IN ('upstream_cdk', 'upstream_vcc') AND EXISTS (
+       OR (p.delivery_mode IN ('upstream_cdk', 'upstream_vcc', 'upstream_direct') AND EXISTS (
         SELECT 1 FROM supplier_offers so JOIN suppliers su ON su.id = so.supplier_id
-        WHERE so.product_id = p.id AND so.enabled AND so.kind IN ('cdk', 'vcc') AND so.last_check_ok
+        WHERE so.product_id = p.id AND so.enabled AND so.last_check_ok
+          AND so.kind IN ('cdk', 'vcc', 'direct')
           AND su.enabled AND NOT su.breaker_open)))
 ORDER BY (3 * (p.category IN (SELECT category FROM ctx))::int
           + 2 * coalesce(co.n, 0)
