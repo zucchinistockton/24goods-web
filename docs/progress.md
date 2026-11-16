@@ -4,6 +4,15 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 ## Current state — hand-off (read this first in a new session)
 
+**Active work is not on `main` (2026-11-16).** The current hand-off, with the ordered next steps, is the top
+block of `docs/progress.md` on branch **`feat/v12-procurement`** (local worktree
+`.claude/worktrees/agent-af3aa371765135692`): `git show origin/feat/v12-procurement:docs/progress.md | head -110`.
+In short: v12 procurement M2 is merged into `feat/v12-procurement` (PR #2, all payment-audit findings fixed
+except two deferred to M3) and runs on the demo with the procurement process; it is not on `main`. Optional
+TOTP 2FA has its backend on `feat/totp-2fa` (no UI, no PR yet). Open: production deploy of `main` (dark mode
+#6 and the Telegram language switch #7 are merged and checked on the demo, production still runs `d881dfa`),
+the ZovoCard sandbox webhook (account expires 2026-11-18 10:57), the redemption site, M3.
+
 **Optional two-factor login (2026-11-16, PR `feat/totp-2fa`, ADR-039, migration `0022a_user_totp`).** Buyers
 and staff can turn on an authenticator app (TOTP). Login for an enrolled account is password → pending token
 → code (`POST /auth/login/2fa`); ten single-use recovery codes; admins can reset another user's second
