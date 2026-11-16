@@ -445,6 +445,12 @@ async def buy_now(
     redis: Any = None,
 ) -> tuple[Order, Message | None]:
     product = await get_active_product(db, product_id)
+    if product.delivery_mode == "upstream_direct" and storefront is not None:
+        # a reseller storefront never takes a buyer's account session: the supplier secrets and
+        # the funding card belong to the platform
+        raise Validation(
+            "This product is not sold on reseller storefronts", code="direct_not_on_storefront"
+        )
     pricer = await Pricer.load(db, storefront)
     if pricer is not None and pricer.is_hidden(product.id):
         raise NotFound("Product not found")
@@ -456,12 +462,6 @@ async def buy_now(
     subtotal = unit * qty
     value = normalize_value(product.buyer_input, buyer_input)
     direct = None
-    if product.delivery_mode == "upstream_direct" and storefront is not None:
-        # a reseller storefront never takes a buyer's account session: the supplier secrets and
-        # the funding card belong to the platform
-        raise Validation(
-            "This product is not sold on reseller storefronts", code="direct_not_on_storefront"
-        )
     if product.delivery_mode == "upstream_direct":
         # the buyer's account session: validated and sealed here, kept OUT of buyer_input
         direct = await direct_svc.prepare(
