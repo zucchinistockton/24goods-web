@@ -12,10 +12,9 @@ import binascii
 import json
 from pathlib import Path
 
-from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PublicKey
 
 from app.core.cardvault import CardSealer
-from app.core.credvault import CredentialOpener
 
 
 class SealerConfigError(RuntimeError):
@@ -61,25 +60,3 @@ def build_sealer(
     if kid not in pubs:
         raise SealerConfigError("APP_VAULT_ACTIVE_KID is missing or unknown")
     return CardSealer(pubs, kid, _b64(fp_key))
-
-
-def load_credential_opener(path: str) -> CredentialOpener | None:
-    """The buyer-credential PRIVATE keyring (``upstream_direct``), or ``None`` when no file is
-    configured (direct jobs then go to ``needs_manual`` with ``credential_unreadable``). The file
-    is {kid: base64 raw X25519 private key}; nothing of it is ever logged."""
-    if not path:
-        return None
-    try:
-        raw = Path(path).read_text(encoding="utf-8")
-        data = json.loads(raw)
-        keys = {
-            str(kid): X25519PrivateKey.from_private_bytes(base64.b64decode(b64, validate=True))
-            for kid, b64 in data.items()
-        }
-    except OSError as exc:
-        raise SealerConfigError(f"cannot read credential keys ({type(exc).__name__})") from None
-    except (ValueError, AttributeError, TypeError):
-        raise SealerConfigError("credential keys must be JSON {kid: base64 raw X25519}") from None
-    if not keys:
-        raise SealerConfigError("no credential private key configured")
-    return CredentialOpener(keys)

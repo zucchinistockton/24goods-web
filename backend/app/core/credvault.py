@@ -6,7 +6,8 @@ keypair from the card vault's: the API process can seal but never open it, the d
 (card-vault private keys) cannot open it either, and only the procurement process holds the private
 half, which it uses in memory at the moment of the supplier call.
 
-Same primitive as :mod:`app.core.cardvault` (X25519 + HKDF + AES-256-GCM, kid for rotation); the
+The OPEN side lives in :mod:`app.procurement.credopen`, which only the procurement process
+imports (an API-side test asserts it). Same primitive as :mod:`app.core.cardvault` (X25519 + HKDF + AES-256-GCM, kid for rotation); the
 associated data binds a blob to ``(tenant, "buyer-credential", order)`` so it can neither be moved
 to another order nor be mistaken for a card secret. Nothing here logs, caches or stores plaintext.
 """
@@ -15,9 +16,9 @@ from __future__ import annotations
 
 import os
 
-from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PublicKey
 
-from app.core.cardvault import CardContext, CardOpener, CardSealer, VaultError, kid_of
+from app.core.cardvault import CardContext, CardSealer, VaultError, kid_of
 
 # the "product" slot of the AAD: a credential blob can never validate as a card secret
 DOMAIN = "buyer-credential"
@@ -26,7 +27,6 @@ MAX_CREDENTIAL_BYTES = 64 * 1024
 __all__ = [
     "DOMAIN",
     "MAX_CREDENTIAL_BYTES",
-    "CredentialOpener",
     "CredentialSealer",
     "VaultError",
     "kid_of",
@@ -53,13 +53,3 @@ class CredentialSealer:
         if not secret or len(secret.encode("utf-8", "replace")) > MAX_CREDENTIAL_BYTES:
             raise ValueError("credential size out of range")
         return self._inner.seal(secret, _ctx(tenant_id, order_id))
-
-
-class CredentialOpener:
-    """Decrypt (procurement only). Never construct this in the API or the delivery worker."""
-
-    def __init__(self, private_keys: dict[str, X25519PrivateKey]) -> None:
-        self._inner = CardOpener(private_keys)
-
-    def open(self, blob: bytes, *, tenant_id: str, order_id: str) -> str:
-        return self._inner.open(blob, _ctx(tenant_id, order_id))

@@ -20,8 +20,8 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from sqlalchemy import text
 
-from app.core.credvault import CredentialOpener
 from app.devtools.mock_zovocard import MockZovo
+from app.procurement.credopen import CredentialOpener
 from tests.conftest import CRED_KID, CRED_PRIV
 from tests.helpers import buy, pay_order
 from tests.test_aftersales import open_ticket
@@ -602,7 +602,7 @@ async def test_gpt_session_problems_have_specific_codes(env, dup):
     await _zovo(dup, _vendor(), GPT)
     buyer, _ = await env.login("buyer")
     marker = new_marker()
-    token_only = "eyJhbGciOiJub25lIn0." + "a" * 60 + ".sig"
+    token_only = "eyJhbGciOiJub25lIn0." + "q" * 60 + ".sig"
     expired = gpt_session(marker, days=-3)
     cases = [
         (token_only, "session_access_token_only"),
@@ -885,7 +885,7 @@ def test_credential_sealer_roundtrip_and_generated_keypair(tmp_path):
 
     from app.core.credvault import CredentialSealer
     from app.devtools.keygen import generate, generate_cred
-    from app.procurement.keys import load_credential_opener
+    from app.procurement.credopen import load_credential_opener
 
     kid, paths = generate_cred(tmp_path / "only")
     pub = _json.loads(paths["cred_public"].read_text())

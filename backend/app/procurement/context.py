@@ -9,8 +9,8 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.cardvault import CardSealer
-from app.core.credvault import CredentialOpener
 from app.procurement.config import ProcurementSettings
+from app.procurement.credopen import CredentialOpener
 
 
 @dataclass

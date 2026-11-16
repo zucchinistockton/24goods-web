@@ -33,13 +33,10 @@ async def _serve(settings: ProcurementSettings) -> None:
     from app.core.memtrim import trim
     from app.core.redis import make_redis
     from app.procurement.context import ProcurementContext
+    from app.procurement.credopen import load_credential_opener
     from app.procurement.engine import run_engine
     from app.procurement.internal import create_procurement_app
-    from app.procurement.keys import (
-        SealerConfigError,
-        build_sealer,
-        load_credential_opener,
-    )
+    from app.procurement.keys import SealerConfigError, build_sealer
     from app.procurement.service import run_loop
 
     if len(settings.procurement_token) < 32:
@@ -57,7 +54,7 @@ async def _serve(settings: ProcurementSettings) -> None:
     except SealerConfigError as exc:
         raise SystemExit(f"procurement cannot read credential keys: {exc}") from None
     if cred_opener is None:
-        log.warning("no buyer-credential private key: upstream_direct jobs cannot run")
+        log.warning("no session private key: upstream_direct jobs cannot run")
     engine = make_engine(settings.procurement_database_url, pool_size=3, max_overflow=2)
     redis = make_redis(settings.redis_url)
     ctx = ProcurementContext(

@@ -103,15 +103,29 @@ async def test_app_delivery_can_read_blob(env):
 
 
 def test_api_code_never_references_card_opener():
-    allowed = {APP / "core" / "cardvault.py"}
+    # the delivery worker opens card secrets; procurement alone opens buyer sessions (credopen.py
+    # and its key loader). Nothing else may name an opener or load a private key.
+    allowed = {APP / "core" / "cardvault.py", APP / "procurement" / "credopen.py"}
     offenders = []
     for path in APP.rglob("*.py"):
         if path in allowed or (APP / "delivery") in path.parents:
             continue
         src = path.read_text(encoding="utf-8")
-        if "CardOpener" in src or "from_private_bytes" in src:
+        if "CardOpener" in src or "from_private_bytes" in src or "CredentialOpener" in src:
             offenders.append(str(path))
     assert offenders == []
+
+
+def test_api_never_imports_the_credential_opener():
+    # only the procurement process (and delivery, which has no use for it) may import credopen
+    offenders = []
+    for path in APP.rglob("*.py"):
+        if (APP / "procurement") in path.parents or path == APP / "procurement" / "credopen.py":
+            continue
+        if "credopen" in path.read_text(encoding="utf-8"):
+            offenders.append(str(path))
+    assert offenders == []
+    assert "Opener" not in (APP / "core" / "credvault.py").read_text(encoding="utf-8")
 
 
 def test_api_settings_have_no_private_key_field():

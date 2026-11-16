@@ -1764,7 +1764,7 @@ async def run_once(ctx: ProcurementContext) -> int:
     try:
         await sweep_credentials(ctx)
     except Exception as exc:  # never kills the loop; the next pass tries again
-        log.error("credential sweep failed error=%s", type(exc).__name__)
+        log.error("session sweep failed error=%s", type(exc).__name__)
     return n
 
 
