@@ -879,7 +879,9 @@ class ZovoCardSupplier:
             body = dr.order_body(
                 spec,
                 credential=checked.canonical,
-                preflight_token=pf.token,
+                preflight_token=None
+                if dr.omit_preflight_token(self.client.config.base_url, self.env)
+                else pf.token,
                 request_id=rid,
                 pricing_version=version,
             )

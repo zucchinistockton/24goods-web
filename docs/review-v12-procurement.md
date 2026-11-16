@@ -926,6 +926,16 @@ New codes: `funding_card_invalid`, `funding_card_exhausted`, `funding_card_low`,
 `card_busy` (job `error_code` while parked), `order_list_too_long`. New internal route `POST /internal/direct-order`.
 Not done: the hand-fulfil guard refuses an in-flight order instead of cancelling it for staff (void it first).
 
+**Verified against the vendor sandbox with a real order (2026-11-16) [V].** `POST /gpt-direct/orders` WITH a fresh
+preflight token answers HTTP 400 `GPT_DIRECT_ORDER_REJECTED` ("preflight token invalid") and creates nothing; the same
+request WITHOUT `preflight_token` answers 202 `{id, status: "queued", stage: "card_ready", pricing_version,
+client_request_id, account_email, card_id, product, plan, source: "api", ...}`. The adapter therefore omits the token
+for the host `sandbox.zovocard.com` only (`direct.omit_preflight_token`); production keeps it. A few seconds later
+`GET /gpt-direct/orders/{id}` answers `data.order.{status: "pending", stage: "processing", client_request_id,
+account_email, card_number (masked), quoted_amount_minor, final_amount_minor, charged_amount_minor, currency,
+payment_state, ...}` and the list rows carry `client_request_id` (the reconcile search relies on it). The sandbox
+preflight returns `quotes: null` and defaults to US / USD.
+
 ### 18.6 Left open
 
 * Verified [V] since (18.5a): the list is `{list, total}`, usage and preflight shapes. Still unverified: `client_request_id` per list row and the order **detail** fields (`status`, `plan`,
