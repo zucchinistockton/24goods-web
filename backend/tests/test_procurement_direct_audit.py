@@ -928,3 +928,56 @@ def test_the_engine_sweep_default_is_inside_the_database_backstop():
     from app.procurement.config import ProcurementSettings
 
     assert ProcurementSettings().cred_max_age_s == 18000.0 < 21600.0
+
+
+async def test_a_completed_order_dearer_than_its_budget_is_a_critical_row(env, dup):
+    vendor = _vendor()
+    await _zovo(dup, vendor, CLAUDE)
+    buyer, order = await dup.paid_direct(claude_session(new_marker()))
+    await dup.run()
+    # the order is within budget when sent (USD 20 <= 27.50) but is booked dearer when it completes
+    vendor.direct_orders[next(iter(vendor.direct_orders))]["amount"] = 3000  # USD 30
+    await _drive(env, dup, order, buyer)
+    row = (
+        await _rows(
+            env,
+            "SELECT detail->>'cost', detail->>'bound' FROM audit_log "
+            "WHERE action = 'procurement.cost_over_bound' AND severity = 'critical'",
+        )
+    )[0]
+    assert row[0] == "30.00" and row[1].startswith("27.5")
+    from app.modules.payments.reconcile import alert_declining_offers
+
+    async with env.api_session() as db:
+        assert await alert_declining_offers(env.res, db, env.tenant_id, datetime.now(timezone.utc))
+
+
+async def test_a_late_completion_after_the_order_was_refunded_is_flagged_not_delivered(env, dup):
+    vendor = _vendor()
+    vendor.direct_end = "running"
+    await _zovo(dup, vendor, CLAUDE)
+    buyer, order = await dup.paid_direct(claude_session(new_marker()))
+    await dup.run()
+    await _sql(env, "UPDATE procurement_jobs SET first_sent_at = now() - interval '3 hours'")
+    await _settle(dup, 2)
+    job = await _job(dup, order)
+    assert job.state == "needs_manual" and job.next_poll_at is not None  # watched
+    # the order leaves the open states while the job is still watched (e.g. closed by staff)
+    await _sql(env, "UPDATE orders SET status = 'refunded' WHERE id = :o", o=uuid.UUID(order["id"]))
+    vendor.direct_end = "completed"
+    for _ in range(3):
+        await _sql(env, "UPDATE procurement_jobs SET next_poll_at = now() - interval '1 second' "
+                        "WHERE state = 'needs_manual'")  # fmt: skip
+        await dup.run()
+    job = await _job(dup, order)
+    assert job.state == "fulfilled" and job.error_code == "refunded_after_success"
+    assert not job.card_stock_ids  # nothing was sealed or delivered
+    row = (
+        await _rows(
+            env,
+            "SELECT severity, (detail->>'late') FROM audit_log "
+            "WHERE action = 'procurement.direct_refunded_after_success'",
+        )
+    )[0]
+    assert tuple(row) == ("critical", "true")
+    assert await _creds(env, order) == 0 and buyer is not None

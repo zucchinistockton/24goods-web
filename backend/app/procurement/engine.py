@@ -1082,6 +1082,35 @@ async def _lease_watch(
     return lease
 
 
+async def _check_cost_bound(
+    db: AsyncSession, job: ProcurementJob, res: Result, bound: Money | None
+) -> None:
+    """After a direct order COMPLETED, compare what it cost with the budget it was sent under: over
+    it is a critical audit row (and a staff alert) even though the money is already spent. Only
+    a USD cost is comparable; a non-USD plan's cost stays unbounded here (see review-v12 §18)."""
+    if (
+        job.kind != "direct"
+        or res.cost is None
+        or bound is None
+        or res.cost.currency != bound.currency
+        or res.cost.amount <= bound.amount
+    ):
+        return
+    await audit(
+        db,
+        tenant_id=job.tenant_id,
+        action="procurement.cost_over_bound",
+        target=f"procurement_job:{job.id}",
+        detail={
+            "order_id": str(job.order_id),
+            "cost": str(res.cost.amount),
+            "bound": str(bound.amount),
+            "currency": bound.currency,
+        },
+        severity="critical",
+    )
+
+
 async def _apply_watch(
     ctx: ProcurementContext,
     db: AsyncSession,
@@ -1089,6 +1118,7 @@ async def _apply_watch(
     order: OrderRow,
     res: Result,
     now: datetime,
+    bound: Money | None = None,
 ) -> None:
     """A held direct job's order was read again. Completed: delivered when the order still waits
     for it (paid, or held by the procurement hold; delivery decides), otherwise the order was
@@ -1097,6 +1127,7 @@ async def _apply_watch(
     if o is Outcome.OK:
         if order.status in ("paid", "manual_review"):
             await _fulfil(ctx, db, job, order, res, allow_held=True)
+            await _check_cost_bound(db, job, res, bound)
             return
         job.upstream_ref = res.upstream_ref or job.upstream_ref
         job.error_code = "refunded_after_success"
@@ -1884,7 +1915,7 @@ async def _apply(ctx: ProcurementContext, lease: Lease, res: Result) -> None:
             await db.commit()
             return
         if lease.mode == "watch":
-            await _apply_watch(ctx, db, job, order, res, now)
+            await _apply_watch(ctx, db, job, order, res, now, lease.spec.cost_bound)
             await db.commit()
             return
         if lease.mode in ("recover", "dvoid"):
@@ -1903,6 +1934,7 @@ async def _apply(ctx: ProcurementContext, lease: Lease, res: Result) -> None:
             return
         if o is Outcome.OK:
             await _fulfil(ctx, db, job, order, res)
+            await _check_cost_bound(db, job, res, lease.spec.cost_bound)
         elif o is Outcome.ACCEPTED_PENDING:
             if job.state != "accepted_pending":
                 job.step, job.attempts = "pending", 0

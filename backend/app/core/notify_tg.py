@@ -87,6 +87,8 @@ TEXTS: dict[str, dict[str, str]] = {
         "procurement is not cleaning up. Direct-order checkout is paused; check procurement",
         "proc.offer_off": "Direct source ...{offer} was switched OFF after repeated declined "
         "orders (check the funding card); re-enable it in the console when fixed",
+        "proc.cost_over": "Direct job ...{offer}: a completed order cost MORE than its budget; "
+        "check the supplier's price and the offer's cost estimate",
         "proc.supplier_paused": "Supplier {code} ({env}) is paused for new orders",
         "proc.pause_reason": "Reason: {reason} ({kind})",
         "reminder.title": "Service expiry reminder",
@@ -131,7 +133,8 @@ TEXTS: dict[str, dict[str, str]] = {
         "无法通过接口撤销，请决定如何与供应商追偿",
         "proc.sessions_overdue": "{n} 份买家会话密文超过最长保存时间：采购进程未在清理。"
         "直充下单已暂停，请检查采购进程",
-        "proc.offer_off": "直充货源 ...{offer} 因连续拒付被关闭（请检查付款卡），修复后请重新启用",
+        "proc.offer_off": "直充货源 ...{offer} 因连续拒付被关闭，请检查付款卡后重新启用",
+        "proc.cost_over": "直充任务 ...{offer}：已完成订单成本超出预算，请核对供应商价格与成本估算",
         "proc.supplier_paused": "供应商 {code}（{env}）已暂停接收新订单",
         "proc.pause_reason": "原因：{reason}（{kind}）",
         "reminder.title": "服务到期提醒",

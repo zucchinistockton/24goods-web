@@ -768,7 +768,7 @@ An account session (a ChatGPT session text is about 37 KB) is a live credential 
 * **Deletion.** The engine deletes the row in the same transaction as the `fulfilled` transition; the sweeper
   (every `APP_CRED_SWEEP_INTERVAL_S`, default 30 s, also staff actions which run as `app_api` and cannot delete)
   removes it when every direct job of the order is terminal (`fulfilled`/`failed`/`voided`), when the order is no
-  longer `pending_payment`/`paid`/`manual_review`, and in any case after `APP_CRED_MAX_AGE_S` (default 6 h, the
+  longer `pending_payment`/`paid`/`manual_review`, and in any case after `APP_CRED_MAX_AGE_S` (default 5 h; the DB backstop is 6 h, the
   same bound as a same-key replay). `needs_manual` keeps it (a retry may need it) until the max age.
 * **Re-supply.** A session that expired or was rejected: the owner `POST /orders/{ref}/direct-session` (only a
   `paid` / `manual_review` direct order that holds no session; 409 `session_exists` otherwise); staff then retry.
@@ -870,7 +870,7 @@ Console (admin, staff):
 ### 18.5 Settings, env and deploy
 
 New: API `APP_CRED_PUBLIC_KEYS_FILE` (or `APP_CRED_PUBLIC_KEYS`), `APP_CRED_ACTIVE_KID`; procurement
-`APP_CRED_PRIVATE_KEYS_FILE`, `APP_CRED_MAX_AGE_S` (21600), `APP_CRED_SWEEP_INTERVAL_S` (30),
+`APP_CRED_PRIVATE_KEYS_FILE`, `APP_CRED_MAX_AGE_S` (18000, max 21600), `APP_CRED_SWEEP_INTERVAL_S` (30),
 `APP_DIRECT_PENDING_MAX_S` (7200). `deploy/bootstrap.sh` wires them for a new stack (compose secrets
 `cred_public_keys` -> api, `cred_private_keys` -> procurement only; `backup.sh` puts the private key with the vault
 keys with their own recipients file, 18.5a). **An already-bootstrapped stack** (no restart of delivery needed):
@@ -911,6 +911,14 @@ Tests: `backend/tests/test_procurement_direct_audit.py`. Migration `0030_cred_de
 | S-L3 | `deploy/backup.sh` writes the credential private key to its own archive `cred-keys.tgz.age`, sealed to `BACKUP_CRED_RECIPIENTS` (default `/opt/kesiv/backup-cred-recipients.txt`); without that file it falls back to the vault recipients and prints a warning. |
 | CI | The opener of buyer sessions lives in `app/procurement/credopen.py` (procurement imports it; `app/core/credvault.py` is seal-only). `tests/test_vault_security.py` asserts that no API code names an opener or imports `credopen`. `scripts/dev.sh` generates and wires the pair for the dev stack. |
 
+| N1 | A hand-pasted card's vendor `card_id` is recorded in `upstream_ref` when the job has none (a pasted card job has no supplier, so its id blocks every supplier's funding cards). Availability returns the funding card's masked number; a funding card whose mask equals the `card_mask` of any non-voided card job of the tenant is refused (`funding_card_invalid`) at the check, in the periodic refresh and in the pre-check. |
+| N2 | Three consecutive declines now DISABLE the source (`enabled = false`, `last_check_ok = false`), write the critical `procurement.offer_declining` row and alert staff (`proc.offer_off`, once per switch-off); a precheck / refresh cannot switch it back on, routing and checkout stop; re-enabling is a staff action. |
+| N3 | After a direct order completes, the recorded USD cost is compared with the budget it was sent under (`cost_estimate x (1 + tolerance)`): above it is a critical `procurement.cost_over_bound` row and a staff alert (`proc.cost_over`). **Unbounded:** a non-USD plan's real cost (PHP...) is only bounded BEFORE the send by the plan ceiling (`maxAmountMinor`); after completion nothing can be compared (the job has no USD cost, the margin report says `cost_incomplete`). |
+| N4 | The per-card in-flight count also counts a `needs_manual` direct job whose supplier order is still watched (M8); a `card_busy` park raises the stuck-job alert after 30 min like the balance park. |
+| N5 | `APP_CRED_MAX_AGE_S` defaults to 5 h so the engine's own sweep wins over the database backstop (6 h). `APP_REPLAY_MAX_AGE_S` must not exceed the vendor's idempotency-key retention (unverified). |
+| N6 | The refund acknowledgement is required whenever a direct job of the order has a supplier order id and is not `failed` / `voided` (completed OR still moving), not only when `fulfilled`. |
+| [V] | Verified against the REAL sandbox (2026-11-16): `GET /gpt-direct/orders` answers `{list: [], total}`; `GET /gpt-direct/account-orders` answers `{list, next_cursor, has_more, sync_until}`; `GET /gpt-direct/cards/{id}/usage?product=gpt` answers `card_id, card_number (masked), card_status, product, light{used, remaining, cap, completed, failed, reserved}, pro20{...}, count_failures, cooling, decline_count, busy`; `GET /gpt-direct/card-rules` answers `{list: [...]}`; the preflight answers `blocking_reason, can_purchase_at, credentialMode, currentPlan, email, last_payment, mailProvider, payment_country, payment_currency, payment_method, preflight_expires_at, preflight_token, promotions, quote_error, quotes (NULL), subscription_active_until, subscription_has_active, subscription_is_delinquent, subscription_purchase_origin, subscription_recovery_required, subscription_will_renew, x_subscription_type`, and without `payment_country` the sandbox answered US / USD (not PH / PHP). Consequences: the preflight is refused BEFORE any send when `blocking_reason` is set (`preflight_blocked`), `can_purchase_at` is in the future (`purchase_not_yet`), the account has an active subscription (`subscription_active`) or needs recovery (`subscription_recovery_required`); a funding card whose usage says `busy` or `cooling` is not used now (`funding_card_busy`, parked, retried) and one whose `card_status` is not ACTIVE is `funding_card_invalid`; a missing quote (`quotes: null`) is accepted on a SANDBOX supplier (the offer's cost bound stays the ceiling) and refused on a PRODUCTION supplier (`quote_missing`; Claude / Grok keep the catalogue-price check). |
+
 New settings: `APP_DIRECT_QUOTE_TOLERANCE` (0.10), `APP_DIRECT_DECLINE_LIMIT` (3), `APP_DIRECT_CARD_INFLIGHT_MAX` (1).
 New codes: `funding_card_invalid`, `funding_card_exhausted`, `funding_card_low`, `quote_over_bound`,
 `quote_missing`, `quote_unbounded`, `quote_currency_mismatch`, `session_other_account`, `order_failure_unconfirmed`,
@@ -920,7 +928,7 @@ Not done: the hand-fulfil guard refuses an in-flight order instead of cancelling
 
 ### 18.6 Left open
 
-* The vendor order **list** shape (`client_request_id` per row) and the order **detail** fields (`status`, `plan`,
+* Verified [V] since (18.5a): the list is `{list, total}`, usage and preflight shapes. Still unverified: `client_request_id` per list row and the order **detail** fields (`status`, `plan`,
   `account_email`, `final_amount_minor`) are read as documented/seen in the 202 body; not verified in the real
   sandbox (the vendor's direct orders were not run: the sandbox account lapsed). The reconcile does not depend on
   the list: a miss falls back to the same-key resubmit, which the vendor de-duplicates by key and by
