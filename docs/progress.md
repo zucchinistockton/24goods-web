@@ -27,19 +27,32 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
   `deploy/env.bak-20261116T*`. Checked in a browser on the demo: buyer home, product, login and order lookup
   in dark and light, console Procurement and Suppliers pages in dark — all render correctly. Not exercised by
   hand: an `upstream_cdk` purchase on the demo (the E2E smoke covers it in CI).
-- **Production (c4) runs `24a64fb`** (deployed 2026-11-16 ~05:40 UTC by hand with the owner's explicit
-  go-ahead: dark mode #6 + Telegram language #7, no migration; `prod.sh smoke` all pass). Rollback images on
-  c4: `goods24-{api,web}:rollback-d881dfa`. Hand procedure (still do not use `scripts/prod.sh deploy`, dead
-  registry token): tag rollback images from the running `:main`, `compose pull api web`, `run --rm migrate`,
-  `up -d --wait`, `scripts/prod.sh smoke`.
-- **Two-factor login is merged to `main`** (PR #10, `eed9972`, migration `0022a_user_totp`) and merged into
-  this branch; `0023_procurement` now revises `0022a_user_totp`. **Not in production yet**: look at its UI on
-  the demo first, then deploy `main`. A database already at 0023+ (the demo) does not get 0022a from
-  `alembic upgrade`: apply its SQL by hand there.
-- **Next, in order:** (1) demo: this branch incl. two-factor login, check its UI, then deploy `main` to
-  production; (2) redemption site (spec §8): backend proxy, then the SPA; (3) sandbox webhook (below; the
-  account expires **2026-11-18 10:57**; owner confirmed 2026-11-16 that the signing keys match); (4) M3
-  (`upstream_vcc`, `upstream_direct`).
+- **Production (c4) runs `eed9972`** (2026-11-16, by hand with the owner's go-ahead: dark mode #6, Telegram
+  language #7, two-factor login #10 with migration `0022a_user_totp`; `prod.sh smoke` all pass). Rollback
+  images on c4: `goods24-{api,web}:rollback-24a64fb`, `:rollback-d881dfa`. Details and the hand procedure are in
+  the top block of `docs/progress.md` on `main`. Nightly off-host backup pull fixed there too
+  (`scripts/pull-prod-backups.sh`).
+- **Redemption site (spec §8, §8.1): merged** (PR #13, `196ace4`). Public `/redeem/*` proxy on its own listener
+  in the procurement process (`app/procurement/redeem.py`, off unless `APP_REDEEM_ENABLED=1`), `redeem` compose
+  network, Caddy site for `REDEEM_HOST`, static bilingual page in `deploy/redeem/` (no framework, strict CSP, no
+  storage), mock vendor endpoints, `tests/test_redeem.py` (60), E2E scenario `v12_redeem`. Security-reviewer:
+  pass with notes; fixed: result is POST only, body deadline, explicit `APP_REDEEM_SUPPLIER_ENV` in prod, poll
+  back-off, the page forgets input on leave. Accepted / open: the shared per-step budget (vendor limits per
+  egress IP) can be exhausted from a few addresses — add a Cloudflare rate-limit rule on `/redeem/*` when the
+  host goes live; no CAPTCHA on preview; the vendor's real preflight / result field names are unverified
+  (shapers in `redeem.py` may need adjusting on the first real redemption); `/recover-subscription` is not
+  proxied. **To go live it needs a DNS name** (`redeem.<domain>` in Cloudflare → the origin) and
+  `REDEEM_HOST` + the `APP_REDEEM_*` lines (see `deploy/bootstrap.sh`).
+- **Demo** runs `196ace4` (v12 + two-factor login + redemption site). There the mock supplier row is enabled
+  and the redemption page answers on `redeem.localhost` (Host header; `curl -H 'Host: redeem.localhost'
+  http://127.0.0.1:18888/`): walked in a real browser at 390 px (wrong code, account step, confirm, result,
+  zh-CN), no console or CSP errors. `user_totp` was created by hand on the demo (it was already past 0022a).
+- **M3 part 1 (`upstream_vcc`) is in progress**: implementer on `feat/v12-m3-vcc` (worktree
+  `.claude/worktrees/m3`), backend only; then payment-auditor + security-reviewer, then the UI. `upstream_direct`
+  is M3 part 2, not started.
+- **Next, in order:** (1) M3 part 1 review, audit, UI, merge; (2) M3 part 2 (`upstream_direct`); (3) sandbox
+  webhook (below; account expires **2026-11-18 10:57**); (4) redemption host DNS (owner); (5) small UI polish:
+  the two-factor password placeholder is cut off at 375 px.
 - **Re-audit verdict (2026-11-15, head `2895860`): pass with notes — no Critical/High, no path to a double
   purchase or double delivery.** Original findings: H1, M1, M2, M4, M5, L1, L2, L4, L7 closed; H2, M3, L5
   partly; L3 and L6 deferred (`TODO(v12-M3)`). New findings and the decided fixes (paths under
