@@ -4,14 +4,26 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 ## Current state — hand-off (read this first in a new session)
 
+**Production deploys 2026-11-16 (owner's explicit go-ahead, by hand).** (1) `24a64fb`: dark mode #6 + Telegram
+language #7, no migration. (2) `eed9972`: optional two-factor login #10, migration `0022a_user_totp` (additive;
+FORCE RLS verified on c4). `prod.sh smoke` all pass after each; api / web / delivery report `eed9972`.
+Rollback images on c4: `goods24-{api,web}:rollback-24a64fb` (before #10; drop table `user_totp` is not needed
+to run it) and `:rollback-d881dfa`. Before (2), two-factor login was walked through in a real browser on the
+demo (set up, sign in with a code, turn off). Hand procedure, still valid (`scripts/prod.sh deploy` has a dead
+registry token): tag rollback images from the running `:main`, `compose pull api web`, `run --rm migrate`,
+`up -d --wait`, `scripts/prod.sh smoke`. c4 root disk is at 87 %: old rollback images can be pruned.
+**Backups: the nightly off-host copy had been failing since 2026-11-08** (the dev-box cron ran
+`scripts/prod.sh backup`, which refuses until #28 is done; c4 itself kept making its 03:30 set). Fixed:
+`scripts/pull-prod-backups.sh` (read-only on c4, checksum-verified, keeps 14 sets) is what the cron runs now;
+the 2026-11-16 03:30 set is in `/root/kesiv-backups/nightly-20261116T033001Z` (`pg_restore --list`: 43 tables).
+Backups are still unencrypted and there has been no restore drill (#28, owner).
+
 **Active work is not on `main` (2026-11-16).** The current hand-off, with the ordered next steps, is the top
 block of `docs/progress.md` on branch **`feat/v12-procurement`** (local worktree
 `.claude/worktrees/agent-af3aa371765135692`): `git show origin/feat/v12-procurement:docs/progress.md | head -110`.
 In short: v12 procurement M2 is merged into `feat/v12-procurement` (PR #2, all payment-audit findings fixed
-except two deferred to M3) and runs on the demo with the procurement process; it is not on `main`. Optional
-TOTP 2FA is PR #10 (`feat/totp-2fa`, block below). Open: production deploy of `main` (dark mode
-#6 and the Telegram language switch #7 are merged and checked on the demo, production still runs `d881dfa`),
-the ZovoCard sandbox webhook (account expires 2026-11-18 10:57), the redemption site, M3.
+except two deferred to M3) and runs on the demo with the procurement process; it is not on `main`. Open: the redemption site
+(backend built on `feat/v12-redeem`), the ZovoCard sandbox webhook (account expires 2026-11-18 10:57), M3.
 
 **Optional two-factor login (2026-11-16, PR `feat/totp-2fa`, ADR-039, migration `0022a_user_totp`).** Buyers
 and staff can turn on an authenticator app (TOTP). Login for an enrolled account is password → pending token
