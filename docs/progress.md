@@ -9,10 +9,19 @@ block of `docs/progress.md` on branch **`feat/v12-procurement`** (local worktree
 `.claude/worktrees/agent-af3aa371765135692`): `git show origin/feat/v12-procurement:docs/progress.md | head -110`.
 In short: v12 procurement M2 is merged into `feat/v12-procurement` (PR #2, all payment-audit findings fixed
 except two deferred to M3) and runs on the demo with the procurement process; it is not on `main`. Optional
-TOTP 2FA has its backend on `feat/totp-2fa` (no UI, no PR yet). Open: production deploy of `main` (dark mode
+TOTP 2FA is PR #10 (`feat/totp-2fa`, block below). Open: production deploy of `main` (dark mode
 #6 and the Telegram language switch #7 are merged and checked on the demo, production still runs `d881dfa`),
 the ZovoCard sandbox webhook (account expires 2026-11-18 10:57), the redemption site, M3.
 
+**Optional two-factor login (2026-11-16, PR `feat/totp-2fa`, ADR-039, migration `0022a_user_totp`).** Buyers
+and staff can turn on an authenticator app (TOTP). Login for an enrolled account is password → pending token
+→ code (`POST /auth/login/2fa`); ten single-use recovery codes; admins can reset another user's second
+factor (Users page). Buyer app: second step on the login page (also after Google sign-in), My account →
+Settings → Two-factor login. Console: second step on the login page, user menu → Two-factor login. Tests:
+`tests/test_twofactor.py`, `tests/test_totp_core.py`. Not built: "require 2FA for staff". Security-reviewer (2026-11-16): pass with notes, no bypass of the second factor; its High finding (race in
+the wrong-code limiter) and the Medium ones (password reset keeps a squatter's enrolment; admin could reset
+another admin) are fixed, the rest are recorded as accepted risks in ADR-039. **Needs a human review before
+merge (auth path, AGENTS.md §5.3); the UI was typechecked by CI only and never seen in a browser.** When v12 reaches `main`, `0023_procurement` must revise `0022a_user_totp`.
 **Telegram notification language (2026-11-15, PR `feat/tg-language`).** Staff alerts are English by
 default; `notifications.telegram_language` (`en` | `zh-CN`, Settings → Notifications) switches them. All
 sentences live in one catalog (`app/core/notify_tg.py` `TEXTS`; callers pass `T(key, …)` and plain strings

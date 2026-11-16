@@ -489,6 +489,9 @@ export function createAdminV5Api(c: ApiClient) {
       suspend: (id: string, b: { reason: string; until?: string | null }) =>
         c.post<AdminUserRow>(`/admin/users/${seg(id)}/suspend`, b.until ? b : { reason: b.reason }),
       unsuspend: (id: string) => c.post<AdminUserRow>(`/admin/users/${seg(id)}/unsuspend`),
+      /** Admin only: remove a user's two-factor login (their sessions end). */
+      resetTwoFactor: (id: string) =>
+        c.post<{ id: string; two_factor: false; removed: boolean }>(`/admin/users/${seg(id)}/2fa/reset`),
     },
     blockedIps: {
       list: (q: { page?: number; page_size?: number }) => c.get<Paginated<BlockedIp>>('/admin/blocked-ips', clean(q)),

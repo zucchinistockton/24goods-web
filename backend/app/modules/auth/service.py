@@ -18,6 +18,7 @@ from app.core.errors import Conflict, Unauthorized
 from app.core.ratelimit import blocked, count, enforce, hit, ident_hash
 from app.core.security import hash_password, verify_password
 from app.models import User
+from app.modules.auth import twofactor
 from app.modules.auth.schemas import (
     HANDLE_RE,
     INSTANT_DOMAIN,
@@ -162,7 +163,8 @@ async def login(
     tenant_id: uuid.UUID,
     body: LoginIn,
     ip: str | None,
-) -> User:
+) -> tuple[User, twofactor.LimiterKeys | None]:
+    """The user, plus the limiter keys when a second factor is still owed (no session yet)."""
     # Only FAILED attempts are counted (a successful login never consumes budget), so an
     # attacker cannot lock a victim out from another IP and the victim's own logins are free.
     ip_key = ip or "-"
@@ -204,6 +206,20 @@ async def login(
     await suspend.enforce(db, user)  # only after the password matched: no account probing
     if rehash:
         user.pw_hash = await hash_password(body.password)
+    if await twofactor.enabled(db, user):
+        # the password was right, but this is not a login yet: no session, no last_login_at
+        await audit(
+            db,
+            tenant_id=tenant_id,
+            action="auth.login_password_ok",
+            actor_id=user.id,
+            actor_role=user.role,
+            target=f"user:{user.id}",
+            ip=ip,
+            detail={"second_factor": "required"},
+        )
+        await db.commit()
+        return user, twofactor.LimiterKeys(email_key=email_key, pair_key=pair_key)
     user.last_login_at = datetime.now(timezone.utc)
     await audit(
         db,
@@ -215,4 +231,4 @@ async def login(
         ip=ip,
     )
     await db.commit()
-    return user
+    return user, None

@@ -55,6 +55,11 @@ class LoginIn(BaseModel):
     turnstile_token: str | None = Field(None, max_length=2048)
 
 
+class TwoFactorLoginIn(BaseModel):
+    pending_token: str = Field(min_length=20, max_length=128)
+    code: str = Field(min_length=6, max_length=32)  # authenticator code or a recovery code
+
+
 class InstantIn(BaseModel):
     # No email here: an unverified address on a throw-away account would let anyone squat
     # someone else's address. Instant accounts add one later via /me/credentials.

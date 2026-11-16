@@ -47,6 +47,16 @@ async function suspend() {
     saving.value = false
   }
 }
+/** Admin only: remove a user's two-factor login when they lost their device. */
+async function resetTwoFactor(u: AdminUserRow) {
+  if (!(await confirmBox(t('twoFactor.resetConfirm', { who: emailOf(u) })))) return
+  try {
+    const out = await apiV5.users.resetTwoFactor(u.id)
+    toastOk(out.removed ? t('twoFactor.resetDone') : t('twoFactor.resetNone'))
+  } catch (e) {
+    toastError(e)
+  }
+}
 async function unsuspend(u: AdminUserRow) {
   if (!(await confirmBox(t('v5.users.unsuspendConfirm', { who: emailOf(u) })))) return
   try {
@@ -140,8 +150,9 @@ onMounted(() => {
             </el-table-column>
             <el-table-column :label="t('v5.users.created')" width="160"><template #default="{ row }">{{ formatDateTime(row.created_at, locale) }}</template></el-table-column>
             <el-table-column :label="t('v5.users.lastLogin')" width="160"><template #default="{ row }">{{ row.last_login_at ? formatDateTime(row.last_login_at, locale) : '—' }}</template></el-table-column>
-            <el-table-column :label="t('common.actions')" width="120" fixed="right">
+            <el-table-column :label="t('common.actions')" :width="auth.isAdmin ? 220 : 120" fixed="right">
               <template #default="{ row }">
+                <el-button v-if="auth.isAdmin && row.id !== auth.user?.id" link @click="resetTwoFactor(row as AdminUserRow)">{{ t('twoFactor.reset') }}</el-button>
                 <template v-if="canSuspend(row as AdminUserRow)">
                   <el-button v-if="row.status === 'suspended'" link type="primary" @click="unsuspend(row as AdminUserRow)">{{ t('v5.users.unsuspend') }}</el-button>
                   <el-button v-else link type="danger" @click="openSuspend(row as AdminUserRow)">{{ t('v5.users.suspend') }}</el-button>

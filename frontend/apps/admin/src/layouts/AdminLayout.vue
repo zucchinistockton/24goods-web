@@ -26,6 +26,7 @@ import {
 import { LogoMark } from '@24goods/shared/ui'
 import NotifyPopover from '../components/NotifyPopover.vue'
 import StaffAvatarControl from '../components/StaffAvatarControl.vue'
+import TwoFactorDialog from '../components/TwoFactorDialog.vue'
 import { useCsNotifications } from '../composables/useCsNotifications'
 import { ensureNotificationPermission, notificationPermission } from '../notify'
 import { useDeskStore } from '../stores/desk'
@@ -148,6 +149,7 @@ function switchLang(l: LocalePreference) {
 function openShop() {
   window.open('/', '_blank', 'noopener')
 }
+const twoFactorOpen = ref(false)
 async function logout() {
   rt.stop()
   await auth.logout()
@@ -227,6 +229,7 @@ async function logout() {
                 <StaffAvatarControl />
               </div>
               <el-dropdown-menu>
+                <el-dropdown-item @click="twoFactorOpen = true">{{ t('twoFactor.title') }}</el-dropdown-item>
                 <el-dropdown-item @click="openShop">{{ t('top.openShop') }}</el-dropdown-item>
                 <el-dropdown-item divided @click="logout">{{ t('top.logout') }}</el-dropdown-item>
               </el-dropdown-menu>
@@ -244,6 +247,7 @@ async function logout() {
         <RouterView />
       </el-main>
     </el-container>
+    <TwoFactorDialog v-model="twoFactorOpen" />
   </el-container>
 </template>
 
