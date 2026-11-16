@@ -44,6 +44,10 @@ class ProcurementSettings:
     # a sealed credential is deleted after this many seconds in any case (default 6 h, the same
     # bound as a same-key replay): a session text is a live credential for the buyer's account
     cred_max_age_s: float = 21600.0
+    cred_sweep_interval_s: float = 30.0  # how often the sweeper looks for credentials to delete
+    # an upstream_direct order still pending at the supplier after this long goes to needs_manual
+    # (``pending_too_long``): a subscription takes minutes, an order that never moves needs staff
+    direct_pending_max_s: float = 7200.0
     # engine (review-v12 §3, §6)
     jobs_poll_s: float = 2.0
     job_lease_s: float = 120.0

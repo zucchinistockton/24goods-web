@@ -31,12 +31,13 @@ import asyncio
 import hashlib
 import json
 import logging
+import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 
-from sqlalchemy import func, insert, select, update
+from sqlalchemy import delete, func, insert, select, text, update
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -48,6 +49,7 @@ from app.models import (
     CardStock,
     Order,
     Outbox,
+    ProcurementCredential,
     ProcurementJob,
     Product,
     ProductVariant,
@@ -76,11 +78,13 @@ TOPIC_FULFILLED = "procure.fulfilled"
 TOPIC_FAILED = "procure.failed"
 CONSUMED = (TOPIC_REQUESTED, TOPIC_EVENT)
 _CDK_TERMINAL = frozenset({"consumed", "disabled"})  # ZovoCard CDK statuses that do not move on
-UPSTREAM_MODES = ("upstream_cdk", "upstream_vcc")
-MODE_KIND = {"upstream_cdk": "cdk", "upstream_vcc": "vcc"}  # delivery mode -> offer / job kind
+UPSTREAM_MODES = ("upstream_cdk", "upstream_vcc", "upstream_direct")
+# delivery mode -> offer / job kind
+MODE_KIND = {"upstream_cdk": "cdk", "upstream_vcc": "vcc", "upstream_direct": "direct"}
 # vendor status recorded on a job: what a fresh purchase looks like / what a void leaves
-ISSUED_STATUS = {"cdk": "unused", "vcc": "active"}
-VOIDED_STATUS = {"cdk": "disabled", "vcc": "deleted"}
+ISSUED_STATUS = {"cdk": "unused", "vcc": "active", "direct": "completed"}
+VOIDED_STATUS = {"cdk": "disabled", "vcc": "deleted", "direct": "cancelled"}
+TERMINAL_JOB = ("fulfilled", "failed", "voided")  # a direct job in these needs no credential
 ACTIVE = ("queued", "submitting", "accepted_pending")
 WORK = (*ACTIVE, "void_pending")  # states the poller leases (void_pending: disable upstream)
 POLL_STEPS = (15, 30, 60, 120, 300, 600, 900)  # seconds; capped at 15 min (spec §6)
@@ -403,6 +407,9 @@ async def close_order_jobs(
         if job.state in CLOSABLE:
             await close_job(db, job, reason, actor_id=actor_id, actor_role=actor_role, ip=ip)
             n += 1
+        elif job.state == "fulfilled" and job.kind == "direct":
+            await _direct_refunded(db, job, order, actor_id, actor_role, ip)
+            n += 1
         elif job.state == "fulfilled" and (undelivered or job.kind == "vcc"):
             # a code bound but never handed over (N5): never leave it valid at the supplier. A
             # CARD is live money even once delivered: a refund deletes it (the supplier returns
@@ -415,6 +422,38 @@ async def close_order_jobs(
 
 
 UNDELIVERED_ORDER = ("paid", "manual_review")  # nothing handed over yet
+
+
+async def _direct_refunded(
+    db: AsyncSession,
+    job: ProcurementJob,
+    order: Order,
+    actor_id: uuid.UUID | None,
+    actor_role: str,
+    ip: str | None,
+) -> None:
+    """A refund / close of an order whose direct job COMPLETED: the subscription is on the buyer's
+    account and the supplier's API cannot undo it, so nothing is voided automatically. The job
+    stays ``fulfilled``; a critical audit row and a staff alert (``error_code``
+    ``refunded_after_success``, picked up by the reconciler) make it a visible STAFF decision (a
+    refund-after-success is a loss to recover with the supplier, or a goodwill gesture)."""
+    job.error_code = "refunded_after_success"
+    await audit(
+        db,
+        tenant_id=job.tenant_id,
+        action="procurement.direct_refunded_after_success",
+        actor_id=actor_id,
+        actor_role=actor_role,
+        target=f"procurement_job:{job.id}",
+        detail={
+            "order_id": str(order.id),
+            "upstream_ref": clean_detail(job.upstream_ref or ""),
+            "supplier_id": str(job.supplier_id) if job.supplier_id else None,
+            "order_status": order.status,
+        },
+        severity="critical",
+        ip=ip,
+    )
 
 
 async def _void_fulfilled(
@@ -491,6 +530,16 @@ async def handle_requested(ctx: ProcurementContext, db: AsyncSession, payload: d
         log.info("procure.requested ignored (order missing, not paid or not upstream)")
         return
     if order.product_id is None:
+        return
+    if order.delivery_mode == "upstream_direct" and order.qty != 1:
+        # one account per order: never create a second job for a session that exists once
+        _emit(
+            db,
+            order.tenant_id,
+            TOPIC_FAILED,
+            f"failed:{order.id}:qty",
+            {"order_id": str(order.id), "reason": "qty_not_one"},
+        )
         return
     taken = set(
         await db.scalars(
@@ -601,6 +650,26 @@ async def handle_event(ctx: ProcurementContext, db: AsyncSession, payload: dict)
     now = utcnow()
     if ev.kind in CARD_EVENTS and (ev.payload or {}).get("card_id") is not None:
         await _card_event(db, ev, now)
+    elif ev.kind.startswith("gpt_direct.") and (ev.payload or {}).get("order_id") is not None:
+        oid = str((ev.payload or {})["order_id"])[:128]
+        djobs = list(
+            await db.scalars(
+                select(ProcurementJob)
+                .where(
+                    ProcurementJob.tenant_id == ev.tenant_id,
+                    ProcurementJob.supplier_id == ev.supplier_id,
+                    ProcurementJob.kind == "direct",
+                    ProcurementJob.upstream_ref == oid,
+                )
+                .with_for_update()
+            )
+        )
+        dstatus = (ev.payload or {}).get("status")
+        for job in djobs:
+            if isinstance(dstatus, str) and job.state in ACTIVE:
+                job.upstream_status = clean_detail(dstatus, 32)
+            if job.state in ACTIVE and not _leased(job, now):
+                job.next_poll_at = now  # a hint: the re-query below stays the truth
     elif ev.kind.startswith("cdk.") and ref is not None:
         jobs = list(
             await db.scalars(
@@ -698,6 +767,10 @@ class Lease:
     key: str
     spec: JobSpec
     ref: SupplierRef
+    order_id: uuid.UUID | None = None
+    # the job may already have reached the supplier before THIS lease (``maybe_sent`` when it was
+    # taken): a refusal that arrives now says nothing about that earlier send (direct jobs)
+    prior_send: bool = False
 
 
 def _spec(job: ProcurementJob, offer: OfferRow, mode: str) -> JobSpec:
@@ -907,7 +980,7 @@ async def _lease_detached(
     job.next_poll_at = job.lease_until = now + timedelta(seconds=ctx.settings.job_lease_s)
     lease = Lease(
         job.id, job.tenant_id, mode, job.state, job.step, job.idempotency_key,
-        _spec(job, offer, mode), offer.ref,
+        _spec(job, offer, mode), offer.ref, job.order_id, True,
     )  # fmt: skip
     await db.commit()
     return lease
@@ -928,6 +1001,7 @@ async def _lease(ctx: ProcurementContext, job_id: uuid.UUID, tenant_id: uuid.UUI
             return await _lease_detached(ctx, db, job, now)
         order = await load_order(db, job.order_id)
         assert order is not None
+        prior_send = bool(job.maybe_sent)
         if job.state == "void_pending":
             mode = "void"
         elif job.state == "queued" or (
@@ -976,6 +1050,12 @@ async def _lease(ctx: ProcurementContext, job_id: uuid.UUID, tenant_id: uuid.UUI
                 await _alert_if_stuck(db, job, now)  # a long park is still a stuck job
                 await db.commit()
                 return None
+            if job.kind == "direct" and (problem := await _credential_problem(ctx, db, job, offer)):
+                # no buyer session to send (expired, never sealed, unreadable): nothing was sent,
+                # staff / the buyer must act; checked BEFORE maybe_sent is set
+                await _needs_manual(db, job, problem)
+                await db.commit()
+                return None
             if job.step != "ready":
                 mode = "precheck"  # read-only availability check before the first send (H2)
             else:
@@ -1005,7 +1085,7 @@ async def _lease(ctx: ProcurementContext, job_id: uuid.UUID, tenant_id: uuid.UUI
         job.next_poll_at = job.lease_until = now + timedelta(seconds=ctx.settings.job_lease_s)
         lease = Lease(
             job.id, job.tenant_id, mode, job.state, job.step, job.idempotency_key,
-            _spec(job, offer, mode), offer.ref,
+            _spec(job, offer, mode), offer.ref, job.order_id, prior_send,
         )  # fmt: skip
         await db.commit()
     return lease
@@ -1032,6 +1112,120 @@ async def _offer_any(db: AsyncSession, job: ProcurementJob) -> OfferRow | None:
         return None
     ref = SupplierRef(r.supplier_id, job.tenant_id, r.code, r.adapter, r.env, r.health)
     return OfferRow(r.id, r.supplier_id, r.kind, dict(r.params or {}), ref)
+
+
+# ------------------------------------------------------------------ buyer credential (direct)
+async def _credential_problem(
+    ctx: ProcurementContext, db: AsyncSession, job: ProcurementJob, offer: OfferRow
+) -> str | None:
+    """Why a direct job has no buyer session to send (None = there is one). Only existence is
+    checked here (no decryption); the product must match the offer's closed-enum product."""
+    if ctx.cred_opener is None:
+        return "credential_unreadable"
+    row = (
+        await db.execute(
+            select(ProcurementCredential.product).where(
+                ProcurementCredential.tenant_id == job.tenant_id,
+                ProcurementCredential.order_id == job.order_id,
+            )
+        )
+    ).first()
+    if row is None:
+        return "credential_missing"
+    if row.product != offer.params.get("product"):
+        return "credential_mismatch"
+    return None
+
+
+async def _open_credential(ctx: ProcurementContext, lease: Lease) -> tuple[str | None, str | None]:
+    """The buyer's session, opened IN MEMORY for one supplier call: ``(text, None)`` or
+    ``(None, problem)``. The private key lives only in this process; nothing here logs, caches or
+    stores the plaintext, and no exception message ever carries it."""
+    if ctx.cred_opener is None or lease.order_id is None:
+        return None, "credential_unreadable"
+    async with tenant_session(ctx.maker, lease.tenant_id) as db:
+        row = (
+            await db.execute(
+                select(ProcurementCredential.blob, ProcurementCredential.product).where(
+                    ProcurementCredential.tenant_id == lease.tenant_id,
+                    ProcurementCredential.order_id == lease.order_id,
+                )
+            )
+        ).first()
+        await db.rollback()
+    if row is None:
+        return None, "credential_missing"
+    if row.product != lease.spec.offer.params.get("product"):
+        return None, "credential_mismatch"
+    try:
+        return (
+            ctx.cred_opener.open(
+                bytes(row.blob), tenant_id=str(lease.tenant_id), order_id=str(lease.order_id)
+            ),
+            None,
+        )
+    except Exception:  # VaultError or anything else: never a message that could carry data
+        return None, "credential_unreadable"
+
+
+async def _drop_credential(db: AsyncSession, job: ProcurementJob) -> None:
+    """Delete the sealed session of a direct job's order (a terminal state needs none)."""
+    if job.kind == "direct":
+        await db.execute(
+            delete(ProcurementCredential).where(
+                ProcurementCredential.tenant_id == job.tenant_id,
+                ProcurementCredential.order_id == job.order_id,
+            )
+        )
+
+
+LIVE_ORDER = ("pending_payment", "paid", "manual_review")  # a credential may be needed for these
+
+
+async def sweep_credentials(ctx: ProcurementContext, *, force: bool = False) -> int:
+    """Delete sealed buyer sessions that are no longer needed (AGENTS.md §1.1 level of care):
+
+    * older than ``cred_max_age_s`` in any case;
+    * every direct job of the order is terminal (fulfilled / failed / voided): staff actions run as
+      ``app_api`` (which cannot delete) and rely on this;
+    * the order is no longer ``pending_payment`` / ``paid`` / ``manual_review`` (refunded, closed,
+      expired, delivered).
+
+    Returns the number of rows deleted. Throttled by ``cred_sweep_interval_s``."""
+    now = time.monotonic()
+    interval = ctx.settings.cred_sweep_interval_s
+    if not force and ctx.cred_swept_at is not None and now - ctx.cred_swept_at < interval:
+        return 0
+    ctx.cred_swept_at = now
+    total = 0
+    async with tenant_session(ctx.maker, None) as db:
+        res = await db.execute(
+            text(
+                "DELETE FROM procurement_credentials c WHERE "
+                "c.created_at < now() - make_interval(secs => :age) "
+                "OR (EXISTS (SELECT 1 FROM procurement_jobs j WHERE j.order_id = c.order_id "
+                "AND j.kind = 'direct') AND NOT EXISTS (SELECT 1 FROM procurement_jobs j "
+                "WHERE j.order_id = c.order_id AND j.kind = 'direct' "
+                "AND j.state NOT IN ('fulfilled', 'failed', 'voided')))"
+            ),
+            {"age": float(ctx.settings.cred_max_age_s)},
+        )
+        total += int(res.rowcount or 0)  # type: ignore[attr-defined]
+        tenants = list(await db.scalars(select(ProcurementCredential.tenant_id).distinct()))
+        await db.commit()
+    for tid in tenants:  # orders are RLS-protected: the order-status rule runs tenant-pinned
+        async with tenant_session(ctx.maker, tid) as db:
+            res = await db.execute(
+                text(
+                    "DELETE FROM procurement_credentials c USING orders o "
+                    "WHERE o.id = c.order_id AND o.tenant_id = c.tenant_id "
+                    "AND o.status <> ALL(:live)"
+                ),
+                {"live": list(LIVE_ORDER)},
+            )
+            total += int(res.rowcount or 0)  # type: ignore[attr-defined]
+            await db.commit()
+    return total
 
 
 def engine_supplier(ctx: ProcurementContext, ref: SupplierRef) -> Supplier:
@@ -1064,6 +1258,18 @@ async def _call(ctx: ProcurementContext, lease: Lease) -> Result:
             # an ambiguous write stays ambiguous whatever the catalog says afterwards: a plan
             # can sell out or be paused BECAUSE this write ran, so "not offered now" proves
             # nothing about it (re-audit F1). Only the fresh pre-check keeps a paused plan away.
+            if lease.spec.offer.kind == "direct" and not lease.spec.upstream_ref:
+                # the buyer's session is opened here, in memory, for this one call; a job that
+                # already knows its order never needs it (it only reads)
+                cred, problem = await _open_credential(ctx, lease)
+                if cred is None:
+                    return Result(Outcome.FATAL, error_code=problem or "credential_unreadable")
+                spec = replace(lease.spec, credential=cred)
+                del cred
+                try:
+                    return await sup.submit(spec)
+                finally:
+                    del spec
             return await sup.submit(lease.spec)
         if lease.mode in ("void", "dvoid"):
             return await sup.void(lease.spec)
@@ -1160,12 +1366,16 @@ async def _fulfil(
     # derived from the secret (cardvault.card_fingerprint: the card id) and it has no lookup_fp:
     # a keyed hash over a PAN/expiry/CVV is brute-forceable by anyone holding fp_key (S1)
     vcc = job.kind == "vcc"
-    fingerprint = (
-        sealer.card_fingerprint(tid, job.upstream_ref or f"job:{job.id}")
-        if vcc
-        else sealer.fingerprint(tid, code)
-    )
-    lookup_fp = None if vcc else sealer.lookup_fingerprint(tid, code)
+    direct = job.kind == "direct"  # a short non-secret delivery text, keyed by the vendor order
+    if vcc:
+        fingerprint = sealer.card_fingerprint(tid, job.upstream_ref or f"job:{job.id}")
+    elif direct:
+        fingerprint = sealer.card_fingerprint(
+            tid, f"direct:{job.supplier_id}:{job.upstream_ref or job.id}"
+        )
+    else:
+        fingerprint = sealer.fingerprint(tid, code)
+    lookup_fp = None if (vcc or direct) else sealer.lookup_fingerprint(tid, code)
     values = {
         "id": card_id,
         "tenant_id": order.tenant_id,
@@ -1192,6 +1402,7 @@ async def _fulfil(
     job.step = "done"
     job.next_poll_at = None
     await _transition(db, job, "fulfilled", "supplier_ok")
+    await _drop_credential(db, job)  # the supplier is done: the buyer's session is not needed
     await emit_if_complete(db, order)
 
 
@@ -1381,6 +1592,10 @@ def _record_reference(job: ProcurementJob, res: Result, mode: str) -> str | None
             job.cost, job.currency = res.cost.amount, res.cost.currency
     if res.card_mask and not job.card_mask:
         job.card_mask = res.card_mask[:24]
+    if res.account_mask and not job.account_mask:
+        job.account_mask = res.account_mask[:64]  # masked e-mail only, never the session
+    if res.preflight_expires_at is not None:
+        job.preflight_expires_at = res.preflight_expires_at
     return other
 
 
@@ -1446,13 +1661,25 @@ async def _apply(ctx: ProcurementContext, lease: Lease, res: Result) -> None:
                 job.step, job.attempts = "pending", 0
                 job.upstream_ref = res.upstream_ref or job.upstream_ref
                 await _transition(db, job, "accepted_pending", "accepted")
+            if (
+                job.kind == "direct"
+                and job.first_sent_at is not None
+                and now - job.first_sent_at > timedelta(seconds=ctx.settings.direct_pending_max_s)
+            ):
+                # a subscription takes minutes: an order that never reaches a terminal state is a
+                # staff matter (requery, fulfil by hand, fail); it is still flagged maybe charged
+                await _needs_manual(db, job, "pending_too_long")
+                await db.commit()
+                return
             step = POLL_STEPS[min(job.attempts, len(POLL_STEPS) - 1)]
             job.next_poll_at = now + timedelta(seconds=step)
         elif o is Outcome.RETRYABLE:
             job.error_code = clean_detail(res.error_code or "retryable")
             if lease.mode == "submit":
                 job.step = "submit"  # a RETRYABLE write was not executed
-                _unsent(job)
+                if not (job.kind == "direct" and lease.prior_send):
+                    _unsent(job)  # (a direct refusal before the order says nothing about an
+                    # EARLIER send of the same job)
             if job.attempts > MAX_RETRIES:
                 await _needs_manual(db, job, "retry_exhausted")
             else:
@@ -1481,7 +1708,9 @@ async def _apply(ctx: ProcurementContext, lease: Lease, res: Result) -> None:
                 job.step = "submit"
                 job.next_poll_at = now
         else:  # FATAL: a deterministic refusal, nothing was executed for this key
-            if res.error_code != "IDEMPOTENCY_CONFLICT":
+            if res.error_code != "IDEMPOTENCY_CONFLICT" and not (
+                job.kind == "direct" and lease.prior_send
+            ):
                 _unsent(job)  # (a conflicting key HAS been used: the first request may have run)
             await _needs_manual(db, job, res.error_code or "fatal")
         await _alert_if_stuck(db, job, now)
@@ -1532,6 +1761,10 @@ async def run_once(ctx: ProcurementContext) -> int:
     for jid, tid in await due_jobs(ctx):
         if await process_job(ctx, jid, tid):
             n += 1
+    try:
+        await sweep_credentials(ctx)
+    except Exception as exc:  # never kills the loop; the next pass tries again
+        log.error("credential sweep failed error=%s", type(exc).__name__)
     return n
 
 

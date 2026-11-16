@@ -149,6 +149,8 @@ async def quote_cart(
                 else (stock.get(p.id) if p.delivery_mode in STOCKED_MODES else None)
             )
         max_qty = MAX_QTY if s is None else min(MAX_QTY, s)
+        if p.delivery_mode == "upstream_direct" and not variant_reason:
+            variant_reason = "direct_buy_now_only"  # needs the buyer's session: buy-now only
         if p.status != "active" or variant_reason:
             max_qty = 0
         reason = (
@@ -385,6 +387,11 @@ async def create_checkout(
         raise ChannelUnavailable("Payment channel is not available")  # never a silent re-price
     if not cfg.enabled:
         raise Unavailable("Payment channel is not available")
+    if any(products[i.product_id].delivery_mode == "upstream_direct" for i in items):
+        raise Validation(
+            "This product is bought on its own page (it needs your account session)",
+            code="direct_buy_now_only",
+        )
     inputs = [normalize_value(products[i.product_id].buyer_input, i.buyer_input) for i in items]
     # MONEY: unit price = variant/base + storefront markup (server side); one order per line.
     bases = [

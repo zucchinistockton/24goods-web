@@ -96,6 +96,11 @@ async def create_quote(
         product = await get_scoped(db, Product, body.product_id, conv.tenant_id)
         if product is None:
             raise NotFound("Product not found")
+        if product.delivery_mode == "upstream_direct":
+            raise Validation(
+                "A product that needs the buyer's account session cannot be quoted",
+                code="direct_not_quotable",
+            )
         if product.delivery_mode in UPSTREAM_MODES and body.qty > MAX_UPSTREAM_QTY:
             raise Validation(f"qty must be at most {MAX_UPSTREAM_QTY} for this product")
         if product.delivery_mode == "auto_card" and body.qty > MAX_AUTO_CARD_QTY:

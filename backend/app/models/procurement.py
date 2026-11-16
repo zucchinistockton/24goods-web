@@ -126,7 +126,7 @@ class ProcurementCredential(Base):
     order_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("orders.id"), unique=True)
     product: Mapped[str] = mapped_column(String(8))
     kid: Mapped[str] = mapped_column(String(64))
-    blob: Mapped[bytes] = mapped_column(LargeBinary, repr=False)
+    blob: Mapped[bytes] = mapped_column(LargeBinary)
     email_masked: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = created_at()
 

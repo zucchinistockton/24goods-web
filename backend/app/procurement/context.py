@@ -28,5 +28,7 @@ class ProcurementContext:
     cred_opener: CredentialOpener | None = None
     # tests: build suppliers from a factory (SupplierRef -> Supplier) instead of the registry
     supplier_factory: Callable[[Any], Any] | None = None
+    # monotonic time of the last credential sweep (None = never)
+    cred_swept_at: float | None = None
     # engine: one supplier instance per (adapter, code, env), closed on shutdown
     suppliers: dict[tuple[str, str, str], Any] = field(default_factory=dict)

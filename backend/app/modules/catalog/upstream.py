@@ -68,6 +68,34 @@ async def target_available(
     return row is not None
 
 
+async def direct_target_product(
+    db: AsyncSession, product_id: uuid.UUID, variant_id: uuid.UUID | None
+) -> str:
+    """The ONE vendor product (``gpt`` / ``claude`` / ``grok``) the enabled direct sources of this
+    target buy, which decides what kind of account session checkout asks for. No usable source, or
+    sources that disagree, is "not available" (never a guess)."""
+    match = (
+        SupplierOffer.variant_id == variant_id
+        if variant_id is not None
+        else SupplierOffer.variant_id.is_(None)
+    )
+    rows = await db.execute(
+        _base()
+        .add_columns(SupplierOffer.params)
+        .where(
+            SupplierOffer.product_id == product_id,
+            match,
+            SupplierOffer.kind == "direct",
+            *_usable(),
+        )
+    )
+    products = {str((params or {}).get("product")) for _pid, _vid, params in rows.all()}
+    products.discard("None")
+    if len(products) != 1:
+        raise OutOfStock("Not available right now", extra={"product_id": str(product_id)})
+    return products.pop()
+
+
 async def require_upstream_stock(
     db: AsyncSession, product_id: uuid.UUID, variant_id: uuid.UUID | None, qty: int
 ) -> None:

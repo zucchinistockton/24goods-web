@@ -18,6 +18,10 @@ class BuyNowIn(BaseModel):
     src: str | None = Field(None, max_length=200)
     buyer_input: str | None = Field(None, max_length=4000)
     promo_code: str | None = Field(None, max_length=40)
+    # upstream_direct ONLY: the buyer's account session (a ChatGPT session text is about 37 KB).
+    # A live credential: sealed at once with the procurement public key, never stored in plaintext,
+    # never logged, never echoed back. 64 KiB of text at most (the check below is by bytes).
+    session: str | None = Field(None, max_length=70000, repr=False)
 
     @field_validator("src")
     @classmethod
@@ -26,6 +30,10 @@ class BuyNowIn(BaseModel):
         stored, so a malformed link can't break checkout."""
         v = (v or "").strip().lower()
         return v if _SOURCE.match(v) else None
+
+
+class DirectSessionIn(BaseModel):
+    session: str = Field(min_length=1, max_length=70000, repr=False)
 
 
 class PayIn(BaseModel):
