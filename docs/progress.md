@@ -4,6 +4,15 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 ## Current state — hand-off (read this first in a new session)
 
+**Active work is not on `main` (2026-11-16).** The current hand-off, with the ordered next steps, is the top
+block of `docs/progress.md` on branch **`feat/v12-procurement-m2`** (draft PR #2; local worktree
+`.claude/worktrees/agent-af3aa371765135692`): `git show origin/feat/v12-procurement-m2:docs/progress.md | head -90`.
+In short: v12 procurement M2 is built and its first payment audit is fixed; the re-audit passed with notes
+and its findings N1–N8 are **not fixed yet** (next step), then squash-merge PR #2 into `feat/v12-procurement`.
+The ZovoCard sandbox (webhook test still open) expires 2026-11-18 10:57. Optional TOTP 2FA has only its core
+module, on `feat/totp-2fa`. Dark mode (#6) and the Telegram language switch (#7) below are merged but deployed
+nowhere; production runs `d881dfa`.
+
 **Telegram notification language (2026-11-15, PR `feat/tg-language`).** Staff alerts are English by
 default; `notifications.telegram_language` (`en` | `zh-CN`, Settings → Notifications) switches them. All
 sentences live in one catalog (`app/core/notify_tg.py` `TEXTS`; callers pass `T(key, …)` and plain strings
