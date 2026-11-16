@@ -4,25 +4,22 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 ## Current state — hand-off (read this first in a new session)
 
-**Hand-off 2026-11-16 (the 2026-11-15 night session stopped on the 5-hour quota at 17:48 UTC; this block
-supersedes the ones below).**
+**Hand-off 2026-11-16 (this block supersedes the ones below).**
 
-- **START HERE: fix the payment-auditor re-audit findings on M2. Nothing of this is written yet.** The
-  implementer was killed by HTTP 429 after reading code only (no file changed, no commit). Branch
-  `feat/v12-procurement-m2`, worktree `.claude/worktrees/agent-af3aa371765135692`, draft PR #2. Order:
-  1. Start a fresh implementer (Sonnet) in that worktree with the list below. One commit per finding, each
-     with a test in `tests/test_procurement_audit.py` (or a sibling); schema changes go into a new migration
-     `0028` (never edit 0027); document new rules in spec §16.
-  2. Push, read CI on the new head. The last run (43742459446 on `2895860`) was green except one backend
-     test, `test_open_breaker_raises_one_staff_alert`, fixed in `4778d80`. The run on `15d6967` (43784580423) then
-     failed only `test_backfill_pages_until_nothing_new...`: its fixed dates fell out of the 2-day backfill
-     lookback on 2026-11-16 (a test time bomb, not a code fault); the dates are relative now.
-  3. Short payment-auditor pass over the new commits only (N1–N8 and the hash rule), then merge `main` into
-     `feat/v12-procurement`, take PR #2 out of draft and **squash-merge** it into `feat/v12-procurement`.
-  4. Update the demo to that build: migration 0027 (+0028), the Redis ACL line for the `procurement` user
-     (`INCRBY`, by hand), and look at dark mode in both themes there before production.
-  5. Sandbox webhook (below) — **the sandbox account expires 2026-11-18 10:57**, so do this early.
-  6. Then: redemption site (spec §8, own PR), TOTP 2FA (below), deploy dark mode + Telegram language.
+- **M2 audit work is finished.** The re-audit findings N1–N8 and the `request_hash` rule are fixed (`eca5b8b`..
+  `1887c6c`, tests in `tests/test_procurement_audit.py`, rules in spec §16 "Re-audit fixes", no migration).
+  A second payment-auditor pass over those commits closed all of them except the write-side half of N3, which
+  it failed (**F1, High**: "plan not offered after an ambiguous write" could clear `maybe_sent` after the
+  supplier had issued a code, then buy again elsewhere). That half is removed in `560896f`: the fresh-catalog
+  pre-check stays, an ambiguous write keeps the same-key reconcile and never fails over. Auditor notes left
+  open (Low): no separate alert when the supplier refuses the void of a refunded order's code (`_apply_void`
+  puts the job back to `fulfilled`); pre-check retries use the submit retry budget; the catalog pre-check and
+  the submit share one 120 s lease.
+- **Next, in order:** (1) squash-merge PR #2 into `feat/v12-procurement` once CI on the head is green;
+  (2) update the demo to that build (migration 0027, Redis ACL `INCRBY` for the `procurement` user, both
+  sandbox webhook keys comma-separated) and look at dark mode there in both themes; (3) sandbox webhook
+  (below; the account expires **2026-11-18 10:57**); (4) redemption site (spec §8, own PR); (5) TOTP 2FA
+  frontend (below); (6) deploy dark mode + Telegram language to production.
 - **Re-audit verdict (2026-11-15, head `2895860`): pass with notes — no Critical/High, no path to a double
   purchase or double delivery.** Original findings: H1, M1, M2, M4, M5, L1, L2, L4, L7 closed; H2, M3, L5
   partly; L3 and L6 deferred (`TODO(v12-M3)`). New findings and the decided fixes (paths under
@@ -65,21 +62,28 @@ supersedes the ones below).**
   cannot be switched on without a cost estimate unless the supplier reports its own USD price. On `main`:
   dark mode (#6, `3ce457e`) and the Telegram language switch (#7, `faaa5bf`), CI green, images published,
   **deployed nowhere**; dark mode has never been seen in a browser.
-- **Sandbox webhook: still no vendor-sent event.** Our side works: the demo verifies with the key-level key
-  (`ZOVOCARD_SANDBOX_KEY_WEBHOOK_SECRET` in `~/.secrets/zovocard.env`) and a self-signed event through
-  Cloudflare returns 200. Both vendor callbacks now point at `https://demo.kesiv.com/api/v1/webhooks/zovocard`
-  (the `kestv` typo is gone). Owner, 2026-11-16: the event types **are** selected on the API Key Webhook; the
-  vendor console has **no delivery log and no test button**. Next: one more issue / disable / enable /
-  disable on a sandbox CDK plus one redemption (`~/.secrets/gpt-test-session.json`), watching
-  `supplier_events` and the Caddy access log on the demo. If nothing arrives, the sandbox does not dispatch
-  webhooks: open a ZovoCard support ticket, and treat webhooks as unverified against the real vendor (the
-  engine's polling / reconcile path does not depend on them). The signing keys were pasted in chat: rotate
-  them with the other ZovoCard keys before go-live.
-- **TOTP 2FA (spec §13): barely started.** Branch `feat/totp-2fa` (worktree `.claude/worktrees/totp`, from
-  `main` `faaa5bf`, pushed), one commit `547564f`: `backend/app/core/totp.py` (RFC 6238, standard library
-  only) and `backend/tests/test_totp_core.py` (7 tests pass, ruff clean); no PR yet. Not started: migration (sealed secret,
-  recovery codes), enrol / verify / disable API, the login second step with rate limits, admin and buyer UI,
-  en + zh-CN strings, security-reviewer pass.
+- **Sandbox webhook: the vendor does send, but the signature did not verify.** 2026-11-16 01:39:10–16 UTC the
+  demo API logged three `POST /api/v1/webhooks/zovocard` (one event, two retries after 2 s and 4 s), all 401
+  "bad signature". They arrived 40 s BEFORE this session's sandbox calls, so something else triggered them
+  (most likely a save in the vendor console). Two scripted passes afterwards (issue / disable / enable /
+  disable, CDK ids 275 and 276) produced no delivery within 4 minutes. The demo image knows one key only
+  (the API-key-level key, `ZOVOCARD_SANDBOX_KEY_WEBHOOK_SECRET`); the event was probably signed with the
+  general-callback key, or the console issued a new key on save. Next: deploy the merged M2 build to the demo
+  with BOTH sandbox keys, ask the owner what was done in the console at 02:39 Berlin time and whether the
+  signing keys shown there still match `~/.secrets/zovocard.env`, then repeat that action. A packet capture of
+  requests to the demo API ran until about 07:45 UTC on 2026-11-16 (`all.pcap` in that session's scratchpad;
+  delete it after use: it also holds demo logins). The signing keys were pasted in chat: rotate them with the
+  other ZovoCard keys before go-live.
+- **TOTP 2FA (spec §13): backend built, frontend not started.** Branch `feat/totp-2fa` (worktree
+  `.claude/worktrees/totp`, from `main`), commits `547564f` (core) and `58e10e9`: migration `0022a_user_totp`
+  (FORCE RLS, app_api only; **when v12 reaches `main`, `0023_procurement` must revise `0022a_user_totp`**),
+  `app/modules/auth/twofactor.py`, `POST /auth/login` answers `{two_factor_required, pending_token}` for an
+  enrolled account, `POST /auth/login/2fa`, `/me/2fa` (status, `setup`, `enable`, `disable`,
+  `recovery-codes`), `POST /admin/users/{id}/2fa/reset` (admin only), Google sign-in redirects to
+  `/login#2fa=<token>&next=…`, a Google takeover of an unverified account drops its second factor.
+  `tests/test_twofactor.py` (11) + auth / me / v5 tests pass locally; no CI run yet (no PR). Not done: buyer
+  and console UI (login second step, settings page with a locally drawn QR, recovery codes), en + zh-CN
+  strings, API contract doc, the "require 2FA for staff" setting, security-reviewer pass, ADR.
 - **Deployed:** production (c4) `d881dfa`; demo = local image `goods24-api:m2-demo` (`15d7f22`, an M2 build
   from before the audit fixes; no migration 0027). Unchanged: do not use `scripts/prod.sh deploy` until its
   registry login is fixed.
