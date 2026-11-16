@@ -1064,3 +1064,41 @@ async def test_n1_recovery_honours_the_kill_switches_then_needs_manual(env, up):
         assert [op for op, _ in mock.calls] == ["submit"]
         assert len(mock.charged) == 1  # maybe charged, never asked again
         await _sql(env, "DELETE FROM procurement_jobs")
+
+
+async def test_n6_recovery_idempotency_conflict_keeps_the_job_maybe_charged(env, up):
+    class Conflict(LosingMock):
+        async def query(self, job):
+            self.calls.append(("query", job.idempotency_key))
+            return Result(Outcome.FATAL, error_code="IDEMPOTENCY_CONFLICT")
+
+    staff, _ = await env.login("agent")
+    mock = Conflict("mock_a", lose=1)
+    await up.supplier(mock)
+    _buyer, order = await up.paid_order()
+    await up.run()
+    job = await _job(up, order)
+    r = await staff.post(f"{JOBS}/{job.id}/fail", json={"reason": "gave up"})
+    assert r.status_code == 200 and r.json()["recovering"] is True
+    await _due_recovery(env)
+    await up.run()
+    job = await _job(up, order)
+    assert job.state == "needs_manual" and job.maybe_sent and not job.recover
+    assert job.error_code == "IDEMPOTENCY_CONFLICT"
+
+
+async def test_n7_a_retryable_submit_is_capped_after_a_passed_precheck(env, up):
+    class Busy(MockSupplier):
+        async def submit(self, job):
+            self.calls.append(("submit", job.idempotency_key))
+            return Result(Outcome.RETRYABLE, error_code="busy")
+
+    mock = Busy("mock_a")
+    await up.supplier(mock)
+    _buyer, order = await up.paid_order()
+    for _ in range(14):
+        await up.run()
+        await up.make_due()
+    job = await _job(up, order)
+    assert job.state == "needs_manual" and job.error_code == "retry_exhausted"
+    assert not job.maybe_sent and len([c for c in mock.calls if c[0] == "submit"]) <= 11

@@ -1076,7 +1076,8 @@ async def _apply_precheck(
     ``needs_manual`` without one) and the offer is marked unchecked; a failed lookup is retried."""
     o = res.outcome
     if o is Outcome.OK:
-        job.step, job.attempts, job.error_code, job.next_poll_at = "ready", 0, None, now
+        # attempts is NOT reset: a submit that keeps answering RETRYABLE must reach MAX_RETRIES (N7)
+        job.step, job.error_code, job.next_poll_at = "ready", None, now
         await _set_check(db, job, True)
     elif o is Outcome.UNAVAILABLE:
         await _set_check(db, job, False)
@@ -1117,6 +1118,9 @@ async def _apply_detached(
                 detail={"order_id": str(job.order_id), "state": job.state},
                 severity="warning",
             )
+        elif res.error_code == "IDEMPOTENCY_CONFLICT":
+            # the key HAS been used (the first request may have run): never "nothing found" (N6)
+            await _stop_recovery(db, job, "IDEMPOTENCY_CONFLICT")
         elif o in (Outcome.UNAVAILABLE, Outcome.FATAL):  # the supplier holds nothing for the key
             job.recover, job.next_poll_at = False, None
             _unsent(job)
