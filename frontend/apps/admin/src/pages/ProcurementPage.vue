@@ -18,6 +18,7 @@ import {
   type ProcJobDetail,
   type ProcSource,
   type Routing,
+  type SourceParams,
   type UnreconciledRow,
 } from '../api-procurement'
 import { createSuppliersApi, type AdminSupplier } from '../api-suppliers'
@@ -79,9 +80,9 @@ async function refreshJob(id: string) {
 }
 const can = (a: JobAction) => !!detail.value?.actions.includes(a) && (a !== 'void' || auth.isAdmin)
 
-const dlg = reactive({ open: false, action: 'fulfil' as 'fulfil' | 'void' | 'fail', code: '', reason: '', error: '' })
+const dlg = reactive({ open: false, action: 'fulfil' as 'fulfil' | 'void' | 'fail', code: '', cardId: '', reason: '', error: '' })
 function askReason(action: 'fulfil' | 'void' | 'fail') {
-  Object.assign(dlg, { open: true, action, code: '', reason: '', error: '' })
+  Object.assign(dlg, { open: true, action, code: '', cardId: '', reason: '', error: '' })
 }
 async function run(action: JobAction) {
   const j = detail.value
@@ -110,7 +111,7 @@ async function submitDlg() {
   if (dlg.action !== 'fulfil' && reason.length < 3) return void (dlg.error = t('procurement.err.reasonRequired'))
   acting.value = dlg.action
   try {
-    if (dlg.action === 'fulfil') await api.jobs.fulfil(j.id, code, reason)
+    if (dlg.action === 'fulfil') await api.jobs.fulfil(j.id, code, reason, j.kind === 'vcc' ? dlg.cardId.trim() || undefined : undefined)
     else if (dlg.action === 'void') await api.jobs.void(j.id, reason)
     else await api.jobs.fail(j.id, reason)
     dlg.code = '' // the pasted code does not stay in memory after it was sent
@@ -144,7 +145,7 @@ async function searchProducts(q = '') {
   searching.value = true
   try {
     const r = await apiV3.products.list({ q: q || undefined, page: 1, page_size: 50 })
-    const ups = r.items.filter((p) => p.delivery_mode === 'upstream_cdk')
+    const ups = r.items.filter((p) => p.delivery_mode === 'upstream_cdk' || p.delivery_mode === 'upstream_vcc')
     const keep = product.value && !ups.some((p) => p.id === product.value!.id) ? [product.value] : []
     products.value = [...keep, ...ups]
   } catch (e) {
@@ -223,7 +224,12 @@ async function check(row: ProcSource) {
   }
 }
 
-const srcDlg = reactive({ open: false, saving: false, id: null as string | null, supplier_id: '', plan: '', country: '', cost: '', priority: 100, enabled: false })
+/** A card product's sources take a card product code and amounts instead of a plan. */
+const isCard = computed(() => product.value?.delivery_mode === 'upstream_vcc')
+const CARD_CODE_RE = /^[A-Za-z0-9_-]{2,32}$/
+const AMOUNT_RE = /^\d{1,6}(\.\d{1,2})?$/
+const NAME_RE = /^[A-Za-z]{1,32}$/
+const srcDlg = reactive({ open: false, saving: false, id: null as string | null, supplier_id: '', plan: '', country: '', cost: '', priority: 100, enabled: false, product_code: '', init_amount: '', recharge_amount: '', first_name: '', last_name: '' })
 const srcErr = ref<Record<string, string>>({})
 function openSource(row: ProcSource | null) {
   Object.assign(srcDlg, {
@@ -236,6 +242,11 @@ function openSource(row: ProcSource | null) {
     cost: row?.cost_estimate ?? '',
     priority: row?.priority ?? 100,
     enabled: row?.enabled ?? false,
+    product_code: row?.params.product_code ?? '',
+    init_amount: row?.params.init_amount ?? '',
+    recharge_amount: row?.params.recharge_amount ?? '',
+    first_name: row?.params.first_name ?? '',
+    last_name: row?.params.last_name ?? '',
   })
   srcErr.value = {}
 }
@@ -246,12 +257,32 @@ async function saveSource() {
   const cost = srcDlg.cost.trim()
   const e: Record<string, string> = {}
   if (!srcDlg.supplier_id) e.supplier = t('procurement.err.supplierRequired')
-  if (!PLAN_RE.test(plan)) e.plan = t('procurement.err.plan')
-  if (country && !COUNTRY_RE.test(country)) e.country = t('procurement.err.country')
+  const card = {
+    product_code: srcDlg.product_code.trim(),
+    init_amount: srcDlg.init_amount.trim(),
+    recharge_amount: srcDlg.recharge_amount.trim(),
+    first_name: srcDlg.first_name.trim(),
+    last_name: srcDlg.last_name.trim(),
+  }
+  if (isCard.value) {
+    if (!CARD_CODE_RE.test(card.product_code)) e.product_code = t('procurement.err.productCode')
+    if (!AMOUNT_RE.test(card.init_amount)) e.init_amount = t('procurement.err.amount')
+    if (card.recharge_amount && !AMOUNT_RE.test(card.recharge_amount)) e.recharge_amount = t('procurement.err.amount')
+    if (card.first_name && !NAME_RE.test(card.first_name)) e.first_name = t('procurement.err.name')
+    if (card.last_name && !NAME_RE.test(card.last_name)) e.last_name = t('procurement.err.name')
+  } else {
+    if (!PLAN_RE.test(plan)) e.plan = t('procurement.err.plan')
+    if (country && !COUNTRY_RE.test(country)) e.country = t('procurement.err.country')
+  }
   if (cost && !COST_RE.test(cost)) e.cost = t('procurement.err.cost')
   srcErr.value = e
   if (Object.keys(e).length) return
-  const params = country ? { plan, payment_country: country } : { plan }
+  // only the fields that were filled in: the server validates and applies its defaults
+  const params: SourceParams = isCard.value
+    ? Object.fromEntries(Object.entries(card).filter(([, v]) => v))
+    : country
+      ? { plan, payment_country: country }
+      : { plan }
   srcDlg.saving = true
   try {
     if (srcDlg.id) {
@@ -272,7 +303,8 @@ async function saveSource() {
     void loadSources()
   } catch (err) {
     if (isApiError(err) && err.code === 'cost_required') srcErr.value = { cost: t('procurement.err.cost_required') }
-    else if (isApiError(err) && te(`procurement.err.${err.code}`)) srcErr.value = { plan: t(`procurement.err.${err.code}`) }
+    else if (isApiError(err) && te(`procurement.err.${err.code}`))
+      srcErr.value = { [isCard.value ? 'product_code' : 'plan']: t(`procurement.err.${err.code}`) }
     else toastError(err)
   } finally {
     srcDlg.saving = false
@@ -417,8 +449,14 @@ onMounted(() => jobs.load())
             </el-table-column>
             <el-table-column :label="t('procurement.src.plan')" min-width="150">
               <template #default="{ row }">
-                <span class="mono">{{ row.params.plan }}</span>
-                <span v-if="row.params.payment_country" class="muted small"> · {{ row.params.payment_country }}</span>
+                <template v-if="row.kind === 'vcc'">
+                  <span class="mono">{{ row.params.product_code }}</span>
+                  <span class="muted small"> · {{ row.params.init_amount }}<template v-if="row.params.recharge_amount"> + {{ row.params.recharge_amount }}</template> USD</span>
+                </template>
+                <template v-else>
+                  <span class="mono">{{ row.params.plan }}</span>
+                  <span v-if="row.params.payment_country" class="muted small"> · {{ row.params.payment_country }}</span>
+                </template>
               </template>
             </el-table-column>
             <el-table-column :label="t('procurement.src.cost')" width="130">
@@ -540,6 +578,7 @@ onMounted(() => jobs.load())
             </el-descriptions-item>
             <el-descriptions-item :label="t('procurement.job.upstream')">
               <span class="mono">{{ detail.upstream_ref ?? '—' }}</span>
+              <span v-if="detail.card_mask" class="mono muted"> · {{ detail.card_mask }}</span>
               <span v-if="detail.upstream_status" class="muted small"> · {{ detail.upstream_status }}</span>
             </el-descriptions-item>
             <el-descriptions-item :label="t('procurement.job.code')">{{ detail.has_code ? t('procurement.job.codeStored') : t('procurement.job.codeNone') }}</el-descriptions-item>
@@ -573,8 +612,12 @@ onMounted(() => jobs.load())
       <el-form label-position="top" @submit.prevent="submitDlg">
         <p class="muted small">{{ t(`procurement.hint.${dlg.action}`) }}</p>
         <el-alert v-if="dlg.action === 'fulfil' && detail?.charged_possible" type="warning" :closable="false" show-icon :title="t('procurement.hint.fulfilMaybeSent')" class="warnbox" />
-        <el-form-item v-if="dlg.action === 'fulfil'" :label="t('procurement.job.pasteCode')">
-          <el-input v-model="dlg.code" type="textarea" :rows="3" maxlength="512" class="mono" spellcheck="false" autocomplete="off" />
+        <el-form-item v-if="dlg.action === 'fulfil'" :label="detail?.kind === 'vcc' ? t('procurement.job.pasteCard') : t('procurement.job.pasteCode')">
+          <el-input v-model="dlg.code" type="textarea" :rows="3" maxlength="512" class="mono" spellcheck="false" autocomplete="off" :placeholder="detail?.kind === 'vcc' ? '4111111111111111----12/29----123' : ''" />
+          <div v-if="detail?.kind === 'vcc'" class="muted small">{{ t('procurement.hint.pasteCard') }}</div>
+        </el-form-item>
+        <el-form-item v-if="dlg.action === 'fulfil' && detail?.kind === 'vcc'" :label="t('procurement.job.cardIdOptional')">
+          <el-input v-model="dlg.cardId" maxlength="20" inputmode="numeric" class="mono" autocomplete="off" />
         </el-form-item>
         <el-form-item :label="dlg.action === 'fulfil' ? t('procurement.job.reasonOptional') : t('procurement.job.reason')" :error="dlg.error">
           <el-input v-model="dlg.reason" maxlength="200" />
@@ -595,18 +638,37 @@ onMounted(() => jobs.load())
           </el-select>
         </el-form-item>
         <div class="grid">
-          <el-form-item :label="t('procurement.src.plan')" :error="srcErr.plan">
-            <el-input v-model="srcDlg.plan" maxlength="48" class="mono" spellcheck="false" placeholder="plus" />
-          </el-form-item>
-          <el-form-item :label="t('procurement.src.country')" :error="srcErr.country">
-            <el-input v-model="srcDlg.country" maxlength="2" class="mono" placeholder="US" />
-          </el-form-item>
+          <template v-if="isCard">
+            <el-form-item :label="t('procurement.src.productCode')" :error="srcErr.product_code">
+              <el-input v-model="srcDlg.product_code" maxlength="32" class="mono" spellcheck="false" placeholder="USMAB01" />
+            </el-form-item>
+            <el-form-item :label="t('procurement.src.initAmount')" :error="srcErr.init_amount">
+              <el-input v-model="srcDlg.init_amount" inputmode="decimal"><template #suffix>USD</template></el-input>
+            </el-form-item>
+            <el-form-item :label="t('procurement.src.rechargeAmount')" :error="srcErr.recharge_amount">
+              <el-input v-model="srcDlg.recharge_amount" inputmode="decimal"><template #suffix>USD</template></el-input>
+            </el-form-item>
+            <el-form-item :label="t('procurement.src.firstName')" :error="srcErr.first_name">
+              <el-input v-model="srcDlg.first_name" maxlength="32" autocomplete="off" />
+            </el-form-item>
+            <el-form-item :label="t('procurement.src.lastName')" :error="srcErr.last_name">
+              <el-input v-model="srcDlg.last_name" maxlength="32" autocomplete="off" />
+            </el-form-item>
+          </template>
+          <template v-else>
+            <el-form-item :label="t('procurement.src.plan')" :error="srcErr.plan">
+              <el-input v-model="srcDlg.plan" maxlength="48" class="mono" spellcheck="false" placeholder="plus" />
+            </el-form-item>
+            <el-form-item :label="t('procurement.src.country')" :error="srcErr.country">
+              <el-input v-model="srcDlg.country" maxlength="2" class="mono" placeholder="US" />
+            </el-form-item>
+          </template>
           <el-form-item :label="t('procurement.src.cost')" :error="srcErr.cost">
             <el-input v-model="srcDlg.cost" inputmode="decimal"><template #suffix>USD</template></el-input>
           </el-form-item>
           <el-form-item :label="t('suppliers.f.priority')"><el-input-number v-model="srcDlg.priority" :min="0" :max="10000" /></el-form-item>
         </div>
-        <div class="muted small">{{ t('procurement.src.costHint') }}</div>
+        <div class="muted small">{{ isCard ? t('procurement.src.cardHint') : t('procurement.src.costHint') }}</div>
         <el-form-item :label="t('suppliers.f.enabled')" class="gap"><el-switch v-model="srcDlg.enabled" /></el-form-item>
       </el-form>
       <template #footer>

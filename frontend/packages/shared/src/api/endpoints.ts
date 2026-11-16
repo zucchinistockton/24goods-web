@@ -66,6 +66,7 @@ import type {
   ResellerProduct,
   ResellerStats,
   I18nText,
+  CardOtp,
   TwoFactorChallenge,
   TwoFactorSetup,
   TwoFactorStatus,
@@ -257,6 +258,8 @@ export function createBuyerApi(c: ApiClient) {
       pay: (id: string, channel: string = DEFAULT_PAY_CHANNEL) =>
         c.post<{ pay_url: string }>(`/orders/${seg(id)}/pay`, { channel }),
       reveal: (id: string) => c.post<{ secrets: string[]; cards: { id: string; code: string }[] }>(`/orders/${seg(id)}/reveal`),
+      /** v12 M3: live 3DS one-time codes of the order's own cards (owner only; empty when none). */
+      cardOtp: (id: string) => c.get<{ items: CardOtp[] }>(`/orders/${seg(id)}/card-otp`),
       confirm: (id: string) => c.post<Order>(`/orders/${seg(id)}/confirm`),
       /** v9 §6: remind the seller about a paid manual order (30 min cooldown, max 3). */
       expedite: (id: string) => c.post<Order>(`/orders/${seg(id)}/expedite`),

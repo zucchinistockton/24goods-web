@@ -169,11 +169,13 @@ export default {
   deliveryMode: {
     auto_card: 'Instant',
     upstream_cdk: 'Instant',
+    upstream_vcc: 'Instant',
     manual: 'Manual',
   },
   deliveryModeLong: {
     auto_card: 'Instant delivery (automatic code)',
     upstream_cdk: 'Instant delivery (automatic code)',
+    upstream_vcc: 'Instant delivery (virtual card)',
     manual: 'Manual delivery by seller',
   },
   delivery: {
