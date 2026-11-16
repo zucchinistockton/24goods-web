@@ -503,7 +503,12 @@ async def test_manual_fulfil_seals_a_card_like_an_automatic_one(env, vup):
     await env.drain()
     job = await _job(vup, order)
     assert job.state == "needs_manual"
-    staff, _ = await env.login("agent")
+    agent, _ = await env.login("agent")
+    denied = await agent.post(
+        f"{JOBS}/{job.id}/fulfil", json={"code": "4111111111111111----08/31----123"}
+    )
+    assert denied.status_code == 403  # S2: only an admin pastes a card
+    staff, _ = await env.login("admin")
     bad = await staff.post(f"{JOBS}/{job.id}/fulfil", json={"code": "just-a-code-123"})
     assert bad.status_code == 422 and bad.json()["error"]["code"] == "bad_card"
     pan = "4111111111111111"

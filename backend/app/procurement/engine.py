@@ -59,7 +59,6 @@ from app.procurement import ledger
 from app.procurement.context import ProcurementContext
 from app.procurement.service import SupplierRef, make_supplier, refresh_balance
 from app.suppliers.base import (
-    CARD_FIELD_SEP,
     JobSpec,
     OfferSpec,
     Outcome,
@@ -1157,22 +1156,29 @@ async def _fulfil(
     card_id = uuid.uuid4()
     tid = str(order.tenant_id)
     code = res.secrets[0]
-    # a card is ONE sealed secret ``<pan>----<MM/YY>----<cvv>`` (first field = PAN: staff find
-    # a card by its number without decrypting it); a CDK code is the whole secret
-    first = code.split(CARD_FIELD_SEP, 1)[0] if job.kind == "vcc" else code
+    # a card is ONE sealed secret ``<pan>----<MM/YY>----<cvv>``. Its dedup fingerprint is NOT
+    # derived from the secret (cardvault.card_fingerprint: the card id) and it has no lookup_fp:
+    # a keyed hash over a PAN/expiry/CVV is brute-forceable by anyone holding fp_key (S1)
+    vcc = job.kind == "vcc"
+    fingerprint = (
+        sealer.card_fingerprint(tid, job.upstream_ref or f"job:{job.id}")
+        if vcc
+        else sealer.fingerprint(tid, code)
+    )
+    lookup_fp = None if vcc else sealer.lookup_fingerprint(tid, code)
     values = {
         "id": card_id,
         "tenant_id": order.tenant_id,
         "product_id": order.product_id,
         "variant_id": order.variant_id,
         "blob": sealer.seal(code, CardContext(tid, str(order.product_id), str(card_id))),
-        "fingerprint": sealer.fingerprint(tid, code),
-        "lookup_fp": sealer.lookup_fingerprint(tid, first),
+        "fingerprint": fingerprint,
+        "lookup_fp": lookup_fp,
         "kid": sealer.active_kid,
         "status": "sold",
         "order_id": order.id,
     }
-    del code, first
+    del code
     try:
         async with db.begin_nested():
             # Core insert, no RETURNING: procurement has no SELECT on card_stock at all

@@ -113,6 +113,16 @@ class CardSealer:
         msg = tenant_id.encode() + b"\x1f" + secret.strip().encode()
         return hmac.new(self._fp_key, msg, hashlib.sha256).hexdigest()
 
+    def card_fingerprint(self, tenant_id: str, token: str) -> str:
+        """Dedup key of a virtual card that does NOT derive from the secret (AGENTS.md §1.1).
+
+        The API holds ``fp_key``, and a card's PAN / expiry / CVV live in a tiny space, so a keyed
+        hash of the card data would let a database read plus ``fp_key`` recover them offline. This
+        one is an HMAC over the tenant and a non-secret identity of the card (the supplier's card
+        id; for a hand-pasted card the order, unit and last 4 digits), domain-separated (0x1d)."""
+        msg = tenant_id.encode() + b"\x1d" + b"vcc" + b"\x1d" + token.encode()
+        return hmac.new(self._fp_key, msg, hashlib.sha256).hexdigest()
+
     def lookup_fingerprint(self, tenant_id: str, first_field: str) -> str:
         """Keyed fingerprint of a card's FIRST field (e.g. the account name), case-folded.
 

@@ -19,13 +19,14 @@ Roles: job actions need staff; void needs an admin.
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, insert, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,7 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import audit
 from app.core.cardvault import CardContext
 from app.core.deps import Page, client_ip, get_db, get_page, get_res, require_admin, require_staff
-from app.core.errors import Conflict, InvalidState, NotFound, Validation
+from app.core.errors import Conflict, Forbidden, InvalidState, NotFound, Validation
 from app.core.ratelimit import enforce
 from app.core.resources import Resources
 from app.models import (
@@ -68,13 +69,28 @@ OPEN = ("queued", "submitting", "accepted_pending", "needs_manual")
 RATE = ("procurement:job", 120, 3600)
 
 
+_LONG_DIGITS = re.compile(r"[0-9](?:[ -]?[0-9]){11,}")
+
+
+def _no_card_number(v: str | None) -> str | None:
+    """A free-text reason is written to audit rows: it must never carry a card number (S2).
+    12+ consecutive digits (spaces / dashes between them allowed) are refused."""
+    if v is not None and _LONG_DIGITS.search(v):
+        raise ValueError("a reason must not contain a card number")
+    return v
+
+
 class ReasonIn(BaseModel):
     reason: str = Field(min_length=3, max_length=200)
+
+    check_reason = field_validator("reason")(_no_card_number)
 
 
 class FulfilIn(BaseModel):
     code: str = Field(min_length=4, max_length=256, repr=False)
     reason: str | None = Field(default=None, max_length=200)
+
+    check_reason = field_validator("reason")(_no_card_number)
 
 
 def maybe_charged(job: ProcurementJob) -> bool:
@@ -504,13 +520,17 @@ async def fulfil_manually(
         raise Validation("That is not a valid code", code="bad_code")
     job = await _lock(db, staff.tenant_id, job_id)
     mask = None
+    last4 = ""
     if job.kind == "vcc":
+        if staff.role != "admin":  # a card is live money: only an admin pastes one (S2)
+            raise Forbidden("Only an admin can fulfil a card job by hand")
         # a card is pasted as ``<pan>----<MM/YY>----<cvv>`` and sealed exactly like an automatic one
         canonical = canonical_card_secret(code)
         if canonical is None:
             raise Validation("Paste the card as number----MM/YY----CVV", code="bad_card")
         code = canonical
         mask = mask_pan(code.split(CARD_FIELD_SEP, 1)[0])
+        last4 = code.split(CARD_FIELD_SEP, 1)[0][-4:]
         del canonical
     if job.state == "fulfilled" or job.card_stock_ids:
         raise Conflict("This job is already fulfilled", code="already_fulfilled")
@@ -529,10 +549,15 @@ async def fulfil_manually(
         "product_id": order.product_id,
         "variant_id": order.variant_id,
         "blob": sealer.seal(code, CardContext(tid, str(order.product_id), str(card_id))),
-        "fingerprint": sealer.fingerprint(tid, code),
-        "lookup_fp": sealer.lookup_fingerprint(
-            tid, code.split(CARD_FIELD_SEP, 1)[0] if job.kind == "vcc" else code
+        # a card's fingerprint never derives from the secret (S1); a CDK code keeps the old rule
+        "fingerprint": (
+            sealer.card_fingerprint(
+                tid, job.upstream_ref or f"manual:{order.id}:{job.unit_no}:{last4}"
+            )
+            if job.kind == "vcc"
+            else sealer.fingerprint(tid, code)
         ),
+        "lookup_fp": None if job.kind == "vcc" else sealer.lookup_fingerprint(tid, code),
         "kid": sealer.active_kid,
         "status": "sold",
         "order_id": order.id,
@@ -548,6 +573,36 @@ async def fulfil_manually(
         values.clear()
     job.card_stock_ids = [card_id]
     if mask is not None:
+        await audit(  # who pasted a card, never the card
+            db,
+            tenant_id=job.tenant_id,
+            action="procurement.card_pasted",
+            actor_id=staff.id,
+            actor_role=staff.role,
+            target=f"procurement_job:{job.id}",
+            detail={"order_id": str(job.order_id), "mask": mask},
+            severity="warning",
+            ip=ip,
+        )
+        if job.card_mask and job.card_mask != mask:
+            # the supplier bought another card for this job than the one staff delivered: the
+            # vendor's card is an orphan that must be deleted (F6); both masks are kept
+            await audit(
+                db,
+                tenant_id=job.tenant_id,
+                action="procurement.manual_card_differs",
+                actor_id=staff.id,
+                actor_role=staff.role,
+                target=f"procurement_job:{job.id}",
+                detail={
+                    "vendor_mask": job.card_mask,
+                    "pasted_mask": mask,
+                    "order_id": str(job.order_id),
+                    "vendor_card": clean_detail(job.upstream_ref or ""),
+                },
+                severity="critical",
+                ip=ip,
+            )
         job.card_mask = mask
     job.manual_by = staff.id
     job.error_code, job.step, job.next_poll_at = None, "done", None

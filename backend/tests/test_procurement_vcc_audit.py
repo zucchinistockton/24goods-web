@@ -17,6 +17,8 @@ from tests.test_procurement_vcc import (
     _deliver,
     _job,
     _posts,
+    _rows,
+    _sql,
     _zovo,
     vup,  # noqa: F401
 )
@@ -285,3 +287,101 @@ async def test_cdk_void_failure_also_ends_in_needs_manual(env, up):
     await _settle(up, 3)
     (job,) = await up.jobs(order["id"])
     assert job.state == "needs_manual" and job.error_code == "void_failed"
+
+
+# ------------------------------------------------------------------ S1 / S2 / F6
+
+JOBS = "/api/v1/admin/procurement/jobs"
+PASTED = "4242424242424242----09/32----456"
+
+
+async def test_card_fingerprint_does_not_derive_from_the_secret(env, vup):
+    vendor = MockZovo()
+    await _zovo(vup, vendor, OPEN)
+    buyer, order = await vup.paid_order()
+    await _deliver(env, vup, order, buyer)
+    job = await _job(vup, order)
+    row = (
+        await _rows(
+            env,
+            "SELECT fingerprint, lookup_fp FROM card_stock WHERE order_id = :o",
+            o=uuid.UUID(order["id"]),
+        )
+    )[0]
+    sealer, tid = vup.ctx.sealer, str(env.tenant_id)
+    card = _card(vendor)
+    secret = "----".join((card["card_number"], card["expire"], card["cvv"]))
+    assert row.lookup_fp is None  # no PAN-derived search key at all
+    assert row.fingerprint == sealer.card_fingerprint(tid, job.upstream_ref)  # the card id
+    # none of the secret-derived keys an API holder could compute matches
+    assert row.fingerprint not in {
+        sealer.fingerprint(tid, secret),
+        sealer.fingerprint(tid, card["card_number"]),
+        sealer.lookup_fingerprint(tid, card["card_number"]),
+        sealer.lookup_fingerprint(tid, secret),
+    }
+    # the staff "find by content" cannot locate a card by its secret
+    staff, _ = await env.login("admin")
+    for by, lines in (("content", [secret]), ("first_field", [card["card_number"]])):
+        r = await staff.post("/api/v1/admin/cards/find", json={"lines": lines, "by": by})
+        assert r.status_code == 200, r.text
+        assert r.json()["items"] == [] and r.json()["missing"] == 1
+
+
+async def test_hand_pasted_card_fingerprint_and_admin_only(env, vup):
+    vendor = MockZovo()
+    vendor.force("/cards/open", "401", times=3)
+    await _zovo(vup, vendor, OPEN)
+    _buyer, order = await vup.paid_order()
+    await vup.run()
+    job = await _job(vup, order)
+    assert job.state == "needs_manual"
+    agent, _ = await env.login("agent")
+    assert (await agent.post(f"{JOBS}/{job.id}/fulfil", json={"code": PASTED})).status_code == 403
+    admin, _ = await env.login("admin")
+    # a reason may not carry a card number, for ANY job kind and action
+    for path, body in (
+        ("fulfil", {"code": PASTED, "reason": "paid with 4242 4242 4242 4242"}),
+        ("fail", {"reason": "card 4242424242424242 broken"}),
+        ("void", {"reason": "card 4242-4242-4242-4242"}),
+    ):
+        r = await admin.post(f"{JOBS}/{job.id}/{path}", json=body)
+        assert r.status_code == 422, path
+    r = await admin.post(f"{JOBS}/{job.id}/fulfil", json={"code": PASTED, "reason": "ticket 8841"})
+    assert r.status_code == 200, r.text
+    row = (
+        await _rows(
+            env,
+            "SELECT fingerprint, lookup_fp FROM card_stock WHERE order_id = :o",
+            o=uuid.UUID(order["id"]),
+        )
+    )[0]
+    sealer, tid = vup.ctx.sealer, str(env.tenant_id)
+    assert row.lookup_fp is None
+    assert row.fingerprint == sealer.card_fingerprint(tid, f"manual:{order['id']}:1:4242")
+    assert row.fingerprint != sealer.fingerprint(tid, PASTED)
+    assert await env.scalar(
+        "SELECT count(*) FROM audit_log WHERE action = 'procurement.card_pasted' "
+        "AND actor_id IS NOT NULL AND row_to_json(audit_log)::text NOT LIKE '%4242424242424242%'"
+    ) == 1  # fmt: skip
+
+
+async def test_pasting_another_card_than_the_vendors_is_flagged(env, vup):
+    vendor = MockZovo()
+    vendor.recharge_pending_next = 99  # the job parks with a known vendor card
+    await _zovo(vup, vendor, WITH_RECHARGE)
+    _buyer, order = await vup.paid_order()
+    await vup.run()
+    job = await _job(vup, order)
+    assert job.state == "accepted_pending" and job.card_mask
+    vendor_mask = job.card_mask
+    await _sql(env, "UPDATE procurement_jobs SET lease_until = NULL")
+    admin, _ = await env.login("admin")
+    r = await admin.post(f"{JOBS}/{job.id}/fulfil", json={"code": PASTED})
+    assert r.status_code == 200, r.text
+    detail = await env.scalar(
+        "SELECT detail::text FROM audit_log WHERE action = 'procurement.manual_card_differs' "
+        "AND severity = 'critical'"
+    )
+    assert vendor_mask in detail and "424242****4242" in detail and "4242424242424242" not in detail
+    assert r.json()["card_mask"] == "424242****4242"
