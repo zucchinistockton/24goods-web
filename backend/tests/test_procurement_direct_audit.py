@@ -700,3 +700,16 @@ async def test_resupply_path_leaks_nothing(env, dup, caplog):
             f"SELECT coalesce(string_agg(row_to_json(t)::text, '|'), '') FROM {name} t"  # noqa: S608
         )
         assert marker not in dump, name
+
+
+async def test_scenarios_mock_seeds_the_funding_card_the_smoke_uses(env):
+    """e2e/smoke.py pays its direct order with card_id 1 of the simulator (scenarios mode)."""
+    from app.suppliers.base import OfferSpec
+    from tests.test_procurement_vcc_audit import _adapter
+
+    vendor = MockZovo(scenarios=True)
+    sup = _adapter(vendor)
+    params = {"product": "claude", "plan": "pro", "card_id": 1}
+    av = await sup.availability(OfferSpec(kind="direct", params=params))
+    assert av.available, av.reason
+    assert not MockZovo().cards  # only scenarios mode seeds it

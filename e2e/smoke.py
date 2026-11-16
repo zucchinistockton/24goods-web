@@ -1404,7 +1404,7 @@ def v12_procurement(
         json={
             "product_id": pd["id"],
             "supplier_id": sup["id"],
-            "params": {"product": "claude", "plan": "pro", "card_id": 1},
+            "params": {"product": "claude", "plan": "pro", "card_id": 1},  # the mock seeds card 1
             "cost_estimate": "21.15",
             "priority": 10,
             "enabled": True,

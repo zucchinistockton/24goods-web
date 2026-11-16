@@ -297,6 +297,12 @@ class MockZovo:
     direct_cancelled: int = 0
     direct_product_seen: list[str] = field(default_factory=list)  # product exactly as sent
 
+    def __post_init__(self) -> None:
+        if (
+            self.scenarios
+        ):  # the E2E smoke pays direct orders with this card of "our" account (id 1)
+            self.add_funding_card(1, available=5000.0)
+
     def add_funding_card(self, cid: int, available: float = 500.0, status: str = "ACTIVE") -> None:
         """A card of OUR vendor account for ``upstream_direct`` offers (``card_id``)."""
         self.cards[cid] = {
