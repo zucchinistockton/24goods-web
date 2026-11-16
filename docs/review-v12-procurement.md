@@ -873,7 +873,7 @@ New: API `APP_CRED_PUBLIC_KEYS_FILE` (or `APP_CRED_PUBLIC_KEYS`), `APP_CRED_ACTI
 `APP_CRED_PRIVATE_KEYS_FILE`, `APP_CRED_MAX_AGE_S` (21600), `APP_CRED_SWEEP_INTERVAL_S` (30),
 `APP_DIRECT_PENDING_MAX_S` (7200). `deploy/bootstrap.sh` wires them for a new stack (compose secrets
 `cred_public_keys` -> api, `cred_private_keys` -> procurement only; `backup.sh` puts the private key with the vault
-keys under the vault recipients). **An already-bootstrapped stack** (no restart of delivery needed):
+keys with their own recipients file, 18.5a). **An already-bootstrapped stack** (no restart of delivery needed):
 
 1. `docker compose run --rm --no-deps --entrypoint python -v "$PWD/secrets:/keys" api -m app.devtools.keygen --out-dir /keys --cred-only`
    (writes `secrets/cred_public_keys.json` 0644 and `secrets/cred_private_keys.json` 0600; prints
@@ -884,9 +884,39 @@ keys under the vault recipients). **An already-bootstrapped stack** (no restart 
    `APP_CRED_PRIVATE_KEYS_FILE=/run/secrets/cred_private_keys`.
 3. In `docker-compose.yml`: top-level secrets `cred_public_keys` / `cred_private_keys` (files above), `api` gets
    `cred_public_keys`, `procurement` gets `cred_private_keys` (and keeps `vault_public_keys`).
-4. `alembic upgrade head` (the `migrate` service), then recreate `api` and `procurement`. Add the private key to the
-   vault-recipient backup. Rotation: generate a new pair, keep the old private key in the file until the sweeper has
+4. `alembic upgrade head` (the `migrate` service), then recreate `api` and `procurement`. Add `backup-cred-recipients.txt` for the
+   private key's backup archive. Rotation: generate a new pair, keep the old private key in the file until the sweeper has
    emptied the table (max 6 h), switch `APP_CRED_ACTIVE_KID` and the public file, then drop the old key.
+
+### 18.5a Audit and security-review fixes (2026-11-16)
+
+Tests: `backend/tests/test_procurement_direct_audit.py`. Migration `0030_cred_delete_backstop`.
+
+| # | Rule now |
+|---|---|
+| H1 | The funding `card_id` is never a card bought for a buyer: source save / patch / enable refuse a `card_id` equal to the `upstream_ref` of ANY `vcc` job of that supplier (any state) with 422 `funding_card_invalid`, and the engine re-checks in the lease before `maybe_sent`. Fresh availability reads `GET /cards/{id}` (404 = not ours) and requires ACTIVE and a balance >= the order cost; PAN / CVV in that read are dropped. |
+| H2 | A direct job that may already have an order (`prior_send` / `upstream_ref`) is never failed over and never `_unsent` on a "no" (UNAVAILABLE becomes reconcile, ends `needs_manual unresolved`, flagged maybe charged). The reconcile list search pages until the vendor's `total` is reached (or a short page), up to 50 pages; beyond that it answers AMBIGUOUS `order_list_too_long`, never "not found". A same-key resubmit after "not found" is kept (the vendor de-duplicates by key AND `client_request_id`). |
+| M1 | The preflight quote is used. USD quote: refused as `quote_over_bound` above `cost_estimate x (1 + APP_DIRECT_QUOTE_TOLERANCE)` (default 10 %; without a configured cost: the catalogue's own USD cost). Non-USD quote (a GPT plan in PHP): compared in its own currency with the plan's `maxAmountMinor` (else `expectedAmountMinor` x (1 + tolerance)); another currency = `quote_currency_mismatch`; no quote for GPT = `quote_missing`. Nothing is sent, the job is not maybe charged. |
+| M2 | Fresh availability also reads `GET /gpt-direct/cards/{id}/usage` (`funding_card_exhausted` when the plan's bucket has 0 left; an unreadable shape does not block [I]). `APP_DIRECT_DECLINE_LIMIT` (3) consecutive `order_declined` / `order_failed_precharge` on one source set `last_check_ok = false` and write a critical `procurement.offer_declining` row. `APP_DIRECT_CARD_INFLIGHT_MAX` (1) orders at the vendor per funding card: others wait (`card_busy`, advisory lock + `maybe_sent` in one commit), they do not fail over. |
+| M3 | A `completed` order is delivered only when `client_request_id` and `plan` are present and equal and the masked account matches `job.account_mask`; otherwise `needs_manual order_mismatch` + critical `procurement.order_mismatch`, nothing delivered. A later preflight whose masked account differs from the job's is `session_other_account` (nothing sent). |
+| M4 | Hand fulfil (admin) first asks the procurement process to READ the supplier order (`POST /internal/direct-order`, fail closed): `pending`/`unknown` = 409 `order_in_flight` (void it first, or wait); a job without a recorded order runs the reconcile search; `completed` / `failed` / `not_found` / `not_sent` may proceed. |
+| M5 | A `gpt_direct*` ledger row links only to a job of its own kind (`*cdk*` types to `cdk`, every other to `direct`): CDK ids and order ids overlap. |
+| M6 | A direct order whose cost is not in the wallet currency (no USD job cost) is `cost_incomplete: true` in the margin report and has no margin. |
+| M7 | `void`: only `cancelled` / `failed_precharge` whose `service_fee_status` is `released` / `refunded` / `none` are "nothing to undo". `declined`, unknown failures and unconfirmed fees end in `needs_manual void_failed` (`order_failure_unconfirmed`); the job view's `upstream_status` shows `status:fee_status[:funding]` (e.g. `declined:held`). |
+| M8 | A `needs_manual` direct job with an order id and a "still moving" reason (`pending_too_long`, `unresolved`, `retry_exhausted`, ...) is read every 15 min (up to 96 reads) so a late `completed` is seen: delivered when the order is still `paid` / held by procurement; if the order is no longer open it becomes `fulfilled` with `refunded_after_success` and a critical audit row + alert. |
+| Low | `direct-session` must be the same account (409 `session_other_account`); after-sales / admin refund of an order whose direct job COMPLETED needs `acknowledge_irreversible: true` (422 `direct_refund_ack_required`); buy-now of a direct product on a reseller storefront is refused (`direct_not_on_storefront`). |
+| S-M1 | (a) The session sweep runs at the START of every engine pass. (b) Migration 0030: `app_api` may DELETE rows older than 6 h (policy `api_expired_delete`; `tenant_isolation` FOR ALL was split into per-command policies because permissive policies are OR-ed); the API reconcile loop runs it (`purge_overdue_sessions`), writes a critical `procurement.sessions_overdue` row and alerts staff (`proc.sessions_overdue`). `APP_CRED_MAX_AGE_S` may not exceed 21600. (c) Checkout answers 503 `direct_unavailable` for an hour after such a purge, and whenever the oldest session is older than 6 h 30 min. |
+| S-L1 | In production (`APP_ENV=prod`) a direct source of a `sandbox` supplier cannot be enabled (422 `sandbox_in_prod`), is not routed, is not counted for checkout, and the lease refuses it. |
+| S-L2 | The leak sweep dumps every table of every tenant (superuser connection, NULL-tenant rows included), checks base64 / URL-encoded variants of the marker, e-mail and token, negative requests (wrong JSON type, malformed JSON, oversize) and the re-supply path. |
+| S-L3 | `deploy/backup.sh` writes the credential private key to its own archive `cred-keys.tgz.age`, sealed to `BACKUP_CRED_RECIPIENTS` (default `/opt/kesiv/backup-cred-recipients.txt`); without that file it falls back to the vault recipients and prints a warning. |
+| CI | The opener of buyer sessions lives in `app/procurement/credopen.py` (procurement imports it; `app/core/credvault.py` is seal-only). `tests/test_vault_security.py` asserts that no API code names an opener or imports `credopen`. `scripts/dev.sh` generates and wires the pair for the dev stack. |
+
+New settings: `APP_DIRECT_QUOTE_TOLERANCE` (0.10), `APP_DIRECT_DECLINE_LIMIT` (3), `APP_DIRECT_CARD_INFLIGHT_MAX` (1).
+New codes: `funding_card_invalid`, `funding_card_exhausted`, `funding_card_low`, `quote_over_bound`,
+`quote_missing`, `quote_unbounded`, `quote_currency_mismatch`, `session_other_account`, `order_failure_unconfirmed`,
+`order_in_flight` (409), `direct_refund_ack_required` (422), `direct_not_on_storefront`, `sandbox_in_prod`,
+`card_busy` (job `error_code` while parked), `order_list_too_long`. New internal route `POST /internal/direct-order`.
+Not done: the hand-fulfil guard refuses an in-flight order instead of cancelling it for staff (void it first).
 
 ### 18.6 Left open
 
@@ -896,16 +926,16 @@ keys under the vault recipients). **An already-bootstrapped stack** (no restart 
   the list: a miss falls back to the same-key resubmit, which the vendor de-duplicates by key and by
   `client_request_id`. **Confirm both against the first sandbox direct order**, including whether the Idempotency-Key
   is compared with the (changing) preflight token on a replay (`IDEMPOTENCY_CONFLICT` would be FATAL and flagged).
-* The funding **card** is a staff-chosen `card_id` per source; there is no card pool, no usage cap handling
-  (`CARD_CAPACITY_REACHED`... arrive as `INVALID_REQUEST`/`GPT_DIRECT_ORDER_REJECTED` and need staff) and no automatic
-  switch (`no_auto_card_switch: true`).
+* The funding **card** is a staff-chosen `card_id` per source (checked, see 18.5a); there is no card pool and no
+  automatic switch (`no_auto_card_switch: true`). The `usage` and quote shapes (`quotes[plan]`, `remaining`) are read as
+  documented, not verified in the sandbox.
 * `cancel-renewal` (auto-renewal of the bought subscription) is not called: the vendor cancels once itself on
   success; a `pending`/`warning` renewal status is not surfaced yet. Subscription terms must say that.
 * Credits (`credit*`) and renew-binding (`*_renew`) plans are refused; `x` is not an order product.
 * Reseller-tenant products: the supplier secrets belong to the platform; a reseller direct product is not designed.
 * Frontend: buyer session paste box with the offline checks, masked-account / plan panel
   (`GET /orders/{ref}/direct`), re-supply form, console direct-source form (`product`, `plan`, `card_id`) and the
-  job view fields above. `scripts/dev.sh` does not yet generate the credential pair for the dev stack.
+  job view fields above. 
 * The `1/6 h` credential lifetime is a pragmatic bound; a USDT order that is paid after it needs the buyer to
   re-supply (staff see `credential_missing`).
 
