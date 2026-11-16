@@ -34,7 +34,7 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
   web`, `run --rm migrate`, `up -d --wait`, then `scripts/prod.sh smoke`. Do not use `scripts/prod.sh deploy`
   (dead registry token).
 - **Next, in order:** (1) production deploy of `main` (above); (2) sandbox webhook (below; the account
-  expires **2026-11-18 10:57**); (3) TOTP 2FA frontend + PR (below); (4) redemption site (spec §8, own PR
+  expires **2026-11-18 10:57**); (3) review and merge PR #10 (TOTP 2FA, below); (4) redemption site (spec §8, own PR
   from `feat/v12-procurement`); (5) M3.
 - **Re-audit verdict (2026-11-15, head `2895860`): pass with notes — no Critical/High, no path to a double
   purchase or double delivery.** Original findings: H1, M1, M2, M4, M5, L1, L2, L4, L7 closed; H2, M3, L5
@@ -90,16 +90,14 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
   requests to the demo API ran until about 07:45 UTC on 2026-11-16 (`all.pcap` in that session's scratchpad;
   delete it after use: it also holds demo logins). The signing keys were pasted in chat: rotate them with the
   other ZovoCard keys before go-live.
-- **TOTP 2FA (spec §13): backend built, frontend not started.** Branch `feat/totp-2fa` (worktree
-  `.claude/worktrees/totp`, from `main`), commits `547564f` (core) and `58e10e9`: migration `0022a_user_totp`
-  (FORCE RLS, app_api only; **when v12 reaches `main`, `0023_procurement` must revise `0022a_user_totp`**),
-  `app/modules/auth/twofactor.py`, `POST /auth/login` answers `{two_factor_required, pending_token}` for an
-  enrolled account, `POST /auth/login/2fa`, `/me/2fa` (status, `setup`, `enable`, `disable`,
-  `recovery-codes`), `POST /admin/users/{id}/2fa/reset` (admin only), Google sign-in redirects to
-  `/login#2fa=<token>&next=…`, a Google takeover of an unverified account drops its second factor.
-  `tests/test_twofactor.py` (11) + auth / me / v5 tests pass locally; no CI run yet (no PR). Not done: buyer
-  and console UI (login second step, settings page with a locally drawn QR, recovery codes), en + zh-CN
-  strings, API contract doc, the "require 2FA for staff" setting, security-reviewer pass, ADR.
+- **TOTP 2FA (spec §13): built, PR #10 open against `main`, CI green (backend, frontend, E2E).** Branch
+  `feat/totp-2fa` (worktree `.claude/worktrees/totp`). Backend, buyer UI (login second step, Settings →
+  Two-factor login), console UI (login second step, user menu, Users → Reset 2FA), en + zh-CN, API contract,
+  ADR-039, migration `0022a_user_totp` (**when v12 reaches `main`, `0023_procurement` must revise it**).
+  Security-reviewer: pass with notes; its High (limiter race) and Medium findings are fixed, the rest are
+  accepted risks in ADR-039. **Open before merge: a human review (auth path, AGENTS.md §5.3) and a look at
+  the UI in a browser** (the demo runs the v12 build, which does not contain this branch). Not built:
+  "require 2FA for staff".
 - **Deployed:** production (c4) `d881dfa`; demo = local image `goods24-api:m2-demo` (`15d7f22`, an M2 build
   from before the audit fixes; no migration 0027). Unchanged: do not use `scripts/prod.sh deploy` until its
   registry login is fixed.
