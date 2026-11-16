@@ -553,7 +553,7 @@ async def test_fail_of_a_possibly_sent_job_recovers_and_voids_the_code(env, up):
     assert not mock.charged and await _cards(env, order) == 0  # exactly one reconcile, no code kept
 
 
-async def test_hand_fulfil_of_a_possibly_sent_job_disables_the_supplier_code(env, up):
+async def test_hand_fulfil_of_a_possibly_sent_job_records_the_ref_and_keeps_the_code(env, up):
     staff, _ = await env.login("agent")
     mock = LosingMock("mock_a", lose=1)
     await up.supplier(mock)
@@ -567,9 +567,17 @@ async def test_hand_fulfil_of_a_possibly_sent_job_disables_the_supplier_code(env
     for _ in range(3):
         await up.run()
     job = await _job(up, order)
-    assert job.state == "fulfilled" and job.upstream_status == "disabled" and not job.recover
+    # N2: the reference is recorded, the code is NOT disabled (staff may have pasted exactly it)
+    assert job.state == "fulfilled" and job.upstream_status == "unused" and not job.recover
     assert job.upstream_ref and len(job.card_stock_ids) == 1  # still the staff member's code
-    assert [op for op, _ in mock.calls] == ["submit", "query", "void"] and not mock.charged
+    assert [op for op, _ in mock.calls] == ["submit", "query"] and len(mock.charged) == 1
+    assert (
+        await env.scalar(
+            "SELECT count(*) FROM audit_log WHERE action = "
+            "'procurement.recovered_after_manual_fulfil' AND severity = 'critical'"
+        )
+        == 1
+    )
     assert await env.drain() >= 1
     assert await _order_status(env, order) == "delivered"
     cards = (await buyer.post(f"/api/v1/orders/{order['id']}/reveal")).json()["cards"]

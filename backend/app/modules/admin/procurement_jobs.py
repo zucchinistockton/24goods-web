@@ -381,7 +381,9 @@ def _refuse_in_flight(job: ProcurementJob) -> None:
 
 def _schedule_recovery(job: ProcurementJob) -> bool:
     """A job closed by hand while the supplier may hold a code for it: the engine asks once under
-    the SAME key, records the reference and disables the code (it never seals or delivers it)."""
+    the SAME key and records the reference (it never seals or delivers anything). A closed job
+    (``failed``) then has the code disabled; a hand-fulfilled one keeps it, since staff may have
+    pasted exactly that code (N2): disabling stays an explicit ``void``."""
     if job.maybe_sent or job.upstream_ref:
         job.recover, job.attempts, job.next_poll_at = True, 0, _now()
         return True

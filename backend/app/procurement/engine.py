@@ -709,6 +709,17 @@ async def _stop_recovery(db: AsyncSession, job: ProcurementJob, reason: str) -> 
         )
 
 
+async def _audit_manual_fulfil(db: AsyncSession, job: ProcurementJob) -> None:
+    await audit(
+        db,
+        tenant_id=job.tenant_id,
+        action="procurement.recovered_after_manual_fulfil",
+        target=f"procurement_job:{job.id}",
+        detail={"order_id": str(job.order_id), "upstream_ref_recorded": bool(job.upstream_ref)},
+        severity="critical",
+    )
+
+
 async def _lease_detached(
     ctx: ProcurementContext, db: AsyncSession, job: ProcurementJob, now: datetime
 ) -> Lease | None:
@@ -720,6 +731,13 @@ async def _lease_detached(
         await db.commit()
         return None
     mode = "dvoid" if job.upstream_ref else "recover"
+    if mode == "dvoid" and job.state == "fulfilled":
+        # a hand-fulfilled job: staff may have pasted exactly this code, so it is never disabled
+        # behind their back (N2); disabling stays an explicit staff ``void``
+        job.recover, job.next_poll_at = False, None
+        await _audit_manual_fulfil(db, job)
+        await db.commit()
+        return None
     if mode == "recover" and (problem := _replay_problem(ctx, job, offer, now)):
         await _stop_recovery(db, job, problem)  # no replay of a changed / too old request
         await db.commit()
@@ -1054,6 +1072,10 @@ async def _apply_detached(
             job.upstream_status = "unused"
             if not job.upstream_ref:
                 await _stop_recovery(db, job, "recover_no_ref")
+                return
+            if job.state == "fulfilled":  # hand-fulfilled: record the reference, never disable
+                job.recover, job.next_poll_at = False, None
+                await _audit_manual_fulfil(db, job)
                 return
             job.attempts, job.next_poll_at = 0, now  # next: disable it
             await audit(
