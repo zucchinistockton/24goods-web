@@ -241,7 +241,8 @@ if [[ -n "$REDEEM_HOST" ]]; then
     echo "APP_REDEEM_PORT=8006"
     echo "APP_REDEEM_DEVICE=24g-$(rnd 12)"   # constant per deployment
     echo "APP_REDEEM_TRUSTED_PROXIES=10.89.15.10/32"
-    if [[ "$MODE" == "demo" ]]; then echo "APP_REDEEM_SUPPLIER_ENV=sandbox"; fi
+    # which supplier environment receives buyers' credentials: explicit, never inferred (prod refuses to start without it)
+    if [[ "$MODE" == "demo" ]]; then echo "APP_REDEEM_SUPPLIER_ENV=sandbox"; else echo "APP_REDEEM_SUPPLIER_ENV=production"; fi
   } >> env/procurement.env
 fi
 if [[ "$MODE" == "demo" ]]; then

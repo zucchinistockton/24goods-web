@@ -259,7 +259,7 @@ code or the credential in a URL; keep `redemption_token` for 15 min (the vendor 
 | `POST /redeem/preview` | `{"code": "<CDK>"}`; `[A-Za-z0-9._:-]{8,128}` | `redemption_token`, `expires_at` (ISO), `plan`, `plan_flow`, `funding_cap_minor` (int, 0 = none) |
 | `POST /redeem/preflight` | `{"redemption_token", "credential": {"mode": "session", "session": "<ChatGPT session text, 8..16384 chars, no control chars>"}}` | `preflight_token` (**null for Grok/Claude codes**), `preflight_expires_at`, `payment_country` (e.g. `PH`), `payment_currency`, `subscription_recovery_required` (bool) |
 | `POST /redeem/redeem` | `{"redemption_token", "client_request_id": "[A-Za-z0-9._:-]{1,80}", "preflight_token"?, "credential"?}`; at least one of `preflight_token` (GPT/X) or `credential` (Grok/Claude, same account as preflight) | `order_id`, `status`, `stage`, `terminal` (bool). Success means *accepted*, not paid: poll result |
-| `GET /redeem/result?token=<redemption_token>` or `POST /redeem/result {"redemption_token"}` (prefer POST) | | `order_id`, `status`, `stage`, `cdk_status`, `terminal`, `events[]` (`type`, `status`, `at`; at most 50). `404 not_found` is normal for a while (and always in the vendor sandbox); keep polling every 3-5 s up to ~2 min, then show "check later" |
+| `POST /redeem/result {"redemption_token"}` (POST only: a token never travels in a URL on our side; `GET` answers 405) | | `order_id`, `status`, `stage`, `cdk_status`, `terminal`, `events[]` (`type`, `status`, `at`; at most 50). `404 not_found` is normal for a while (and always in the vendor sandbox); keep polling every 3-5 s up to ~2 min, then show "check later" |
 
 `card_id`, API keys and any other field are not accepted. Tokens are `[A-Za-z0-9._~+/=:-]{8,512}`.
 

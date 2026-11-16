@@ -64,7 +64,7 @@ class ProcurementSettings:
     # per-IP per-minute limits by step, then ONE shared budget per step for all buyers: the vendor
     # limits per egress IP (preview 30, redeem 20, result 60 per minute) and every buyer shares ours
     redeem_ip_limits: str = "preview=10,preflight=10,redeem=6,result=40"
-    redeem_global_limits: str = "preview=25,preflight=20,redeem=15,result=50"
+    redeem_global_limits: str = "preview=25,preflight=20,redeem=15,result=55"
     redeem_code_per_10min: int = 10  # preview attempts per code (hashed) before a cool-down
     redeem_token_per_min: int = 40  # per redemption token (hashed), all steps
 

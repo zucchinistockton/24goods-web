@@ -21,6 +21,7 @@ pins sandbox/production when both are enabled; an ambiguous setup answers ``unav
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import ipaddress
@@ -48,6 +49,7 @@ from app.suppliers.zovocard.client import sanitize_error_code
 log = logging.getLogger("app.procurement.redeem")
 
 MAX_BODY = 24 * 1024
+BODY_DEADLINE_S = 10.0  # whole request body
 STEPS = ("preview", "preflight", "redeem", "result")
 DEVICE_RE = re.compile(r"^[A-Za-z0-9._-]{8,64}$")
 CODE_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
@@ -298,6 +300,9 @@ SHAPERS = {
 
 def create_redeem_app(ctx: ProcurementContext) -> Starlette:
     cfg = ctx.settings
+    if cfg.env == "prod" and cfg.redeem_supplier_env not in ("sandbox", "production"):
+        # a buyer's account credential must never go to whichever supplier happens to be enabled
+        raise ValueError("APP_REDEEM_SUPPLIER_ENV (sandbox | production) is required in prod")
     # httpx logs full request URLs at INFO and the vendor's result call carries the redemption
     # token in its query string: keep these loggers quiet whatever the process log level is.
     for noisy in ("httpx", "httpcore"):
@@ -434,10 +439,18 @@ def create_redeem_app(ctx: ProcurementContext) -> Starlette:
         ):
             raise RedeemError("invalid_request")
         raw = bytearray()
-        async for chunk in request.stream():
-            raw += chunk
-            if len(raw) > MAX_BODY:
-                raise RedeemError("payload_too_large")
+
+        async def drain() -> None:
+            async for chunk in request.stream():
+                raw.extend(chunk)
+                if len(raw) > MAX_BODY:
+                    raise RedeemError("payload_too_large")
+
+        try:
+            # a body that trickles in must not hold one of the listener's few connections
+            await asyncio.wait_for(drain(), BODY_DEADLINE_S)
+        except asyncio.TimeoutError:
+            raise RedeemError("invalid_request") from None
         try:
             body = json.loads(bytes(raw))
         except (ValueError, RecursionError):
@@ -453,15 +466,10 @@ def create_redeem_app(ctx: ProcurementContext) -> Starlette:
             peer = request.client.host if request.client else None
             ip = client_ip_from(peer, request.headers.get("x-forwarded-for"), trusted) or "unknown"
             await count(f"proc:redeem-ip-{step}", ident("ip", ip), ip_limits[step], 60)
-            if step == "result" and request.method == "GET":
-                if set(request.query_params) - {"token"}:
-                    raise RedeemError("invalid_request")
-                token = _check_str(request.query_params.get("token"), TOKEN_RE)
-                body: dict[str, Any] | None = None
-            else:
-                parsed = parse_body(step, await read_json(request))
-                body = parsed
-                token = parsed.get("redemption_token")
+            # POST only, also for the result: a token never travels in a URL on our side
+            parsed = parse_body(step, await read_json(request))
+            body: dict[str, Any] | None = parsed
+            token = parsed.get("redemption_token")
             if step == "preview":
                 await count(
                     "proc:redeem-code",
@@ -510,7 +518,7 @@ def create_redeem_app(ctx: ProcurementContext) -> Starlette:
         Route("/redeem/preview", make_route("preview"), methods=["POST"]),
         Route("/redeem/preflight", make_route("preflight"), methods=["POST"]),
         Route("/redeem/redeem", make_route("redeem"), methods=["POST"]),
-        Route("/redeem/result", make_route("result"), methods=["GET", "POST"]),
+        Route("/redeem/result", make_route("result"), methods=["POST"]),
     ]
     app = Starlette(routes=routes, exception_handlers={404: not_allowed, 405: not_allowed})
     app.state.close = close

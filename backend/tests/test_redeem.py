@@ -92,7 +92,7 @@ class Rig:
             },
         )
         assert r3.status_code == 200, r3.text
-        r4 = await self.client.get("/redeem/result", params={"token": tok})
+        r4 = await self.client.post("/redeem/result", json={"redemption_token": tok})
         return code, (r1, r2, r3, r4), tok, pf
 
     async def close(self) -> None:
@@ -186,7 +186,7 @@ async def test_result_404_is_not_found(env):
     try:
         _, (_, _, _, r4), _, _ = await r.walk()
         assert r4.status_code == 404 and _err(r4) == "not_found"
-        unknown = await r.client.get("/redeem/result", params={"token": "rt_" + "a" * 32})
+        unknown = await r.client.post("/redeem/result", json={"redemption_token": "rt_" + "a" * 32})
         assert _err(unknown) == "not_found"
     finally:
         await r.close()
@@ -332,7 +332,9 @@ async def test_body_cap_content_type_and_bad_json(rig):
         headers={"content-type": "text/plain"},
     )
     assert _err(r) == "invalid_request"
-    r = await rig.client.get("/redeem/result", params={"token": "rt_" + "a" * 32, "x": "1"})
+    r = await rig.client.post(
+        "/redeem/result", json={"redemption_token": "rt_" + "a" * 32, "x": "1"}
+    )
     assert _err(r) == "invalid_request"
     assert rig.mock.redeem_calls == []
 
@@ -390,8 +392,13 @@ async def test_per_code_and_per_token_limits(env):
         other = r.add_cdk()  # another code is unaffected
         tok = (await r.post("preview", {"code": other})).json()["data"]["redemption_token"]
         for _ in range(2):
-            assert (await r.client.get("/redeem/result", params={"token": tok})).status_code == 404
-        assert _err(await r.client.get("/redeem/result", params={"token": tok})) == "rate_limited"
+            assert (
+                await r.client.post("/redeem/result", json={"redemption_token": tok})
+            ).status_code == 404
+        assert (
+            _err(await r.client.post("/redeem/result", json={"redemption_token": tok}))
+            == "rate_limited"
+        )
     finally:
         await r.close()
 
@@ -718,3 +725,9 @@ async def test_no_secret_in_logs_or_audit(env, rig, caplog):
     for secret in (code, tok, pf, SESSION, "invalid-" + SESSION):
         assert secret not in logged, "a secret reached the logs"
     assert await env.scalar("SELECT count(*) FROM audit_log") == before
+
+
+async def test_result_is_post_only(rig):
+    """A token must not travel in a URL on our side: the GET form is gone."""
+    r = await rig.client.get("/redeem/result", params={"token": "rt_" + "a" * 32})
+    assert r.status_code == 405 and _err(r) == "method_not_allowed"

@@ -210,6 +210,7 @@
   function poll() {
     showResult('wait')
     var started = Date.now()
+    var wait = 4000
     ;(function tick() {
       call('result', { redemption_token: st.token }).then(function (d) {
         if (d.order_id) st.result.order = d.order_id
@@ -221,7 +222,7 @@
       })
       function next() {
         if (Date.now() - started > 120000) showResult('later')
-        else setTimeout(tick, 4000)
+        else { setTimeout(tick, wait); wait = Math.min(Math.round(wait * 1.6), 15000) } // back off: buyers share one budget
       }
     })()
   }
@@ -230,6 +231,8 @@
   $('back-code').addEventListener('click', reset)
   $('back-account').addEventListener('click', function () { alertMsg(null); show(1) })
   $('lang').addEventListener('click', function () { lang = lang === 'zh' ? 'en' : 'zh'; paint() })
+  // leaving the page forgets what was typed (also keeps it out of the back/forward cache copy)
+  window.addEventListener('pagehide', function () { $('code').value = ''; $('session').value = '' })
   paint()
   show(0)
 })()
