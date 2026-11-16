@@ -150,8 +150,8 @@ async function copy(text: string) {
             type="password"
             autocomplete="current-password"
             :label="t('me.currentPassword')"
-            :placeholder="t('twoFactor.passwordHint')"
           />
+          <p v-if="!auth.user?.is_instant" class="pw-hint">{{ t('twoFactor.passwordHint') }}</p>
           <van-button round block type="primary" native-type="submit" :loading="busy">{{ t('twoFactor.start') }}</van-button>
         </form>
       </section>
@@ -236,8 +236,14 @@ async function copy(text: string) {
   color: var(--c-bad-ink);
 }
 .pw {
-  margin: 0 -16px 16px;
+  margin: 0 -16px;
   width: auto;
+}
+.pw-hint {
+  margin: 8px 0 16px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--c-muted);
 }
 .gap {
   margin-top: 12px;

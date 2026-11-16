@@ -234,7 +234,7 @@ const zhCN: WebMessages = {
     since: '开启时间',
     codesLeft: '剩余恢复码',
     start: '开始设置',
-    passwordHint: '仅使用 Google 登录可留空',
+    passwordHint: '如果你只使用 Google 登录，密码可留空。',
     scanTitle: '用验证器应用扫码',
     scanLead: '打开验证器应用（Google Authenticator、Microsoft Authenticator、1Password、Aegis 等），扫描此二维码，然后输入应用显示的 6 位数字。',
     qrAlt: '用于验证器应用的二维码',
