@@ -76,6 +76,9 @@ onMounted(() => input.value?.focus())
 .tf {
   padding: 16px;
 }
+.tf.flush {
+  padding: 16px 0 0;
+}
 .tf-label {
   display: block;
   font-size: 13px;
@@ -97,7 +100,6 @@ onMounted(() => input.value?.focus())
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.32em;
   text-align: center;
-  outline: none;
   transition: border-color 160ms;
 }
 .tf-input.wide {
@@ -105,7 +107,7 @@ onMounted(() => input.value?.focus())
   letter-spacing: 0.08em;
 }
 .tf-input:focus-visible {
-  border-bottom-color: var(--van-primary-color);
+  border-bottom-color: var(--c-focus-ring);
 }
 .tf-input::placeholder {
   color: var(--c-fill-strong);

@@ -4,7 +4,7 @@
  * codes (shown once), make new ones, turn off. The secret and the codes exist only in this page's
  * memory; nothing is cached or stored by the client.
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { copyText, formatDateTime, goBack, type TwoFactorSetup, type TwoFactorStatus } from '@24goods/shared'
@@ -24,6 +24,14 @@ const busy = ref(false)
 /** Which action the code sheet confirms. */
 const asking = ref<'off' | 'codes' | null>(null)
 const codeBox = ref<InstanceType<typeof TwoFactorCode> | null>(null)
+/** The sheet keeps its content while it slides out; a fresh field is mounted on every opening. */
+const sheetBody = ref(false)
+const sheetFor = ref<'off' | 'codes'>('off')
+watch(asking, (v) => {
+  if (!v) return
+  sheetFor.value = v
+  sheetBody.value = true
+})
 const qr = computed(() => (setup.value ? `data:image/svg+xml;base64,${btoa(setup.value.qr_svg)}` : ''))
 const grouped = computed(() => setup.value?.secret.replace(/(.{4})/g, '$1 ').trim() ?? '')
 
@@ -150,16 +158,16 @@ async function copy(text: string) {
     </template>
     <van-loading v-else class="wait" />
 
-    <van-popup :show="asking !== null" position="bottom" round closeable safe-area-inset-bottom teleport="body" class="buy-sheet" @update:show="(v: boolean) => { if (!v) asking = null }">
+    <van-popup :show="asking !== null" position="bottom" round closeable safe-area-inset-bottom teleport="body" class="buy-sheet" @update:show="(v: boolean) => { if (!v) asking = null }" @closed="sheetBody = false">
       <div class="sheet">
-        <h2>{{ asking === 'off' ? t('twoFactor.turnOff') : t('twoFactor.newCodes') }}</h2>
-        <p class="lead">{{ asking === 'off' ? t('twoFactor.turnOffLead') : t('twoFactor.newCodesLead') }}</p>
+        <h2>{{ sheetFor === 'off' ? t('twoFactor.turnOff') : t('twoFactor.newCodes') }}</h2>
+        <p class="lead">{{ sheetFor === 'off' ? t('twoFactor.turnOffLead') : t('twoFactor.newCodesLead') }}</p>
         <TwoFactorCode
-          v-if="asking"
+          v-if="sheetBody"
           ref="codeBox"
           class="flush"
           :busy="busy"
-          :allow-recovery="asking === 'off'"
+          :allow-recovery="sheetFor === 'off'"
           :submit-label="t('common.confirm')"
           @submit="confirm"
         />
@@ -202,7 +210,7 @@ async function copy(text: string) {
   background: var(--c-fill-strong);
 }
 .state.on .dot {
-  background: var(--van-success-color);
+  background: var(--c-success);
 }
 .facts {
   margin: 0 0 24px;
@@ -225,7 +233,7 @@ async function copy(text: string) {
   font-variant-numeric: tabular-nums;
 }
 .facts dd.low {
-  color: var(--van-danger-color);
+  color: var(--c-bad-ink);
 }
 .pw {
   margin: 0 -16px 16px;
@@ -263,9 +271,6 @@ async function copy(text: string) {
   margin: 16px 0 0;
   border: 0;
   border-top: 1px solid var(--c-fill-strong);
-}
-.flush {
-  padding: 16px 0 0;
 }
 .quiet {
   display: block;

@@ -81,6 +81,7 @@ async function confirm() {
 }
 async function copy(text: string) {
   if (await copyText(text)) toastOk(t('twoFactor.copied'))
+  else ElMessage.warning(t('twoFactor.copyFailed'))
 }
 </script>
 
@@ -101,7 +102,7 @@ async function copy(text: string) {
       <p class="lead">{{ t('twoFactor.scanLead') }}</p>
       <img class="qr" :src="qr" :alt="t('twoFactor.qrAlt')" width="196" height="196" />
       <button type="button" class="key" :title="t('twoFactor.copyKey')" @click="copy(setup.secret)">{{ grouped }}</button>
-      <el-input v-model="code" class="code" size="large" maxlength="6" inputmode="numeric" autocomplete="one-time-code" :placeholder="t('twoFactor.codeLabel')" />
+      <el-input v-model="code" class="code" size="large" maxlength="6" inputmode="numeric" autocomplete="one-time-code" :placeholder="t('twoFactor.codeLabel')" :aria-label="t('twoFactor.codeLabel')" />
       <div class="row">
         <el-button @click="setup = null">{{ t('common.cancel') }}</el-button>
         <el-button type="primary" native-type="submit" :loading="busy" :disabled="code.trim().length !== 6">{{ t('twoFactor.turnOn') }}</el-button>
@@ -110,7 +111,7 @@ async function copy(text: string) {
 
     <form v-else-if="asking" @submit.prevent="confirm">
       <p class="lead">{{ asking === 'off' ? t('twoFactor.turnOffLead') : t('twoFactor.newCodesLead') }}</p>
-      <el-input v-model="code" class="code" size="large" maxlength="16" autocomplete="one-time-code" :placeholder="t('twoFactor.codeLabel')" />
+      <el-input v-model="code" class="code" size="large" maxlength="16" autocomplete="one-time-code" :placeholder="asking === 'off' ? t('twoFactor.codeOrRecovery') : t('twoFactor.codeLabel')" :aria-label="asking === 'off' ? t('twoFactor.codeOrRecovery') : t('twoFactor.codeLabel')" />
       <div class="row">
         <el-button @click="asking = null">{{ t('common.cancel') }}</el-button>
         <el-button :type="asking === 'off' ? 'danger' : 'primary'" native-type="submit" :loading="busy" :disabled="code.trim().length < 6">{{ t('common.confirm') }}</el-button>
@@ -131,7 +132,7 @@ async function copy(text: string) {
         </div>
       </template>
       <form v-else @submit.prevent="begin">
-        <el-input v-model="password" type="password" size="large" show-password autocomplete="current-password" :placeholder="t('twoFactor.password')" />
+        <el-input v-model="password" type="password" size="large" show-password autocomplete="current-password" :placeholder="t('twoFactor.password')" :aria-label="t('twoFactor.password')" />
         <div class="row">
           <el-button type="primary" native-type="submit" :loading="busy" :disabled="!password">{{ t('twoFactor.start') }}</el-button>
         </div>

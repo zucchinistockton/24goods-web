@@ -128,6 +128,8 @@ export default {
     copyAll: 'Copy all',
     saved: 'I have saved them',
     copied: 'Copied',
+    copyFailed: 'Could not copy. Select the text and copy it by hand.',
+    codeOrRecovery: 'Six-digit code or recovery code',
     codeLabel: 'Six-digit code',
     recoveryLabel: 'Recovery code',
     verify: 'Verify',
