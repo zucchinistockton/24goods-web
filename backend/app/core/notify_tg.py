@@ -78,6 +78,8 @@ TEXTS: dict[str, dict[str, str]] = {
         "pay.check_gateway": "Check the gateway console",
         "proc.job_stuck": "Procurement job {job} is {state} ({code})",
         "proc.order_waits": "Order {order} waits for a supplier code",
+        "proc.void_failed": "Job {job}: the supplier code/card of order {order} could not be "
+        "voided and may still be live. Delete it at the supplier or retry the void",
         "proc.supplier_paused": "Supplier {code} ({env}) is paused for new orders",
         "proc.pause_reason": "Reason: {reason} ({kind})",
         "reminder.title": "Service expiry reminder",
@@ -116,6 +118,8 @@ TEXTS: dict[str, dict[str, str]] = {
         "pay.check_gateway": "请在支付网关后台核对",
         "proc.job_stuck": "采购任务 {job} 状态为 {state}（{code}）",
         "proc.order_waits": "订单 {order} 正在等待供应商发码",
+        "proc.void_failed": "任务 {job}：订单 {order} 的供应商码/卡未能作废，可能仍然有效。"
+        "请在供应商处删除或重试作废",
         "proc.supplier_paused": "供应商 {code}（{env}）已暂停接收新订单",
         "proc.pause_reason": "原因：{reason}（{kind}）",
         "reminder.title": "服务到期提醒",
