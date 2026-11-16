@@ -69,11 +69,18 @@ class Client:
     def __init__(self, base: str):
         self.base = base
         self.h = httpx.Client(
-            base_url=base, headers={"X-Requested-With": "fetch"}, timeout=15, follow_redirects=False
+            base_url=base,
+            headers={"X-Requested-With": "fetch"},
+            timeout=15,
+            follow_redirects=False,
         )
 
-    def req(self, method: str, path: str, expect: int | tuple[int, ...] = 200, **kw) -> httpx.Response:
-        r = self.h.request(method, path if path.startswith("/") else f"{API}/{path}", **kw)
+    def req(
+        self, method: str, path: str, expect: int | tuple[int, ...] = 200, **kw
+    ) -> httpx.Response:
+        r = self.h.request(
+            method, path if path.startswith("/") else f"{API}/{path}", **kw
+        )
         exp = (expect,) if isinstance(expect, int) else expect
         if r.status_code not in exp:
             fail(f"{method} {path} -> {r.status_code} (expected {exp}): {r.text[:300]}")
@@ -101,7 +108,9 @@ def wait_status(c: Client, order_id: str, want: set[str], timeout: float = 30) -
 def pay_with_simulator(c: Client, order_id: str, path: str | None = None) -> None:
     path = path or f"orders/{order_id}/pay"
     pay_url = c.j("POST", path, json={"channel": "zpay_alipay"})["pay_url"]
-    check(pay_url.startswith("/mockpay/submit.php?"), f"unexpected pay_url {pay_url[:60]}")
+    check(
+        pay_url.startswith("/mockpay/submit.php?"), f"unexpected pay_url {pay_url[:60]}"
+    )
     check("key=" not in pay_url, "merchant key must never appear in pay_url")
     page = c.req("GET", pay_url)
     check("ZPay Simulator" in page.text, "simulator page not rendered")
@@ -112,69 +121,133 @@ def pay_with_simulator(c: Client, order_id: str, path: str | None = None) -> Non
         "POST",
         "/mockpay/pay",
         expect=(302, 303),
-        data={"out_trade_no": out_trade_no.group(1), "nonce": nonce.group(1), "action": "pay"},
+        data={
+            "out_trade_no": out_trade_no.group(1),
+            "nonce": nonce.group(1),
+            "action": "pay",
+        },
     )
-    check("/api/v1/pay/return/zpay" in r.headers.get("location", ""), "no redirect to return_url")
+    check(
+        "/api/v1/pay/return/zpay" in r.headers.get("location", ""),
+        "no redirect to return_url",
+    )
 
 
-def v4_commerce(base: str, anon: Client, buyer: Client, agent: Client, admin: Client,
-                auto: dict, manual: dict, conv: dict) -> None:
+def v4_commerce(
+    base: str,
+    anon: Client,
+    buyer: Client,
+    agent: Client,
+    admin: Client,
+    auto: dict,
+    manual: dict,
+    conv: dict,
+) -> None:
     """review-v4: channel fee, cart quote + checkout (one payment), cancel, product card, limiter."""
     chans = anon.j("GET", "site/payment-channels")
     ali = next((c for c in chans if c["id"] == "zpay_alipay"), None)
-    check(ali and ali["permille"] >= 0, f"payment channels missing zpay_alipay: {chans!r}")
+    check(
+        ali and ali["permille"] >= 0, f"payment channels missing zpay_alipay: {chans!r}"
+    )
     permille = int(ali["permille"])
 
-    items = [{"product_id": auto["id"], "qty": 1}, {"product_id": manual["id"], "qty": 1}]
+    items = [
+        {"product_id": auto["id"], "qty": 1},
+        {"product_id": manual["id"], "qty": 1},
+    ]
     q = anon.j("POST", "cart/quote", json={"items": items})
-    check(len(q["lines"]) == 2 and all(ln["available"] for ln in q["lines"]), f"cart quote: {q!r}")
-    check(Decimal(q["total"]) == Decimal(q["subtotal"]) + Decimal(q["fee"]), "quote total != sub+fee")
-    step(f"cart quote: subtotal {q['subtotal']} + fee {q['fee']} ({ali['fee_rate']}) = {q['total']}")
+    check(
+        len(q["lines"]) == 2 and all(ln["available"] for ln in q["lines"]),
+        f"cart quote: {q!r}",
+    )
+    check(
+        Decimal(q["total"]) == Decimal(q["subtotal"]) + Decimal(q["fee"]),
+        "quote total != sub+fee",
+    )
+    step(
+        f"cart quote: subtotal {q['subtotal']} + fee {q['fee']} ({ali['fee_rate']}) = {q['total']}"
+    )
 
     co = buyer.j("POST", "checkout", json={"items": items})
     ck, orders = co["checkout"], co["orders"]
-    check(len(orders) == 2 and set(co["access_codes"]) == {o["order_no"] for o in orders},
-          "checkout must create one order + access code per line")
-    check(Decimal(ck["amount"]) == sum(Decimal(o["amount"]) for o in orders),
-          "checkout amount must equal the sum of its orders")
+    check(
+        len(orders) == 2 and set(co["access_codes"]) == {o["order_no"] for o in orders},
+        "checkout must create one order + access code per line",
+    )
+    check(
+        Decimal(ck["amount"]) == sum(Decimal(o["amount"]) for o in orders),
+        "checkout amount must equal the sum of its orders",
+    )
     for o in orders:
         sub = int(Decimal(o["subtotal"]) * 100)
         want_fee = (sub * permille + 999) // 1000
-        check(int(Decimal(o["fee"]) * 100) == want_fee, f"fee must be ceil(subtotal*rate): {o!r}")
-    r = buyer.req("POST", f"orders/{orders[0]['id']}/pay", json={"channel": "zpay_alipay"},
-                  expect=(409,))
+        check(
+            int(Decimal(o["fee"]) * 100) == want_fee,
+            f"fee must be ceil(subtotal*rate): {o!r}",
+        )
+    r = buyer.req(
+        "POST",
+        f"orders/{orders[0]['id']}/pay",
+        json={"channel": "zpay_alipay"},
+        expect=(409,),
+    )
     check("pay_via_checkout" in r.text, "member order must be paid via its checkout")
-    pay_with_simulator(buyer, orders[0]["id"], path=f"checkouts/{ck['checkout_no']}/pay")
+    pay_with_simulator(
+        buyer, orders[0]["id"], path=f"checkouts/{ck['checkout_no']}/pay"
+    )
     by_mode = {o["delivery_mode"]: o for o in orders}
     wait_status(buyer, by_mode["auto_card"]["id"], {"delivered"})
     wait_status(buyer, by_mode["manual"]["id"], {"paid"})
-    check(buyer.j("GET", f"checkouts/{ck['checkout_no']}")["status"] == "paid", "checkout not paid")
+    check(
+        buyer.j("GET", f"checkouts/{ck['checkout_no']}")["status"] == "paid",
+        "checkout not paid",
+    )
     step(f"checkout {ck['checkout_no']}: 2 orders paid in one payment ({ck['amount']})")
 
     # buyer cancels an unpaid order; staff closes another with a reason
     o1 = buyer.j("POST", "orders", json={"product_id": manual["id"], "qty": 1})
-    c1 = buyer.j("POST", f"orders/{o1['id']}/cancel", json={"reason": "changed my mind"})
+    c1 = buyer.j(
+        "POST", f"orders/{o1['id']}/cancel", json={"reason": "changed my mind"}
+    )
     check(c1["status"] == "cancelled", "buyer cancel must cancel a pending order")
-    buyer.req("POST", f"orders/{o1['id']}/pay", json={"channel": "zpay_alipay"}, expect=(409,))
+    buyer.req(
+        "POST", f"orders/{o1['id']}/pay", json={"channel": "zpay_alipay"}, expect=(409,)
+    )
     o2 = buyer.j("POST", "orders", json={"product_id": manual["id"], "qty": 1})
-    c2 = agent.j("POST", f"admin/orders/{o2['id']}/cancel", json={"reason": "duplicate order"})
+    c2 = agent.j(
+        "POST", f"admin/orders/{o2['id']}/cancel", json={"reason": "duplicate order"}
+    )
     check(c2["status"] == "cancelled", "staff close must cancel a pending order")
     step("buyer cancel + staff close of pending orders")
 
     # staff pushes a product card (payload built by the server)
-    m = agent.j("POST", f"admin/conversations/{conv['id']}/messages",
-                json={"client_msg_id": str(uuid.uuid4()), "type": "product_card",
-                      "product_id": manual["id"]})
+    m = agent.j(
+        "POST",
+        f"admin/conversations/{conv['id']}/messages",
+        json={
+            "client_msg_id": str(uuid.uuid4()),
+            "type": "product_card",
+            "product_id": manual["id"],
+        },
+    )
     m = m.get("message", m)
-    check(m["type"] == "product_card" and m["payload"]["product_id"] == manual["id"],
-          f"staff product card: {m!r}")
+    check(
+        m["type"] == "product_card" and m["payload"]["product_id"] == manual["id"],
+        f"staff product card: {m!r}",
+    )
     step("staff sent a product card")
 
     # global access-frequency limiter: off by default, admin can switch it on
-    admin.j("PUT", "admin/site", json={"rate_limit": {"enabled": True, "limit": 10, "window_s": 60}})
+    admin.j(
+        "PUT",
+        "admin/site",
+        json={"rate_limit": {"enabled": True, "limit": 10, "window_s": 60}},
+    )
     try:
         hit = None
-        deadline = time.monotonic() + 15  # config is cached in-process for a few seconds
+        deadline = (
+            time.monotonic() + 15
+        )  # config is cached in-process for a few seconds
         while hit is None and time.monotonic() < deadline:
             r = anon.h.get(f"{base}{API}/site")
             if r.status_code == 429:
@@ -182,11 +255,17 @@ def v4_commerce(base: str, anon: Client, buyer: Client, agent: Client, admin: Cl
             else:
                 time.sleep(0.2)
         check(hit is not None, "global limiter must answer 429 once enabled")
-        check(hit.json() == {"code": 429, "msg": "Access is too frequent. Please try again later."},
-              f"429 body must match exactly: {hit.text!r}")
+        check(
+            hit.json()
+            == {"code": 429, "msg": "Access is too frequent. Please try again later."},
+            f"429 body must match exactly: {hit.text!r}",
+        )
     finally:
-        admin.j("PUT", "admin/site", json={"rate_limit": {"enabled": False, "limit": 120,
-                                                          "window_s": 60}})
+        admin.j(
+            "PUT",
+            "admin/site",
+            json={"rate_limit": {"enabled": False, "limit": 120, "window_s": 60}},
+        )
     time.sleep(7)  # let the cached "enabled" expire and the window roll
     anon.j("GET", "site")
     step("global limiter: exact 429 body when enabled, off again")
@@ -195,85 +274,187 @@ def v4_commerce(base: str, anon: Client, buyer: Client, agent: Client, admin: Cl
 def v3_public(anon: Client, auto: dict, multi: dict, manual: dict) -> None:
     """Site settings, articles/pages, product-by-ids and recommendations (all public)."""
     site = anon.j("GET", "site")
-    check(site.get("brand") == "Kesiv", f"/site brand should be Kesiv, got {site.get('brand')!r}")
+    check(
+        site.get("brand") == "Kesiv",
+        f"/site brand should be Kesiv, got {site.get('brand')!r}",
+    )
     ann = site.get("announcement")
-    check(ann and ann.get("title") and ann.get("body_html") and ann.get("version"),
-          f"/site must carry the demo announcement, got {ann!r}")
-    check(isinstance(site.get("support_hours"), str), "/site support_hours must be a string")
-    check(isinstance(site.get("after_sales_default_hours"), int), "/site after_sales_default_hours must be int")
+    check(
+        ann and ann.get("title") and ann.get("body_html") and ann.get("version"),
+        f"/site must carry the demo announcement, got {ann!r}",
+    )
+    check(
+        isinstance(site.get("support_hours"), str),
+        "/site support_hours must be a string",
+    )
+    check(
+        isinstance(site.get("after_sales_default_hours"), int),
+        "/site after_sales_default_hours must be int",
+    )
     slugs = {pg["slug"] for pg in site["pages"]}
-    check("rules" in slugs, f"/site pages must list the fixed 'rules' page, got {sorted(slugs)}")
-    step(f"site: brand {site['brand']!r}, announcement v{ann['version']}, {len(slugs)} fixed pages")
+    check(
+        "rules" in slugs,
+        f"/site pages must list the fixed 'rules' page, got {sorted(slugs)}",
+    )
+    step(
+        f"site: brand {site['brand']!r}, announcement v{ann['version']}, {len(slugs)} fixed pages"
+    )
 
     lst = anon.j("GET", "articles", params={"page_size": 50})
-    check(lst["total"] >= 1 and lst["items"], "articles list is empty (seed articles missing)")
-    check(all(it["slug"] != "rules" for it in lst["items"]), "fixed pages must not appear in /articles")
+    check(
+        lst["total"] >= 1 and lst["items"],
+        "articles list is empty (seed articles missing)",
+    )
+    check(
+        all(it["slug"] != "rules" for it in lst["items"]),
+        "fixed pages must not appear in /articles",
+    )
     first = anon.j("GET", f"articles/{lst['items'][0]['slug']}")
-    check(first["kind"] == "article" and first["body_html"], "article body_html missing")
+    check(
+        first["kind"] == "article" and first["body_html"], "article body_html missing"
+    )
     rules = anon.j("GET", "articles/rules", headers={"Accept-Language": "zh-CN"})
-    check(rules["kind"] == "page" and rules["body_html"] and rules["title"], "rules page not served")
+    check(
+        rules["kind"] == "page" and rules["body_html"] and rules["title"],
+        "rules page not served",
+    )
     check("<script" not in rules["body_html"].lower(), "article HTML must be sanitised")
     anon.req("GET", "articles/does-not-exist", expect=404)
-    step(f"articles: {lst['total']} listed, 'rules' page served (zh-CN title {rules['title']!r})")
+    step(
+        f"articles: {lst['total']} listed, 'rules' page served (zh-CN title {rules['title']!r})"
+    )
 
     unknown = str(uuid.uuid4())
-    got = anon.j("GET", "products", params={"ids": f"{manual['id']},{unknown},{auto['id']}"})["items"]
-    check([p["id"] for p in got] == [manual["id"], auto["id"]],
-          f"products?ids= must keep the requested order and skip unknown ids, got {[p['id'] for p in got]}")
+    got = anon.j(
+        "GET", "products", params={"ids": f"{manual['id']},{unknown},{auto['id']}"}
+    )["items"]
+    check(
+        [p["id"] for p in got] == [manual["id"], auto["id"]],
+        f"products?ids= must keep the requested order and skip unknown ids, got {[p['id'] for p in got]}",
+    )
     anon.req("GET", "products", params={"ids": "not-a-uuid"}, expect=422)
-    rec = anon.j("GET", "products/recommended", params={"for": auto["id"], "limit": 4})["items"]
-    check(0 < len(rec) <= 4 and all(p["id"] != auto["id"] for p in rec),
-          f"recommended must be 1..4 items excluding the 'for' product, got {len(rec)}")
-    check(all({"id", "title", "price", "after_sales_hours"} <= set(p) for p in rec),
-          "recommended items must be ProductSummary")
+    rec = anon.j("GET", "products/recommended", params={"for": auto["id"], "limit": 4})[
+        "items"
+    ]
+    check(
+        0 < len(rec) <= 4 and all(p["id"] != auto["id"] for p in rec),
+        f"recommended must be 1..4 items excluding the 'for' product, got {len(rec)}",
+    )
+    check(
+        all({"id", "title", "price", "after_sales_hours"} <= set(p) for p in rec),
+        "recommended items must be ProductSummary",
+    )
     step(f"products?ids= ordered/filtered; recommended returned {len(rec)} items")
 
 
 def open_pending(c: Client, product: dict, qty: int = 1) -> dict:
-    o = c.j("POST", "orders", json={"product_id": product["id"], "qty": qty, "src": "smoke"})
-    check(o["status"] == "pending_payment", f"new order should be pending_payment, got {o['status']}")
-    check(re.fullmatch(r"[0-9A-Z]{10}", o.get("access_code") or ""),
-          f"POST /orders must return a 10-char access_code once, got {o.get('access_code')!r}")
-    check(c.j("GET", f"orders/{o['id']}").get("access_code") is None, "access_code must be shown only once")
+    o = c.j(
+        "POST", "orders", json={"product_id": product["id"], "qty": qty, "src": "smoke"}
+    )
+    check(
+        o["status"] == "pending_payment",
+        f"new order should be pending_payment, got {o['status']}",
+    )
+    check(
+        re.fullmatch(r"[0-9A-Z]{10}", o.get("access_code") or ""),
+        f"POST /orders must return a 10-char access_code once, got {o.get('access_code')!r}",
+    )
+    check(
+        c.j("GET", f"orders/{o['id']}").get("access_code") is None,
+        "access_code must be shown only once",
+    )
     return o
 
 
 def v3_instant_and_after_sales(
-    base: str, buyer: Client, agent: Client, admin: Client, auto: dict, multi: dict, multi_detail: dict
+    base: str,
+    buyer: Client,
+    agent: Client,
+    admin: Client,
+    auto: dict,
+    multi: dict,
+    multi_detail: dict,
 ) -> None:
     # ---- instant account (proof of work) ---------------------------------------------
     inst = Client(base)
     inst.req("POST", "auth/instant", expect=428, json={})  # no PoW -> pow_required
-    bad = inst.req("POST", "auth/instant", expect=422,
-                   json={"pow": {"challenge": "v1.instant.1.0.00.00", "nonce": "1"}})
-    check(bad.json()["error"]["code"] == "pow_invalid", "forged challenge must be pow_invalid")
+    bad = inst.req(
+        "POST",
+        "auth/instant",
+        expect=422,
+        json={"pow": {"challenge": "v1.instant.1.0.00.00", "nonce": "1"}},
+    )
+    check(
+        bad.json()["error"]["code"] == "pow_invalid",
+        "forged challenge must be pow_invalid",
+    )
     t0 = time.monotonic()
     res = inst.j("POST", "auth/instant", json={"pow": solve_pow(inst, "instant")})
     user, cred = res["user"], res["credentials"]
-    check(re.fullmatch(r"u-[a-z2-7]{7}", cred["login"]) and user["handle"] == cred["login"],
-          f"instant handle malformed: {cred.get('login')!r}")
-    check(user["is_instant"] is True and user["role"] == "buyer", "instant user must be is_instant buyer")
-    check(user["email"] == "", f"instant user must not expose a placeholder email, got {user['email']!r}")
+    check(
+        re.fullmatch(r"u-[a-z2-7]{7}", cred["login"])
+        and user["handle"] == cred["login"],
+        f"instant handle malformed: {cred.get('login')!r}",
+    )
+    check(
+        user["is_instant"] is True and user["role"] == "buyer",
+        "instant user must be is_instant buyer",
+    )
+    check(
+        user["email"] == "",
+        f"instant user must not expose a placeholder email, got {user['email']!r}",
+    )
     check(len(cred["password"]) >= 12, "instant password too short")
     me = inst.j("GET", "auth/me")
-    check(me["id"] == user["id"] and me["email"] == "", "session from /auth/instant must be active")
-    step(f"instant account {cred['login']} created via PoW in {time.monotonic() - t0:.1f}s")
+    check(
+        me["id"] == user["id"] and me["email"] == "",
+        "session from /auth/instant must be active",
+    )
+    step(
+        f"instant account {cred['login']} created via PoW in {time.monotonic() - t0:.1f}s"
+    )
 
     # login by handle; PoW required from the 4th attempt per (login, ip)
     other = Client(base)
     for i in range(3):
-        other.req("POST", "auth/login", expect=401, json={"email": cred["login"], "password": f"wrong-password-{i}"})
-    r = other.req("POST", "auth/login", expect=428, json={"email": cred["login"], "password": cred["password"]})
-    check(r.json()["error"]["code"] == "pow_required", "4th attempt must demand pow_required")
-    again = other.j("POST", "auth/login", json={"email": cred["login"].upper(), "password": cred["password"],
-                                                 "pow": solve_pow(other, "login")})
-    check(again["id"] == user["id"], "login by handle (case-insensitive) with PoW must succeed")
+        other.req(
+            "POST",
+            "auth/login",
+            expect=401,
+            json={"email": cred["login"], "password": f"wrong-password-{i}"},
+        )
+    r = other.req(
+        "POST",
+        "auth/login",
+        expect=428,
+        json={"email": cred["login"], "password": cred["password"]},
+    )
+    check(
+        r.json()["error"]["code"] == "pow_required",
+        "4th attempt must demand pow_required",
+    )
+    again = other.j(
+        "POST",
+        "auth/login",
+        json={
+            "email": cred["login"].upper(),
+            "password": cred["password"],
+            "pow": solve_pow(other, "login"),
+        },
+    )
+    check(
+        again["id"] == user["id"],
+        "login by handle (case-insensitive) with PoW must succeed",
+    )
     step("login by handle: 428 pow_required after 3 failures, then OK with PoW")
 
     # ---- profile / credentials / delete --------------------------------------------------
     patched = inst.j("PATCH", "me", json={"display_name": "Smoke Tester"})
-    check(patched["display_name"] == "Smoke Tester" and inst.j("GET", "auth/me")["display_name"] == "Smoke Tester",
-          "PATCH /me must change display_name")
+    check(
+        patched["display_name"] == "Smoke Tester"
+        and inst.j("GET", "auth/me")["display_name"] == "Smoke Tester",
+        "PATCH /me must change display_name",
+    )
     inst.req("POST", "me/credentials", expect=422, json={"new_password": "short"})
 
     # ---- multi-field order: access code -> pay -> deliver -> reveal ----------------------
@@ -283,63 +464,177 @@ def v3_instant_and_after_sales(
     mf_done = wait_status(inst, mf["id"], {"delivered"})
     info = mf_done["delivery_info"]
     labels = multi_detail["delivery_format"].split(multi_detail["delivery_separator"])
-    check(info and info["format_labels"] == labels and info["separator"] == multi_detail["delivery_separator"],
-          f"order delivery_info should carry the product's labels {labels}, got {info!r}")
-    check(mf_done["after_sales_until"] and mf_done["auto_confirm_at"],
-          "delivered order must have after_sales_until and auto_confirm_at")
+    check(
+        info
+        and info["format_labels"] == labels
+        and info["separator"] == multi_detail["delivery_separator"],
+        f"order delivery_info should carry the product's labels {labels}, got {info!r}",
+    )
+    check(
+        mf_done["after_sales_until"] and mf_done["auto_confirm_at"],
+        "delivered order must have after_sales_until and auto_confirm_at",
+    )
     rv = inst.req("POST", f"orders/{mf['id']}/reveal")
     check("no-store" in rv.headers.get("Cache-Control", ""), "reveal must be no-store")
     body = rv.json()
     cards = body["cards"]
-    check(len(cards) == 1 and body["secrets"] == [c["code"] for c in cards], f"reveal shape wrong: {list(body)}")
+    check(
+        len(cards) == 1 and body["secrets"] == [c["code"] for c in cards],
+        f"reveal shape wrong: {list(body)}",
+    )
     parts = cards[0]["code"].split(info["separator"])
-    check(len(parts) == len(labels), f"multi-field card should split into {len(labels)} fields, got {len(parts)}")
-    step(f"multi-field order {mf['order_no']}: access_code issued, delivered, revealed {len(labels)} fields ({', '.join(labels)})")
+    check(
+        len(parts) == len(labels),
+        f"multi-field card should split into {len(labels)} fields, got {len(parts)}",
+    )
+    step(
+        f"multi-field order {mf['order_no']}: access_code issued, delivered, revealed {len(labels)} fields ({', '.join(labels)})"
+    )
 
     # ---- lookup by order no + access code (no session) -----------------------------------
     anon = Client(base)
-    anon.req("POST", "lookup", expect=428, json={"order_no": mf["order_no"], "access_code": code1})
+    anon.req(
+        "POST",
+        "lookup",
+        expect=428,
+        json={"order_no": mf["order_no"], "access_code": code1},
+    )
     spaced = f"{code1[:5].lower()}-{code1[5:].lower()}"  # lower case + hyphen tolerated
-    r = anon.req("POST", "lookup", json={"order_no": mf["order_no"].lower(), "access_code": spaced,
-                                         "pow": solve_pow(anon, "lookup")})
+    r = anon.req(
+        "POST",
+        "lookup",
+        json={
+            "order_no": mf["order_no"].lower(),
+            "access_code": spaced,
+            "pow": solve_pow(anon, "lookup"),
+        },
+    )
     lk = r.json()
-    check(not r.headers.get("set-cookie") and not anon.h.cookies, "/lookup must never set a session cookie")
+    check(
+        not r.headers.get("set-cookie") and not anon.h.cookies,
+        "/lookup must never set a session cookie",
+    )
     check("no-store" in r.headers.get("Cache-Control", ""), "/lookup must be no-store")
-    check(lk["order_no"] == mf["order_no"] and lk["status"] == "delivered" and lk["can_reveal"],
-          f"/lookup returned the wrong order view: {lk.get('order_no')} {lk.get('status')}")
-    check(lk["delivery_info"]["format_labels"] == labels, "/lookup must include delivery_info")
-    r = anon.req("POST", "lookup/reveal", json={"order_no": mf["order_no"], "access_code": code1})
-    check([c["code"] for c in r.json()["cards"]] == [cards[0]["code"]], "/lookup/reveal must return the same card")
+    check(
+        lk["order_no"] == mf["order_no"]
+        and lk["status"] == "delivered"
+        and lk["can_reveal"],
+        f"/lookup returned the wrong order view: {lk.get('order_no')} {lk.get('status')}",
+    )
+    check(
+        lk["delivery_info"]["format_labels"] == labels,
+        "/lookup must include delivery_info",
+    )
+    r = anon.req(
+        "POST", "lookup/reveal", json={"order_no": mf["order_no"], "access_code": code1}
+    )
+    check(
+        [c["code"] for c in r.json()["cards"]] == [cards[0]["code"]],
+        "/lookup/reveal must return the same card",
+    )
     check(not r.headers.get("set-cookie"), "/lookup/reveal must not set a cookie")
     wrong = Client(base)
-    r = wrong.req("POST", "lookup", expect=404, json={"order_no": mf["order_no"], "access_code": "AAAAAAAAAA",
-                                                      "pow": solve_pow(wrong, "lookup")})
-    check(not r.headers.get("set-cookie") and not wrong.h.cookies, "failed /lookup must not set a cookie")
-    check(r.json()["error"]["code"] == "not_found", "wrong access code must be a generic not_found")
-    wrong.req("POST", "lookup/reveal", expect=404, json={"order_no": mf["order_no"], "access_code": "AAAAAAAAAA"})
-    step("lookup: right code works (case/hyphen tolerant, no cookie, reveal ok); wrong code 404 without cookie")
+    r = wrong.req(
+        "POST",
+        "lookup",
+        expect=404,
+        json={
+            "order_no": mf["order_no"],
+            "access_code": "AAAAAAAAAA",
+            "pow": solve_pow(wrong, "lookup"),
+        },
+    )
+    check(
+        not r.headers.get("set-cookie") and not wrong.h.cookies,
+        "failed /lookup must not set a cookie",
+    )
+    check(
+        r.json()["error"]["code"] == "not_found",
+        "wrong access code must be a generic not_found",
+    )
+    wrong.req(
+        "POST",
+        "lookup/reveal",
+        expect=404,
+        json={"order_no": mf["order_no"], "access_code": "AAAAAAAAAA"},
+    )
+    step(
+        "lookup: right code works (case/hyphen tolerant, no cookie, reveal ok); wrong code 404 without cookie"
+    )
 
     # ---- after-sales: replace on auto_card ----------------------------------------------------
-    buyer.req("POST", f"orders/{mf['id']}/after-sales", expect=(403, 404),
-              json={"reason": "other", "description": "not mine", "attachment_ids": []})  # IDOR
-    tk = inst.j("POST", f"orders/{mf['id']}/after-sales",
-                json={"reason": "invalid_code", "description": "Account does not log in", "attachment_ids": []})
-    check(tk["status"] == "open" and tk["order_id"] == mf["id"], f"new ticket should be open, got {tk['status']}")
-    r = inst.req("POST", f"orders/{mf['id']}/after-sales", expect=409,
-                 json={"reason": "other", "description": "again", "attachment_ids": []})
-    check(r.json()["error"]["code"] == "after_sales_open", "second open ticket must be after_sales_open")
-    check(inst.j("GET", f"orders/{mf['id']}")["after_sales"]["id"] == tk["id"], "order.after_sales must be the latest ticket")
+    buyer.req(
+        "POST",
+        f"orders/{mf['id']}/after-sales",
+        expect=(403, 404),
+        json={"reason": "other", "description": "not mine", "attachment_ids": []},
+    )  # IDOR
+    tk = inst.j(
+        "POST",
+        f"orders/{mf['id']}/after-sales",
+        json={
+            "reason": "invalid_code",
+            "description": "Account does not log in",
+            "attachment_ids": [],
+        },
+    )
+    check(
+        tk["status"] == "open" and tk["order_id"] == mf["id"],
+        f"new ticket should be open, got {tk['status']}",
+    )
+    r = inst.req(
+        "POST",
+        f"orders/{mf['id']}/after-sales",
+        expect=409,
+        json={"reason": "other", "description": "again", "attachment_ids": []},
+    )
+    check(
+        r.json()["error"]["code"] == "after_sales_open",
+        "second open ticket must be after_sales_open",
+    )
+    check(
+        inst.j("GET", f"orders/{mf['id']}")["after_sales"]["id"] == tk["id"],
+        "order.after_sales must be the latest ticket",
+    )
     staff_tk = agent.j("GET", f"admin/after-sales/{tk['id']}")
-    check(staff_tk["order"]["order_no"] == mf["order_no"] and staff_tk["order"]["delivery_mode"] == "auto_card"
-          and staff_tk["buyer"]["id"] == user["id"] and "resolved_by" in staff_tk,
-          "staff ticket must include order, buyer and resolved_by")
-    check(any(t["id"] == tk["id"] for t in agent.j("GET", "admin/after-sales", params={"status": "open"})["items"]),
-          "staff after-sales list must show the open ticket")
-    agent.req("POST", f"admin/after-sales/{tk['id']}/action", expect=403, json={"action": "refund"})
-    agent.req("POST", f"admin/after-sales/{tk['id']}/action", expect=(400, 422), json={"action": "reject"})  # note required
+    check(
+        staff_tk["order"]["order_no"] == mf["order_no"]
+        and staff_tk["order"]["delivery_mode"] == "auto_card"
+        and staff_tk["buyer"]["id"] == user["id"]
+        and "resolved_by" in staff_tk,
+        "staff ticket must include order, buyer and resolved_by",
+    )
+    check(
+        any(
+            t["id"] == tk["id"]
+            for t in agent.j("GET", "admin/after-sales", params={"status": "open"})[
+                "items"
+            ]
+        ),
+        "staff after-sales list must show the open ticket",
+    )
+    agent.req(
+        "POST",
+        f"admin/after-sales/{tk['id']}/action",
+        expect=403,
+        json={"action": "refund"},
+    )
+    agent.req(
+        "POST",
+        f"admin/after-sales/{tk['id']}/action",
+        expect=(400, 422),
+        json={"action": "reject"},
+    )  # note required
     old_code = cards[0]["code"]
-    queued = agent.j("POST", f"admin/after-sales/{tk['id']}/action", json={"action": "replace", "note": "replacing"})
-    check(queued["status"] in ("processing", "replaced"), f"replace should queue, got {queued['status']}")
+    queued = agent.j(
+        "POST",
+        f"admin/after-sales/{tk['id']}/action",
+        json={"action": "replace", "note": "replacing"},
+    )
+    check(
+        queued["status"] in ("processing", "replaced"),
+        f"replace should queue, got {queued['status']}",
+    )
     deadline = time.monotonic() + 40
     while time.monotonic() < deadline:
         st = agent.j("GET", f"admin/after-sales/{tk['id']}")
@@ -347,38 +642,92 @@ def v3_instant_and_after_sales(
             break
         time.sleep(0.5)
     else:
-        fail(f"after-sales replace not completed by the delivery worker (ticket stuck in {st['status']})")
+        fail(
+            f"after-sales replace not completed by the delivery worker (ticket stuck in {st['status']})"
+        )
     rv2 = inst.j("POST", f"orders/{mf['id']}/reveal")
-    check(len(rv2["cards"]) == 1 and rv2["cards"][0]["id"] != cards[0]["id"] and rv2["cards"][0]["code"] != old_code,
-          "after replace the order must reveal exactly one NEW card, the old one must be gone")
-    check(len(rv2["cards"][0]["code"].split(info["separator"])) == len(labels), "replacement card has wrong format")
-    found = admin.j("POST", "admin/cards/find", json={"lines": [old_code], "by": "content"})
-    check(found["missing"] == 0 and found["items"][0]["status"] == "void"
-          and found["items"][0]["void_reason"] == "defective",
-          f"replaced card must be void/defective, got {found['items']}")
-    check(inst.j("GET", f"orders/{mf['id']}")["after_sales"]["status"] == "replaced", "buyer view must show ticket replaced")
-    step(f"after-sales replace: ticket {tk['id'][:8]} -> replaced, old card void(defective), new card delivered")
+    check(
+        len(rv2["cards"]) == 1
+        and rv2["cards"][0]["id"] != cards[0]["id"]
+        and rv2["cards"][0]["code"] != old_code,
+        "after replace the order must reveal exactly one NEW card, the old one must be gone",
+    )
+    check(
+        len(rv2["cards"][0]["code"].split(info["separator"])) == len(labels),
+        "replacement card has wrong format",
+    )
+    found = admin.j(
+        "POST", "admin/cards/find", json={"lines": [old_code], "by": "content"}
+    )
+    check(
+        found["missing"] == 0
+        and found["items"][0]["status"] == "void"
+        and found["items"][0]["void_reason"] == "defective",
+        f"replaced card must be void/defective, got {found['items']}",
+    )
+    check(
+        inst.j("GET", f"orders/{mf['id']}")["after_sales"]["status"] == "replaced",
+        "buyer view must show ticket replaced",
+    )
+    step(
+        f"after-sales replace: ticket {tk['id'][:8]} -> replaced, old card void(defective), new card delivered"
+    )
 
     # ---- after-sales: refund (admin only) ---------------------------------------------------------
     ro = open_pending(inst, auto)
     pay_with_simulator(inst, ro["id"])
     wait_status(inst, ro["id"], {"delivered"})
-    rt = inst.j("POST", f"orders/{ro['id']}/after-sales",
-                json={"reason": "wrong_item", "description": "Wrong item delivered", "attachment_ids": []})
-    agent.req("POST", f"admin/after-sales/{rt['id']}/action", expect=403, json={"action": "refund"})
-    done = admin.j("POST", f"admin/after-sales/{rt['id']}/action", json={"action": "refund", "note": "refunded", "reference": "SMOKE-REFUND-1"})
-    check(done["status"] == "refunded" and done["resolved_by"], f"refund must close the ticket, got {done['status']}")
-    check(inst.j("GET", f"orders/{ro['id']}")["status"] == "refunded", "refund must set the order refunded")
-    admin.req("POST", f"admin/after-sales/{rt['id']}/action", expect=409, json={"action": "resolve"})
+    rt = inst.j(
+        "POST",
+        f"orders/{ro['id']}/after-sales",
+        json={
+            "reason": "wrong_item",
+            "description": "Wrong item delivered",
+            "attachment_ids": [],
+        },
+    )
+    agent.req(
+        "POST",
+        f"admin/after-sales/{rt['id']}/action",
+        expect=403,
+        json={"action": "refund"},
+    )
+    done = admin.j(
+        "POST",
+        f"admin/after-sales/{rt['id']}/action",
+        json={"action": "refund", "note": "refunded", "reference": "SMOKE-REFUND-1"},
+    )
+    check(
+        done["status"] == "refunded" and done["resolved_by"],
+        f"refund must close the ticket, got {done['status']}",
+    )
+    check(
+        inst.j("GET", f"orders/{ro['id']}")["status"] == "refunded",
+        "refund must set the order refunded",
+    )
+    admin.req(
+        "POST",
+        f"admin/after-sales/{rt['id']}/action",
+        expect=409,
+        json={"action": "resolve"},
+    )
     step(f"after-sales refund: agent 403, admin OK -> order {ro['order_no']} refunded")
 
     # ---- account deletion refused while an order is pending -------------------------------------
     pend = open_pending(inst, auto)
     r = inst.req("POST", "me/delete", expect=409, json={"confirm": "DELETE"})
-    check(r.json()["error"]["code"] == "has_open_orders", "/me/delete must be 409 has_open_orders")
-    check(inst.req("GET", "auth/me").status_code == 200, "refused delete must keep the session")
+    check(
+        r.json()["error"]["code"] == "has_open_orders",
+        "/me/delete must be 409 has_open_orders",
+    )
+    check(
+        inst.req("GET", "auth/me").status_code == 200,
+        "refused delete must keep the session",
+    )
     inst.req("POST", "me/delete", expect=(400, 422), json={"confirm": "nope"})
-    step(f"/me PATCH ok; /me/delete refused (409 has_open_orders) while order {pend['order_no']} is pending")
+    step(
+        f"/me PATCH ok; /me/delete refused (409 has_open_orders) while order {pend['order_no']} is pending"
+    )
 
 
 def v3_cards(agent: Client, admin: Client, multi: dict) -> None:
@@ -395,93 +744,223 @@ def v3_cards(agent: Client, admin: Client, multi: dict) -> None:
         (f"admin/products/{pid}/cards/import", {"lines": "x"}),
     ):
         agent.req("POST", path, expect=403, json=payload)
-    imp = admin.j("POST", f"admin/products/{pid}/cards/import", json={"lines": line(1), "note": "smoke batch"})
-    check(imp["imported"] == 1 and imp["batch_id"], f"import should create one card + batch, got {imp}")
+    imp = admin.j(
+        "POST",
+        f"admin/products/{pid}/cards/import",
+        json={"lines": line(1), "note": "smoke batch"},
+    )
+    check(
+        imp["imported"] == 1 and imp["batch_id"],
+        f"import should create one card + batch, got {imp}",
+    )
     batches = admin.j("GET", f"admin/products/{pid}/batches")["items"]
     b = next((x for x in batches if x["id"] == imp["batch_id"]), None)
-    check(b and b["count"] == 1 and b["available"] == 1 and "expiring_7d" in b and "reserved" in b,
-          f"batches must list the new batch with counters, got {b}")
-    listed = admin.j("GET", f"admin/products/{pid}/cards", params={"batch_id": imp["batch_id"]})["items"]
-    check(len(listed) == 1 and "order_id" in listed[0] and "smoke." not in listed[0]["masked"],
-          "card list must carry order_id and only masked values")
+    check(
+        b
+        and b["count"] == 1
+        and b["available"] == 1
+        and "expiring_7d" in b
+        and "reserved" in b,
+        f"batches must list the new batch with counters, got {b}",
+    )
+    listed = admin.j(
+        "GET", f"admin/products/{pid}/cards", params={"batch_id": imp["batch_id"]}
+    )["items"]
+    check(
+        len(listed) == 1
+        and "order_id" in listed[0]
+        and "smoke." not in listed[0]["masked"],
+        "card list must carry order_id and only masked values",
+    )
 
-    f = admin.j("POST", "admin/cards/find", json={"lines": [line(1), "no-such-card-" + tag], "by": "content"})
-    check(len(f["items"]) == 1 and f["missing"] == 1, f"find: want 1 hit + 1 missing, got {len(f['items'])}/{f['missing']}")
+    f = admin.j(
+        "POST",
+        "admin/cards/find",
+        json={"lines": [line(1), "no-such-card-" + tag], "by": "content"},
+    )
+    check(
+        len(f["items"]) == 1 and f["missing"] == 1,
+        f"find: want 1 hit + 1 missing, got {len(f['items'])}/{f['missing']}",
+    )
     it = f["items"][0]
-    check(it["line"] == 1 and it["product_id"] == pid and it["product_title_i18n"].get("en")
-          and it["status"] == "available" and "smoke." not in it["masked"],
-          f"find item shape wrong: {it}")
-    ff = admin.j("POST", "admin/cards/find", json={"lines": [f"SMOKE.{tag}.1@gmail.com"], "by": "first_field"})
-    check(len(ff["items"]) == 1 and ff["items"][0]["id"] == it["id"], "find by first field (case-insensitive) failed")
+    check(
+        it["line"] == 1
+        and it["product_id"] == pid
+        and it["product_title_i18n"].get("en")
+        and it["status"] == "available"
+        and "smoke." not in it["masked"],
+        f"find item shape wrong: {it}",
+    )
+    ff = admin.j(
+        "POST",
+        "admin/cards/find",
+        json={"lines": [f"SMOKE.{tag}.1@gmail.com"], "by": "first_field"},
+    )
+    check(
+        len(ff["items"]) == 1 and ff["items"][0]["id"] == it["id"],
+        "find by first field (case-insensitive) failed",
+    )
     step("card find: by content (+missing count) and by first field; masked only")
 
     v = admin.j("POST", "admin/cards/void", json={"ids": [it["id"]], "reason": "smoke"})
     check(v["voided"] == 1, f"void should affect 1 card, got {v}")
-    check(admin.j("POST", "admin/cards/void", json={"ids": [it["id"]], "reason": "smoke"})["voided"] == 0,
-          "voiding an already void card must be a no-op")
-    after = admin.j("POST", "admin/cards/find", json={"lines": [line(1)], "by": "content"})["items"][0]
-    check(after["status"] == "void" and after["void_reason"] == "smoke", f"voided card state wrong: {after}")
+    check(
+        admin.j(
+            "POST", "admin/cards/void", json={"ids": [it["id"]], "reason": "smoke"}
+        )["voided"]
+        == 0,
+        "voiding an already void card must be a no-op",
+    )
+    after = admin.j(
+        "POST", "admin/cards/find", json={"lines": [line(1)], "by": "content"}
+    )["items"][0]
+    check(
+        after["status"] == "void" and after["void_reason"] == "smoke",
+        f"voided card state wrong: {after}",
+    )
     step("card void: available -> void (reason kept), idempotent")
 
-    imp2 = admin.j("POST", f"admin/products/{pid}/cards/import", json={"lines": line(2)})
-    old = admin.j("POST", "admin/cards/find", json={"lines": [line(2)], "by": "content"})["items"][0]
+    imp2 = admin.j(
+        "POST", f"admin/products/{pid}/cards/import", json={"lines": line(2)}
+    )
+    old = admin.j(
+        "POST", "admin/cards/find", json={"lines": [line(2)], "by": "content"}
+    )["items"][0]
     new = admin.j("POST", f"admin/cards/{old['id']}/replace", json={"code": line(3)})
-    check(new["id"] != old["id"] and new["status"] == "available" and new["batch_id"] == imp2["batch_id"],
-          f"replace must create a new available card in the same batch, got {new}")
-    admin.req("POST", f"admin/cards/{old['id']}/replace", expect=409, json={"code": line(4)})  # old is void now
-    chk = admin.j("POST", "admin/cards/find", json={"lines": [line(2), line(3)], "by": "content"})
+    check(
+        new["id"] != old["id"]
+        and new["status"] == "available"
+        and new["batch_id"] == imp2["batch_id"],
+        f"replace must create a new available card in the same batch, got {new}",
+    )
+    admin.req(
+        "POST", f"admin/cards/{old['id']}/replace", expect=409, json={"code": line(4)}
+    )  # old is void now
+    chk = admin.j(
+        "POST", "admin/cards/find", json={"lines": [line(2), line(3)], "by": "content"}
+    )
     st = {i["line"]: i for i in chk["items"]}
-    check(st[1]["status"] == "void" and st[1]["void_reason"] == "replaced" and st[2]["status"] == "available",
-          f"replace-content states wrong: {chk['items']}")
-    admin.j("POST", "admin/cards/void", json={"ids": [new["id"]], "reason": "smoke-cleanup"})
-    step("card replace-content: old void(replaced), new available in the same batch, second replace 409")
+    check(
+        st[1]["status"] == "void"
+        and st[1]["void_reason"] == "replaced"
+        and st[2]["status"] == "available",
+        f"replace-content states wrong: {chk['items']}",
+    )
+    admin.j(
+        "POST", "admin/cards/void", json={"ids": [new["id"]], "reason": "smoke-cleanup"}
+    )
+    step(
+        "card replace-content: old void(replaced), new available in the same batch, second replace 409"
+    )
 
 
 def v3_file_message(buyer: Client, agent: Client, conv: dict) -> None:
     """Long text is sent as a text/plain file attachment plus a `file` message."""
     text = "".join(f"line {i}: 长文本 long text payload\n" for i in range(300))
-    up = buyer.j("POST", "uploads", data={"kind": "file"},
-                 files={"file": ("../../etc/passwd.html", text.encode(), "text/html")})
-    check(up["kind"] == "file" and up["mime"].startswith("text/plain") and up["name"].endswith(".txt")
-          and "/" not in up["name"], f"file upload must be a sanitised .txt text/plain, got {up}")
-    buyer.req("POST", "uploads", expect=(400, 413, 415, 422), data={"kind": "file"},
-              files={"file": ("bin.txt", b"\x00\x01\x02binary", "text/plain")})
-    msg = buyer.j("POST", f"conversations/{conv['id']}/messages",
-                  json={"client_msg_id": str(uuid.uuid4()), "type": "file", "attachment_id": up["id"]})
+    up = buyer.j(
+        "POST",
+        "uploads",
+        data={"kind": "file"},
+        files={"file": ("../../etc/passwd.html", text.encode(), "text/html")},
+    )
+    check(
+        up["kind"] == "file"
+        and up["mime"].startswith("text/plain")
+        and up["name"].endswith(".txt")
+        and "/" not in up["name"],
+        f"file upload must be a sanitised .txt text/plain, got {up}",
+    )
+    buyer.req(
+        "POST",
+        "uploads",
+        expect=(400, 413, 415, 422),
+        data={"kind": "file"},
+        files={"file": ("bin.txt", b"\x00\x01\x02binary", "text/plain")},
+    )
+    msg = buyer.j(
+        "POST",
+        f"conversations/{conv['id']}/messages",
+        json={
+            "client_msg_id": str(uuid.uuid4()),
+            "type": "file",
+            "attachment_id": up["id"],
+        },
+    )
     pl = msg["payload"]
-    check(msg["type"] == "file" and msg["text"] is None and pl["name"] == up["name"]
-          and pl["bytes"] == up["bytes"] > 0 and 0 < len(pl["preview"]) <= 160,
-          f"file message payload wrong: {msg['type']} {pl}")
-    seen = agent.j("GET", f"admin/conversations/{conv['id']}/messages", params={"limit": 50})
-    check(any(m["id"] == msg["id"] and m["type"] == "file" for m in seen), "agent must see the file message")
+    check(
+        msg["type"] == "file"
+        and msg["text"] is None
+        and pl["name"] == up["name"]
+        and pl["bytes"] == up["bytes"] > 0
+        and 0 < len(pl["preview"]) <= 160,
+        f"file message payload wrong: {msg['type']} {pl}",
+    )
+    seen = agent.j(
+        "GET", f"admin/conversations/{conv['id']}/messages", params={"limit": 50}
+    )
+    check(
+        any(m["id"] == msg["id"] and m["type"] == "file" for m in seen),
+        "agent must see the file message",
+    )
     dl = buyer.req("GET", up["url"])
-    check(dl.text.startswith("line 0:") and "attachment" in dl.headers.get("Content-Disposition", "")
-          and dl.headers.get("X-Content-Type-Options") == "nosniff", "file download headers/body wrong")
-    step(f"long text sent as file message ({pl['bytes']} bytes, preview {len(pl['preview'])} chars), safe download")
+    check(
+        dl.text.startswith("line 0:")
+        and "attachment" in dl.headers.get("Content-Disposition", "")
+        and dl.headers.get("X-Content-Type-Options") == "nosniff",
+        "file download headers/body wrong",
+    )
+    step(
+        f"long text sent as file message ({pl['bytes']} bytes, preview {len(pl['preview'])} chars), safe download"
+    )
 
 
 def v5_commerce(base: str, anon: Client, admin: Client, manual: dict) -> None:
     """review-v5: promo code (quote -> checkout -> paid), reseller sign-up -> storefront markup.
     Needs the v5 settings API (features/resellers sections of PUT /admin/site)."""
-    admin.j("PUT", "admin/site", json={"features": {"resellers": True, "promo_codes": True},
-                                        "resellers": {"signup_fee_minor": 500}})
+    admin.j(
+        "PUT",
+        "admin/site",
+        json={
+            "features": {"resellers": True, "promo_codes": True},
+            "resellers": {"signup_fee_minor": 500},
+        },
+    )
     # ---- promo: admin creates, quote shows the discount, checkout paid via the simulator
     code = admin.j("GET", "admin/promo-codes/generate")["code"]
-    admin.j("POST", "admin/promo-codes", json={"code": code, "kind": "percent", "value": 100,
-                                               "per_user_limit": 5})
+    admin.j(
+        "POST",
+        "admin/promo-codes",
+        json={"code": code, "kind": "percent", "value": 100, "per_user_limit": 5},
+    )
     b = Client(base)
-    b.j("POST", "auth/register", json={"email": f"v5-{uuid.uuid4().hex[:8]}@demo.local",
-                                      "password": "correct-horse-battery", "display_name": "V5",
-                                      "locale": "en", "pow": solve_pow(b, "register")})
+    b.j(
+        "POST",
+        "auth/register",
+        json={
+            "email": f"v5-{uuid.uuid4().hex[:8]}@demo.local",
+            "password": "correct-horse-battery",
+            "display_name": "V5",
+            "locale": "en",
+            "pow": solve_pow(b, "register"),
+        },
+    )
     items = [{"product_id": manual["id"], "qty": 2}]
     q = b.j("POST", "cart/quote", json={"items": items, "promo_code": code.lower()})
-    check(q["discount_minor"] > 0 and q["promo"]["code"] == code, f"quote has no discount: {q}")
+    check(
+        q["discount_minor"] > 0 and q["promo"]["code"] == code,
+        f"quote has no discount: {q}",
+    )
     ck = b.j("POST", "checkout", json={"items": items, "promo_code": code})
-    check(ck["checkout"]["discount_minor"] == q["discount_minor"], "checkout discount != quote")
+    check(
+        ck["checkout"]["discount_minor"] == q["discount_minor"],
+        "checkout discount != quote",
+    )
     check(ck["checkout"]["amount"] == q["total"], "checkout amount != quote total")
     pay_with_simulator(b, "", path=f"checkouts/{ck['checkout']['checkout_no']}/pay")
-    check(b.j("GET", f"checkouts/{ck['checkout']['checkout_no']}")["status"] == "paid",
-          "promo checkout not paid")
+    check(
+        b.j("GET", f"checkouts/{ck['checkout']['checkout_no']}")["status"] == "paid",
+        "promo checkout not paid",
+    )
     v = b.j("POST", "promo/validate", json={"code": code, "items": items})
     check(v["discount_minor"] > 0, "validate must still work (per-user limit 5)")
     step("v5 promo: quote shows discount, checkout paid at the discounted amount")
@@ -494,28 +973,50 @@ def v5_commerce(base: str, anon: Client, admin: Client, manual: dict) -> None:
     me = b.j("GET", "reseller/me")
     check(me["status"] == "active", f"reseller not active after sign-up payment: {me}")
     c = Client(base)
-    c.j("POST", "auth/register", json={"email": f"v5c-{uuid.uuid4().hex[:8]}@demo.local",
-                                      "password": "correct-horse-battery", "display_name": "C",
-                                      "locale": "en", "pow": solve_pow(c, "register")})
+    c.j(
+        "POST",
+        "auth/register",
+        json={
+            "email": f"v5c-{uuid.uuid4().hex[:8]}@demo.local",
+            "password": "correct-horse-battery",
+            "display_name": "C",
+            "locale": "en",
+            "pow": solve_pow(c, "register"),
+        },
+    )
     c.h.headers["X-Storefront"] = slug
     site = c.j("GET", "site")
-    check(site["storefront"] and site["storefront"]["slug"] == slug, "storefront not resolved")
+    check(
+        site["storefront"] and site["storefront"]["slug"] == slug,
+        "storefront not resolved",
+    )
     o = c.j("POST", "orders", json={"product_id": manual["id"], "qty": 1})
-    check(o["reseller"] and o["subtotal"] != manual["price"], f"no markup on storefront: {o}")
+    check(
+        o["reseller"] and o["subtotal"] != manual["price"],
+        f"no markup on storefront: {o}",
+    )
     ro = b.j("GET", "reseller/orders")
-    check(ro["total"] == 1 and ro["items"][0]["markup_minor"] > 0, f"reseller orders: {ro}")
+    check(
+        ro["total"] == 1 and ro["items"][0]["markup_minor"] > 0,
+        f"reseller orders: {ro}",
+    )
     step("v5 reseller: sign-up paid -> active -> storefront order has markup")
 
 
-def webhook_post(base: str, body: dict, secret: str, *, sig: str | None = None,
-                 tamper: bool = False) -> httpx.Response:
+def webhook_post(
+    base: str, body: dict, secret: str, *, sig: str | None = None, tamper: bool = False
+) -> httpx.Response:
     """POST a supplier event to the real webhook endpoint (no session, no CSRF header)."""
     raw = json.dumps(body).encode()
     signature = sig or hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
     if tamper:
         raw += b" "
-    return httpx.post(f"{base}{API}/webhooks/zovocard", content=raw, timeout=15,
-                      headers={"X-Signature": signature, "Content-Type": "application/json"})
+    return httpx.post(
+        f"{base}{API}/webhooks/zovocard",
+        content=raw,
+        timeout=15,
+        headers={"X-Signature": signature, "Content-Type": "application/json"},
+    )
 
 
 def wait_for(fn, what: str, timeout: float = 60):
@@ -532,25 +1033,74 @@ def v12_redeem(base: str, host: str, code: str) -> None:
     """review-v12 §8: the CDK redemption site through Caddy on its own host (Host header): static
     page + strict CSP, then preview -> preflight -> redeem -> result for a code issued by the
     normal purchase path, then forged / unknown codes, wrong host and the per-IP rate limit."""
-    rc = httpx.Client(base_url=base, headers={"Host": host}, timeout=30, follow_redirects=False)
+    rc = httpx.Client(
+        base_url=base, headers={"Host": host}, timeout=30, follow_redirects=False
+    )
     page = rc.get("/")
-    check(page.status_code == 200 and "Redeem" in page.text, "redeem site not served on its host")
+    check(
+        page.status_code == 200 and "Redeem" in page.text,
+        "redeem site not served on its host",
+    )
     csp = page.headers.get("Content-Security-Policy", "")
-    check("default-src 'none'" in csp and "script-src 'self'" in csp, "redeem CSP not strict")
+    check(
+        "default-src 'none'" in csp and "script-src 'self'" in csp,
+        "redeem CSP not strict",
+    )
     check("set-cookie" not in page.headers, "the redeem site must not set cookies")
+    check(
+        'src="/app.js"' in page.text and "<script>" not in page.text,
+        "redeem page has no inline script",
+    )
+    check(
+        "style=" not in page.text,
+        "redeem page has no inline style (CSP style-src 'self')",
+    )
+    for asset, kind in (("/app.js", "javascript"), ("/app.css", "css")):
+        a = rc.get(asset)
+        check(
+            a.status_code == 200 and kind in a.headers.get("content-type", ""),
+            f"redeem asset {asset} not served ({a.status_code})",
+        )
+    js = rc.get("/app.js").text
+    check(
+        "localStorage" not in js
+        and "sessionStorage" not in js
+        and "innerHTML" not in js,
+        "redeem js",
+    )
     check("MOCKPLUS" not in page.text, "no code on the static page")
     # the shop's API and the procurement internal API are not routed on this host
-    for path in ("/api/v1/auth/login", "/internal/probe", "/healthz", "/redeem/", "/redeem/foo"):
+    for path in (
+        "/api/v1/auth/login",
+        "/internal/probe",
+        "/healthz",
+        "/redeem/",
+        "/redeem/foo",
+    ):
         r = rc.get(path)
-        check("application/json" not in r.headers.get("content-type", "") or r.status_code == 404,
-              f"{path} must not reach a backend on the redeem host")
-    check(rc.post("/internal/probe", json={}).status_code in (404, 405), "internal API reachable")
+        check(
+            "application/json" not in r.headers.get("content-type", "")
+            or r.status_code == 404,
+            f"{path} must not reach a backend on the redeem host",
+        )
+    check(
+        rc.post("/internal/probe", json={}).status_code in (404, 405),
+        "internal API reachable",
+    )
 
     def call(step_name: str, body: dict, expect: int = 200) -> dict:
         r = rc.post(f"/redeem/{step_name}", json=body)
-        check(r.status_code == expect, f"redeem {step_name} -> {r.status_code}: {r.text[:200]}")
-        check("no-store" in r.headers.get("Cache-Control", ""), f"{step_name} must be no-store")
-        check("access-control-allow-origin" not in r.headers, "CORS must not be enabled")
+        check(
+            r.status_code == expect,
+            f"redeem {step_name} -> {r.status_code}: {r.text[:200]}",
+        )
+        check(
+            "no-store" in r.headers.get("Cache-Control", ""),
+            f"{step_name} must be no-store",
+        )
+        check(
+            "access-control-allow-origin" not in r.headers, "CORS must not be enabled"
+        )
         return r.json()
 
     cred = {"mode": "session", "session": "e2e-session-" + uuid.uuid4().hex * 3}
@@ -558,39 +1108,84 @@ def v12_redeem(base: str, host: str, code: str) -> None:
     token = prev["redemption_token"]
     check(code not in json.dumps(prev), "the code must not be echoed back")
     pre = call("preflight", {"redemption_token": token, "credential": cred})["data"]
-    check(pre["preflight_token"] and pre["payment_country"], "preflight must return token + country")
-    check(cred["session"] not in json.dumps(pre), "the credential must not be echoed back")
-    red = call("redeem", {"redemption_token": token, "preflight_token": pre["preflight_token"],
-                          "client_request_id": "e2e-" + uuid.uuid4().hex[:12]})["data"]
-    check(red["status"] == "succeeded" and red["order_id"].startswith("SBXORD-"), f"redeem: {red}")
+    check(
+        pre["preflight_token"] and pre["payment_country"],
+        "preflight must return token + country",
+    )
+    check(
+        cred["session"] not in json.dumps(pre), "the credential must not be echoed back"
+    )
+    red = call(
+        "redeem",
+        {
+            "redemption_token": token,
+            "preflight_token": pre["preflight_token"],
+            "client_request_id": "e2e-" + uuid.uuid4().hex[:12],
+        },
+    )["data"]
+    check(
+        red["status"] == "succeeded" and red["order_id"].startswith("SBXORD-"),
+        f"redeem: {red}",
+    )
     res = rc.get("/redeem/result", params={"token": token})
-    check(res.status_code == 200 and res.json()["data"]["order_id"] == red["order_id"], "result")
-    step("redeem site: preview -> preflight -> redeem -> result through Caddy, nothing echoed")
+    check(
+        res.status_code == 200 and res.json()["data"]["order_id"] == red["order_id"],
+        "result",
+    )
+    step(
+        "redeem site: preview -> preflight -> redeem -> result through Caddy, nothing echoed"
+    )
 
-    err = call("preview", {"code": "MOCKPLUS-FORGED" + uuid.uuid4().hex[:8].upper()}, expect=422)
+    err = call(
+        "preview",
+        {"code": "MOCKPLUS-FORGED" + uuid.uuid4().hex[:8].upper()},
+        expect=422,
+    )
     check(err["error"]["code"] == "code_unavailable", f"forged code answer: {err}")
     bad = call("preview", {"code": "bad code!"}, expect=400)
-    check(bad["error"]["code"] == "invalid_request", "malformed code must be refused locally")
-    check(rc.post("/redeem/preflight", json={"redemption_token": "rt_" + "0" * 32,
-                                             "credential": cred}).status_code == 409,
-          "unknown token must be a session error")
-    xo = rc.post("/redeem/preview", json={"code": code}, headers={"Origin": "https://evil.example"})
+    check(
+        bad["error"]["code"] == "invalid_request",
+        "malformed code must be refused locally",
+    )
+    check(
+        rc.post(
+            "/redeem/preflight",
+            json={"redemption_token": "rt_" + "0" * 32, "credential": cred},
+        ).status_code
+        == 409,
+        "unknown token must be a session error",
+    )
+    xo = rc.post(
+        "/redeem/preview",
+        json={"code": code},
+        headers={"Origin": "https://evil.example"},
+    )
     check(xo.status_code == 403, "cross-origin POST must be refused")
-    step("redeem site: forged code, malformed input, unknown token, cross-origin refused")
+    step(
+        "redeem site: forged code, malformed input, unknown token, cross-origin refused"
+    )
 
     seen = 0
     for _ in range(40):  # per-IP (10/min) and shared (25/min) preview budgets
-        r = rc.post("/redeem/preview", json={"code": "MOCKPLUS-RATE" + uuid.uuid4().hex[:10].upper()})
+        r = rc.post(
+            "/redeem/preview",
+            json={"code": "MOCKPLUS-RATE" + uuid.uuid4().hex[:10].upper()},
+        )
         if r.status_code == 429:
             seen += 1
-            check(r.json()["error"]["code"] == "rate_limited" and r.headers.get("Retry-After"),
-                  "429 must carry the fixed code and Retry-After")
+            check(
+                r.json()["error"]["code"] == "rate_limited"
+                and r.headers.get("Retry-After"),
+                "429 must carry the fixed code and Retry-After",
+            )
             break
     check(seen, "the redeem rate limit never triggered")
     step("redeem site: per-IP rate limit answers 429 rate_limited")
 
 
-def v12_procurement(base: str, admin: Client, category: str, env: dict, redeem_host: str = "") -> None:
+def v12_procurement(
+    base: str, admin: Client, category: str, env: dict, redeem_host: str = ""
+) -> None:
     """review-v12 M2 exit: an upstream_cdk order through the ZovoCard simulator (scenario plans)
     covering timeout-after-send, 409, 202 and a 503 failover, then a duplicate webhook and a
     forged signature. Needs the demo stack (procurement + mockzovo); skipped without them."""
@@ -598,17 +1193,38 @@ def v12_procurement(base: str, admin: Client, category: str, env: dict, redeem_h
     if not secret:
         print("- procurement scenarios skipped (no webhook secret in the seed env)")
         return
-    buyer = Client(base)  # a fresh buyer: the order throttles of the earlier steps do not apply
-    buyer.j("POST", "auth/register", json={"email": f"v12-{uuid.uuid4().hex[:8]}@demo.local",
-                                          "password": "correct-horse-battery", "display_name": "V12",
-                                          "locale": "en", "pow": solve_pow(buyer, "register")})
+    buyer = Client(
+        base
+    )  # a fresh buyer: the order throttles of the earlier steps do not apply
+    buyer.j(
+        "POST",
+        "auth/register",
+        json={
+            "email": f"v12-{uuid.uuid4().hex[:8]}@demo.local",
+            "password": "correct-horse-battery",
+            "display_name": "V12",
+            "locale": "en",
+            "pow": solve_pow(buyer, "register"),
+        },
+    )
     # ---- the supplier: reuse the sandbox account if an earlier run created it
     sups = admin.j("GET", "admin/suppliers")["items"]
-    sup = next((x for x in sups if x["code"] == "zovocard" and x["env"] == "sandbox"), None)
+    sup = next(
+        (x for x in sups if x["code"] == "zovocard" and x["env"] == "sandbox"), None
+    )
     if sup is None:
-        sup = admin.j("POST", "admin/suppliers", expect=201,
-                      json={"code": "zovocard", "adapter": "zovocard", "label": "ZovoCard (mock)",
-                            "env": "sandbox", "enabled": True})
+        sup = admin.j(
+            "POST",
+            "admin/suppliers",
+            expect=201,
+            json={
+                "code": "zovocard",
+                "adapter": "zovocard",
+                "label": "ZovoCard (mock)",
+                "env": "sandbox",
+                "enabled": True,
+            },
+        )
     elif not sup["enabled"]:
         sup = admin.j("PATCH", f"admin/suppliers/{sup['id']}", json={"enabled": True})
     probe = admin.j("POST", f"admin/suppliers/{sup['id']}/probe")
@@ -618,21 +1234,43 @@ def v12_procurement(base: str, admin: Client, category: str, env: dict, redeem_h
     tag = uuid.uuid4().hex[:6]
 
     def product(name: str) -> dict:
-        return admin.j("POST", "admin/products", json={
-            "title_i18n": {"en": f"CDK {name} {tag}", "zh-CN": f"CDK {name} {tag}"},
-            "price": "5.00", "floor_price": "0", "currency": "CNY",
-            "delivery_mode": "upstream_cdk", "category": category, "status": "active"})
+        return admin.j(
+            "POST",
+            "admin/products",
+            json={
+                "title_i18n": {"en": f"CDK {name} {tag}", "zh-CN": f"CDK {name} {tag}"},
+                "price": "5.00",
+                "floor_price": "0",
+                "currency": "CNY",
+                "delivery_mode": "upstream_cdk",
+                "category": category,
+                "status": "active",
+            },
+        )
 
     def source(prod: dict, plan: str, priority: int = 10) -> dict:
-        src = admin.j("POST", "admin/procurement/sources", expect=201, json={
-            "product_id": prod["id"], "supplier_id": sup["id"], "params": {"plan": plan},
-            "cost_estimate": "0.15", "priority": priority, "enabled": True})
+        src = admin.j(
+            "POST",
+            "admin/procurement/sources",
+            expect=201,
+            json={
+                "product_id": prod["id"],
+                "supplier_id": sup["id"],
+                "params": {"plan": plan},
+                "cost_estimate": "0.15",
+                "priority": priority,
+                "enabled": True,
+            },
+        )
         chk = admin.j("POST", f"admin/procurement/sources/{src['id']}/check")
         check(chk["available"], f"source {plan} not available: {chk}")
         return src
 
-    scenarios = {"scn_lost": "timeout after send", "scn_409": "409 still processing",
-                 "scn_202": "202 accepted"}
+    scenarios = {
+        "scn_lost": "timeout after send",
+        "scn_409": "409 still processing",
+        "scn_202": "202 accepted",
+    }
     orders: dict[str, dict] = {}
     for plan, label in scenarios.items():
         p = product(plan)
@@ -651,70 +1289,144 @@ def v12_procurement(base: str, admin: Client, category: str, env: dict, redeem_h
         done = wait_status(buyer, o["id"], {"delivered", "manual_review"}, timeout=180)
         check(done["status"] == "delivered", f"{plan}: order ended in {done['status']}")
         secrets = buyer.req("POST", f"orders/{o['id']}/reveal").json()["secrets"]
-        check(len(secrets) == 1 and secrets[0].startswith("MOCKPLUS-"), f"{plan}: bad code")
-        jobs = admin.j("GET", "admin/procurement/jobs", params={"order_id": o["id"]})["items"]
+        check(
+            len(secrets) == 1 and secrets[0].startswith("MOCKPLUS-"),
+            f"{plan}: bad code",
+        )
+        jobs = admin.j("GET", "admin/procurement/jobs", params={"order_id": o["id"]})[
+            "items"
+        ]
         check(len(jobs) == 1 and jobs[0]["state"] == "fulfilled", f"{plan}: job {jobs}")
         o["job_id"] = jobs[0]["id"]
         o["secret"] = secrets[0]
-    check(len({o["secret"] for o in orders.values()}) == 4, "every order needs its own code")
+    check(
+        len({o["secret"] for o in orders.values()}) == 4,
+        "every order needs its own code",
+    )
     for plan, label in scenarios.items():
         step(f"procurement {label}: delivered exactly one code after a same-key replay")
     detail = admin.j("GET", f"admin/procurement/jobs/{orders['scn_503']['job_id']}")
-    check(detail["offer_id"] == s_ok["id"] and detail["offer_id"] != s503["id"],
-          "503 must fail over to the next source")
-    check(any((t["reason"] or "").startswith("failover") for t in detail["timeline"]),
-          "failover missing from the job timeline")
-    check(all("MOCKPLUS-" not in json.dumps(admin.j("GET", f"admin/procurement/jobs/{o['job_id']}"))
-              for o in orders.values()), "a code leaked into the admin job view")
-    step("procurement 503: failed over to the next source, nothing charged at the first")
+    check(
+        detail["offer_id"] == s_ok["id"] and detail["offer_id"] != s503["id"],
+        "503 must fail over to the next source",
+    )
+    check(
+        any((t["reason"] or "").startswith("failover") for t in detail["timeline"]),
+        "failover missing from the job timeline",
+    )
+    check(
+        all(
+            "MOCKPLUS-"
+            not in json.dumps(admin.j("GET", f"admin/procurement/jobs/{o['job_id']}"))
+            for o in orders.values()
+        ),
+        "a code leaked into the admin job view",
+    )
+    step(
+        "procurement 503: failed over to the next source, nothing charged at the first"
+    )
 
     # ---- webhooks: duplicate delivery is stored once, a forged signature is refused
     def received() -> int:
-        page = admin.j("GET", "admin/audit", params={"action": "supplier.webhook_received",
-                                                      "page_size": 100})
+        page = admin.j(
+            "GET",
+            "admin/audit",
+            params={"action": "supplier.webhook_received", "page_size": 100},
+        )
         return page["total"]
 
     job = admin.j("GET", f"admin/procurement/jobs/{orders['scn_lost']['job_id']}")
-    ev = {"type": "cdk.consumed", "event_id": f"e2e:{uuid.uuid4().hex}", "cdk_id": job["upstream_ref"],
-          "cdk_status": "consumed", "plan": "scn_lost"}
+    ev = {
+        "type": "cdk.consumed",
+        "event_id": f"e2e:{uuid.uuid4().hex}",
+        "cdk_id": job["upstream_ref"],
+        "cdk_status": "consumed",
+        "plan": "scn_lost",
+    }
     before = received()
-    check(webhook_post(base, ev, secret).status_code == 200, "signed webhook must be accepted")
+    check(
+        webhook_post(base, ev, secret).status_code == 200,
+        "signed webhook must be accepted",
+    )
     check(received() == before + 1, "first delivery must be stored")
-    check(webhook_post(base, ev, secret).status_code == 200, "duplicate must still answer 200")
+    check(
+        webhook_post(base, ev, secret).status_code == 200,
+        "duplicate must still answer 200",
+    )
     check(received() == before + 1, "a duplicate delivery must not be stored again")
-    wait_for(lambda: admin.j("GET", f"admin/procurement/jobs/{job['id']}")["upstream_status"] == "consumed",
-             "the webhook to reach the job (re-queried, never trusted blindly)")
-    check(admin.j("GET", f"admin/procurement/jobs/{job['id']}")["state"] == "fulfilled",
-          "a webhook must never change a fulfilled job")
+    wait_for(
+        lambda: (
+            admin.j("GET", f"admin/procurement/jobs/{job['id']}")["upstream_status"]
+            == "consumed"
+        ),
+        "the webhook to reach the job (re-queried, never trusted blindly)",
+    )
+    check(
+        admin.j("GET", f"admin/procurement/jobs/{job['id']}")["state"] == "fulfilled",
+        "a webhook must never change a fulfilled job",
+    )
     step("webhook: duplicate stored once, consumed status reached the job")
 
     def ledger_rows() -> int:
-        rows = admin.j("GET", "admin/procurement/cost/summary", params={"group": "type"})["items"]
+        rows = admin.j(
+            "GET", "admin/procurement/cost/summary", params={"group": "type"}
+        )["items"]
         return sum(r["count"] for r in rows if r["key"] == "gpt_direct_cdk")
 
-    bc = {"event": "balance_change", "balance_log_id": int(time.time()), "type": "gpt_direct_cdk",
-          "amount": -5.5, "direction": "debit", "currency": "USD", "balance_after": 6.84,
-          "card_number": "4147000000005678", "remark": "card 4147000000005678",
-          "occurred_at": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())}
+    bc = {
+        "event": "balance_change",
+        "balance_log_id": int(time.time()),
+        "type": "gpt_direct_cdk",
+        "amount": -5.5,
+        "direction": "debit",
+        "currency": "USD",
+        "balance_after": 6.84,
+        "card_number": "4147000000005678",
+        "remark": "card 4147000000005678",
+        "occurred_at": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
+    }
     ledger_before = ledger_rows()
-    check(webhook_post(base, bc, secret).status_code == 200, "balance_change must be accepted")
-    check(webhook_post(base, bc, secret).status_code == 200, "duplicate balance_change must be 200")
+    check(
+        webhook_post(base, bc, secret).status_code == 200,
+        "balance_change must be accepted",
+    )
+    check(
+        webhook_post(base, bc, secret).status_code == 200,
+        "duplicate balance_change must be 200",
+    )
 
-    wait_for(lambda: ledger_rows() > ledger_before, "the balance_change to reach the cost ledger")
+    wait_for(
+        lambda: ledger_rows() > ledger_before,
+        "the balance_change to reach the cost ledger",
+    )
     time.sleep(3)
-    check(ledger_rows() == ledger_before + 1, "a duplicate balance_change must be booked once")
+    check(
+        ledger_rows() == ledger_before + 1,
+        "a duplicate balance_change must be booked once",
+    )
     export = admin.req("GET", "admin/procurement/cost/export.csv")
-    check("4147000000005678" not in export.text, "a full card number reached the CSV export")
+    check(
+        "4147000000005678" not in export.text,
+        "a full card number reached the CSV export",
+    )
     step("cost ledger: balance_change booked once, card number never stored")
 
     stored = received()
     forged = webhook_post(base, ev | {"event_id": "e2e:forged"}, secret, sig="0" * 64)
-    tampered = webhook_post(base, ev | {"event_id": "e2e:tampered"}, secret, tamper=True)
+    tampered = webhook_post(
+        base, ev | {"event_id": "e2e:tampered"}, secret, tamper=True
+    )
     wrong = webhook_post(base, ev | {"event_id": "e2e:wrong"}, "whsec_not_the_secret")
-    check(all(r.status_code == 401 and r.content == b"" for r in (forged, tampered, wrong)),
-          "forged / tampered / wrongly signed webhooks must be refused with an empty 401")
+    check(
+        all(
+            r.status_code == 401 and r.content == b"" for r in (forged, tampered, wrong)
+        ),
+        "forged / tampered / wrongly signed webhooks must be refused with an empty 401",
+    )
     check(received() == stored, "a refused webhook must not be stored")
-    step("webhook: forged, tampered and wrongly signed events refused (401, nothing stored)")
+    step(
+        "webhook: forged, tampered and wrongly signed events refused (401, nothing stored)"
+    )
 
     if redeem_host:
         v12_redeem(base, redeem_host, orders["scn_503"]["secret"])
@@ -725,10 +1437,15 @@ def main() -> None:
     ap.add_argument("--base", required=True)
     ap.add_argument("--seed-env", required=True)
     ap.add_argument(
-        "--dev", action="store_true", help="Vite dev server (scripts/dev.sh): skip Caddy edge headers"
+        "--dev",
+        action="store_true",
+        help="Vite dev server (scripts/dev.sh): skip Caddy edge headers",
     )
-    ap.add_argument("--redeem-host", default="redeem.localhost",
-                    help="Host header of the CDK redemption site ('' skips it; always skipped with --dev)")
+    ap.add_argument(
+        "--redeem-host",
+        default="redeem.localhost",
+        help="Host header of the CDK redemption site ('' skips it; always skipped with --dev)",
+    )
     a = ap.parse_args()
     env = read_env(a.seed_env)
     base = a.base.rstrip("/")
@@ -736,18 +1453,25 @@ def main() -> None:
     # ---- static apps + edge headers --------------------------------------------
     anon = Client(base)
     home = anon.req("GET", "/")
-    check('<div id="app"' in home.text or "<div id=app" in home.text, "buyer SPA not served")
+    check(
+        '<div id="app"' in home.text or "<div id=app" in home.text,
+        "buyer SPA not served",
+    )
     if a.dev:
         step("buyer SPA served by Vite (dev mode: edge headers not checked)")
     else:
         check("Content-Security-Policy" in home.headers, "missing CSP on SPA")
-        check(home.headers.get("X-Content-Type-Options") == "nosniff", "missing nosniff")
+        check(
+            home.headers.get("X-Content-Type-Options") == "nosniff", "missing nosniff"
+        )
         check("Server" not in home.headers, "Server header should be stripped")
         check("/admin/" in anon.req("GET", "/admin/").text or True, "admin SPA")
         step("SPAs served by Caddy with security headers")
 
     # ---- CSRF + RBAC -----------------------------------------------------------
-    raw = httpx.post(f"{base}{API}/auth/login", json={"email": "x@y.z", "password": "x" * 12})
+    raw = httpx.post(
+        f"{base}{API}/auth/login", json={"email": "x@y.z", "password": "x" * 12}
+    )
     check(raw.status_code == 403 and "csrf" in raw.text, "CSRF header must be required")
     buyer = Client(base)
     buyer.login("buyer@demo.local", env["APP_SEED_BUYER_PASSWORD"])
@@ -756,33 +1480,66 @@ def main() -> None:
 
     # ---- catalog ---------------------------------------------------------------
     items = buyer.j("GET", "products", params={"page_size": 50})["items"]
-    stocked = [p for p in items if p["delivery_mode"] == "auto_card" and (p["stock"] or 0) >= 3]
+    stocked = [
+        p for p in items if p["delivery_mode"] == "auto_card" and (p["stock"] or 0) >= 3
+    ]
     details = {p["id"]: buyer.j("GET", f"products/{p['id']}") for p in stocked}
 
     def n_fields(p: dict) -> int:
         d = details[p["id"]]
-        return len((d.get("delivery_format") or "").split(d.get("delivery_separator") or "----"))
+        return len(
+            (d.get("delivery_format") or "").split(
+                d.get("delivery_separator") or "----"
+            )
+        )
 
     # single-code product for the MVP flow (codes start with DEMO-), multi-field one for v3
     auto = next((p for p in stocked if n_fields(p) == 1), None)
     multi = next((p for p in stocked if n_fields(p) >= 3), None)
     manual = next((p for p in items if p["delivery_mode"] == "manual"), None)
-    check(auto and manual, "seed must contain a single-code auto_card (stock>=3) and a manual product")
-    check(multi, "seed must contain a multi-field auto_card product (delivery_format with >=3 labels, stock>=3)")
+    check(
+        auto and manual,
+        "seed must contain a single-code auto_card (stock>=3) and a manual product",
+    )
+    check(
+        multi,
+        "seed must contain a multi-field auto_card product (delivery_format with >=3 labels, stock>=3)",
+    )
     zh = buyer.j("GET", f"products/{auto['id']}", headers={"Accept-Language": "zh-CN"})
     check(zh["title"] != auto["title"] or True, "i18n")
-    step(f"catalog: {len(items)} products (auto: {auto['title']!r}, manual: {manual['title']!r})")
+    step(
+        f"catalog: {len(items)} products (auto: {auto['title']!r}, manual: {manual['title']!r})"
+    )
 
     # ---- chat with product card ------------------------------------------------
     conv = buyer.j("POST", "conversations", json={"product_id": auto["id"]})
     msgs = buyer.j("GET", f"conversations/{conv['id']}/messages", params={"limit": 30})
-    check(any(m["type"] == "product_card" and m["payload"]["product_id"] == auto["id"] for m in msgs),
-          "product card not auto-attached")
+    check(
+        any(
+            m["type"] == "product_card" and m["payload"]["product_id"] == auto["id"]
+            for m in msgs
+        ),
+        "product card not auto-attached",
+    )
     cmid = str(uuid.uuid4())
-    m1 = buyer.j("POST", f"conversations/{conv['id']}/messages",
-                 json={"client_msg_id": cmid, "type": "text", "text": "Hi, 2 codes for a better price?"})
-    m2 = buyer.j("POST", f"conversations/{conv['id']}/messages",
-                 json={"client_msg_id": cmid, "type": "text", "text": "Hi, 2 codes for a better price?"})
+    m1 = buyer.j(
+        "POST",
+        f"conversations/{conv['id']}/messages",
+        json={
+            "client_msg_id": cmid,
+            "type": "text",
+            "text": "Hi, 2 codes for a better price?",
+        },
+    )
+    m2 = buyer.j(
+        "POST",
+        f"conversations/{conv['id']}/messages",
+        json={
+            "client_msg_id": cmid,
+            "type": "text",
+            "text": "Hi, 2 codes for a better price?",
+        },
+    )
     check(m1["id"] == m2["id"], "message send must be idempotent on client_msg_id")
     step("buyer chat: product card attached, idempotent send")
 
@@ -791,32 +1548,60 @@ def main() -> None:
     agent.login("agent@demo.local", env["APP_SEED_AGENT_PASSWORD"])
     agent.j("PUT", "admin/agent/status", json={"status": "online", "message": None})
     convs = agent.j("GET", "admin/conversations", params={"filter": "all"})["items"]
-    check(any(c["id"] == conv["id"] for c in convs), "agent inbox does not show the conversation")
+    check(
+        any(c["id"] == conv["id"] for c in convs),
+        "agent inbox does not show the conversation",
+    )
     agent.j("POST", f"admin/conversations/{conv['id']}/assign", json={"agent_id": None})
     unit = Decimal(auto["price"])
     quote_amount = (unit * 2 - Decimal("1.00")).quantize(Decimal("0.01"))
-    q = agent.j("POST", f"admin/conversations/{conv['id']}/quotes",
-                json={"title": auto["title"], "amount": f"{quote_amount}", "qty": 2,
-                      "note": "bundle price", "product_id": auto["id"], "expires_in_minutes": 30})
+    q = agent.j(
+        "POST",
+        f"admin/conversations/{conv['id']}/quotes",
+        json={
+            "title": auto["title"],
+            "amount": f"{quote_amount}",
+            "qty": 2,
+            "note": "bundle price",
+            "product_id": auto["id"],
+            "expires_in_minutes": 30,
+        },
+    )
     order = buyer.j("POST", f"quotes/{q['quote_id']}/accept")
-    check(order["status"] == "pending_payment" and Decimal(order["subtotal"]) == quote_amount,
-          "quote accept must create a pending order at the quoted amount (subtotal; v4 fee on top)")
-    check(Decimal(order["amount"]) == Decimal(order["subtotal"]) + Decimal(order["fee"]),
-          "order amount must be subtotal + channel fee")
+    check(
+        order["status"] == "pending_payment"
+        and Decimal(order["subtotal"]) == quote_amount,
+        "quote accept must create a pending order at the quoted amount (subtotal; v4 fee on top)",
+    )
+    check(
+        Decimal(order["amount"]) == Decimal(order["subtotal"]) + Decimal(order["fee"]),
+        "order amount must be subtotal + channel fee",
+    )
     buyer.req("POST", f"quotes/{q['quote_id']}/accept", expect=(409, 422))
-    step(f"quote {quote_amount} accepted -> order {order['order_no']} (double-accept rejected)")
+    step(
+        f"quote {quote_amount} accepted -> order {order['order_no']} (double-accept rejected)"
+    )
 
     # ---- in-chat price change (>= floor, versioned) ------------------------------
     detail = agent.j("GET", f"admin/orders/{order['id']}")
     floor = Decimal(detail.get("floor_price") or "0") * 2
-    agent.req("PATCH", f"admin/orders/{order['id']}/price",
-              json={"amount": f"{(floor - Decimal('0.01')):.2f}", "reason": "below floor"},
-              expect=(409, 422)) if floor > 0 else None
+    agent.req(
+        "PATCH",
+        f"admin/orders/{order['id']}/price",
+        json={"amount": f"{(floor - Decimal('0.01')):.2f}", "reason": "below floor"},
+        expect=(409, 422),
+    ) if floor > 0 else None
     new_amount = max(floor, quote_amount - Decimal("0.50")).quantize(Decimal("0.01"))
-    changed = agent.j("PATCH", f"admin/orders/{order['id']}/price",
-                      json={"amount": f"{new_amount}", "reason": "loyal customer"})
-    check(changed["version"] == order["version"] + 1 and Decimal(changed["subtotal"]) == new_amount,
-          "price change must bump version")
+    changed = agent.j(
+        "PATCH",
+        f"admin/orders/{order['id']}/price",
+        json={"amount": f"{new_amount}", "reason": "loyal customer"},
+    )
+    check(
+        changed["version"] == order["version"] + 1
+        and Decimal(changed["subtotal"]) == new_amount,
+        "price change must bump version",
+    )
     step(f"agent changed price {quote_amount} -> {new_amount} (floor {floor} enforced)")
 
     # ---- pay via simulator -> notify -> delivery worker -> reveal ----------------
@@ -824,26 +1609,50 @@ def main() -> None:
     delivered = wait_status(buyer, order["id"], {"delivered"})
     check(delivered["can_reveal"], "delivered auto order must be revealable")
     r = buyer.req("POST", f"orders/{order['id']}/reveal")
-    check("no-store" in r.headers.get("Cache-Control", ""), "reveal response must be no-store")
+    check(
+        "no-store" in r.headers.get("Cache-Control", ""),
+        "reveal response must be no-store",
+    )
     secrets = r.json()["secrets"]
-    check(len(secrets) == 2 and all(s.startswith("DEMO-") for s in secrets), "wrong revealed codes")
+    check(
+        len(secrets) == 2 and all(s.startswith("DEMO-") for s in secrets),
+        "wrong revealed codes",
+    )
     step(f"paid via simulator, delivered by worker, revealed {len(secrets)} codes")
 
     # ---- IDOR: a second buyer sees nothing --------------------------------------
     eve = Client(base)
-    eve.j("POST", "auth/register", json={"email": f"eve-{uuid.uuid4().hex[:8]}@demo.local",
-                                        "password": "correct-horse-battery", "display_name": "Eve",
-                                        "locale": "en", "pow": solve_pow(eve, "register")})
+    eve.j(
+        "POST",
+        "auth/register",
+        json={
+            "email": f"eve-{uuid.uuid4().hex[:8]}@demo.local",
+            "password": "correct-horse-battery",
+            "display_name": "Eve",
+            "locale": "en",
+            "pow": solve_pow(eve, "register"),
+        },
+    )
     eve.req("GET", f"orders/{order['id']}", expect=(403, 404))
     eve.req("POST", f"orders/{order['id']}/reveal", expect=(403, 404))
     eve.req("GET", f"conversations/{conv['id']}/messages", expect=(403, 404))
     step("IDOR: other buyer cannot read the order, codes or conversation")
 
     # ---- forged notify --------------------------------------------------------------
-    forged = httpx.get(f"{base}{API}/pay/notify/zpay", params={
-        "pid": "1001", "trade_no": "FAKE", "out_trade_no": order["order_no"], "type": "alipay",
-        "name": "x", "money": "0.01", "trade_status": "TRADE_SUCCESS", "sign": "0" * 32,
-        "sign_type": "MD5"})
+    forged = httpx.get(
+        f"{base}{API}/pay/notify/zpay",
+        params={
+            "pid": "1001",
+            "trade_no": "FAKE",
+            "out_trade_no": order["order_no"],
+            "type": "alipay",
+            "name": "x",
+            "money": "0.01",
+            "trade_status": "TRADE_SUCCESS",
+            "sign": "0" * 32,
+            "sign_type": "MD5",
+        },
+    )
     check(forged.text == "fail", "forged notify must be rejected")
     step("forged ZPay notify rejected")
 
@@ -851,8 +1660,11 @@ def main() -> None:
     m_order = buyer.j("POST", "orders", json={"product_id": manual["id"], "qty": 1})
     pay_with_simulator(buyer, m_order["id"])
     wait_status(buyer, m_order["id"], {"paid"})
-    agent.j("POST", f"admin/orders/{m_order['id']}/deliver",
-            json={"text": "Your design draft: https://example.invalid/draft (demo)"})
+    agent.j(
+        "POST",
+        f"admin/orders/{m_order['id']}/deliver",
+        json={"text": "Your design draft: https://example.invalid/draft (demo)"},
+    )
     done = buyer.j("POST", f"orders/{m_order['id']}/confirm")
     check(done["status"] == "completed", "manual order must complete after confirm")
     step("manual order: paid -> delivered by agent -> confirmed by buyer")
@@ -861,7 +1673,9 @@ def main() -> None:
     admin.login("admin@demo.local", env["APP_SEED_ADMIN_PASSWORD"])
 
     v3_public(anon, auto, multi, manual)
-    v3_instant_and_after_sales(base, buyer, agent, admin, auto, multi, details[multi["id"]])
+    v3_instant_and_after_sales(
+        base, buyer, agent, admin, auto, multi, details[multi["id"]]
+    )
     v3_cards(agent, admin, multi)
     v3_file_message(buyer, agent, conv)
     v4_commerce(base, anon, buyer, agent, admin, auto, manual, conv)
@@ -877,9 +1691,17 @@ def main() -> None:
             break
         page += 1
     total = sum(Decimal(r["amount"]) for r in rows)
-    check(rows and total == 0, f"ledger must balance to 0 (got {total} over {len(rows)} rows)")
-    cards = admin.j("GET", f"admin/products/{auto['id']}/cards", params={"status": "sold"})["items"]
-    check(cards and all("DEMO-" not in c["masked"] for c in cards), "admin must never see plaintext")
+    check(
+        rows and total == 0,
+        f"ledger must balance to 0 (got {total} over {len(rows)} rows)",
+    )
+    cards = admin.j(
+        "GET", f"admin/products/{auto['id']}/cards", params={"status": "sold"}
+    )["items"]
+    check(
+        cards and all("DEMO-" not in c["masked"] for c in cards),
+        "admin must never see plaintext",
+    )
     step(f"ledger balanced over {len(rows)} entries; admin sees only masked cards")
     print("\nSMOKE PASSED")
 
