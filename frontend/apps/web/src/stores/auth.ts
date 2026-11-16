@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import type { InstantCredentials, Locale, PowSolution, User } from '@24goods/shared'
-import { isApiError } from '@24goods/shared'
+import { isApiError, isTwoFactorChallenge } from '@24goods/shared'
 import { api } from '../api'
 
 export const useAuthStore = defineStore('auth', () => {
@@ -36,12 +36,20 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function login(email: string, password: string, pow?: PowSolution, turnstile_token?: string) {
-    user.value = await api.auth.login({
+    const out = await api.auth.login({
       email,
       password,
       ...(pow ? { pow } : {}),
       ...(turnstile_token ? { turnstile_token } : {}),
     })
+    // two-factor account: the password alone opens no session; the caller asks for the code
+    if (isTwoFactorChallenge(out)) return out
+    user.value = out
+    ready.value = true
+    return out
+  }
+  async function loginSecondFactor(pending_token: string, code: string) {
+    user.value = await api.auth.loginSecondFactor({ pending_token, code })
     ready.value = true
     return user.value
   }
@@ -83,5 +91,5 @@ export const useAuthStore = defineStore('auth', () => {
     user.value = null
   }
 
-  return { user, ready, guestCreds, instant, loggedIn, isStaff, init, login, register, logout, clear, setUser }
+  return { user, ready, guestCreds, instant, loggedIn, isStaff, init, login, loginSecondFactor, register, logout, clear, setUser }
 })

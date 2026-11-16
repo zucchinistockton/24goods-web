@@ -3,7 +3,8 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, Integer, String, Text
+from sqlalchemy import BigInteger, ForeignKey, Integer, LargeBinary, String, Text
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, created_at, updated_at, uuid_pk
@@ -31,6 +32,20 @@ class User(Base):
     suspended_at: Mapped[datetime | None]
     suspended_until: Mapped[datetime | None]
     suspend_reason: Mapped[str | None] = mapped_column(String(200))
+    created_at: Mapped[datetime] = created_at()
+
+
+class UserTotp(Base):
+    """Optional two-factor login. ``confirmed_at`` NULL = enrolment started, not active yet."""
+
+    __tablename__ = "user_totp"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    secret_sealed: Mapped[bytes] = mapped_column(LargeBinary)
+    confirmed_at: Mapped[datetime | None]
+    last_step: Mapped[int | None] = mapped_column(BigInteger)
+    recovery_hashes: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
     created_at: Mapped[datetime] = created_at()
 
 

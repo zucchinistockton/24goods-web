@@ -66,6 +66,9 @@ import type {
   ResellerProduct,
   ResellerStats,
   I18nText,
+  TwoFactorChallenge,
+  TwoFactorSetup,
+  TwoFactorStatus,
 } from '../types'
 
 export const DEFAULT_PAY_CHANNEL = 'zpay_alipay'
@@ -106,8 +109,12 @@ export function createBuyerApi(c: ApiClient) {
         turnstile_token?: string
       }) => c.post<User>('/auth/register', b, { skipAuthHandler: true }),
       /** `email` also accepts an instant-account login handle (`u-xxxxxxx`). */
+      /** An account with two-factor login gets a `TwoFactorChallenge` instead of a session. */
       login: (b: { email: string; password: string; pow?: PowSolution; turnstile_token?: string }) =>
-        c.post<User>('/auth/login', b, { skipAuthHandler: true }),
+        c.post<User | TwoFactorChallenge>('/auth/login', b, { skipAuthHandler: true }),
+      /** Second step: the pending token plus an authenticator code or a recovery code. */
+      loginSecondFactor: (b: { pending_token: string; code: string }) =>
+        c.post<User>('/auth/login/2fa', b, { skipAuthHandler: true }),
       logout: () => c.post<void>('/auth/logout', undefined, { skipAuthHandler: true }),
       me: () => c.get<User>('/auth/me', undefined, { skipAuthHandler: true }),
       /** v5 §5.2: 204 always (no user enumeration). */
@@ -132,6 +139,17 @@ export function createBuyerApi(c: ApiClient) {
     site: () => c.get<SiteInfo>('/site'),
     pow: {
       challenge: (scope: PowScope) => c.get<PowChallenge>('/pow/challenge', { scope }),
+    },
+    /** Optional two-factor login (TOTP) of the signed-in account. */
+    twoFactor: {
+      status: () => c.get<TwoFactorStatus>('/me/2fa'),
+      /** The secret, its URI and a server-drawn QR are returned once. */
+      setup: (b: { password?: string }) => c.post<TwoFactorSetup>('/me/2fa/setup', b),
+      enable: (b: { code: string }) =>
+        c.post<{ enabled: true; recovery_codes: string[] }>('/me/2fa/enable', b),
+      disable: (b: { code: string }) => c.post<void>('/me/2fa/disable', b),
+      recoveryCodes: (b: { code: string }) =>
+        c.post<{ recovery_codes: string[] }>('/me/2fa/recovery-codes', b),
     },
     me: {
       update: (b: { display_name?: string; locale?: Locale }) => c.patch<User>('/me', b),
@@ -310,6 +328,7 @@ export function createAdminApi(c: ApiClient) {
   const buyer = createBuyerApi(c)
   return {
     auth: buyer.auth,
+    twoFactor: buyer.twoFactor,
     chatActions: buyer.chatActions,
     product: buyer.product,
     categories: buyer.categories,

@@ -27,15 +27,19 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
   `deploy/env.bak-20261116T*`. Checked in a browser on the demo: buyer home, product, login and order lookup
   in dark and light, console Procurement and Suppliers pages in dark — all render correctly. Not exercised by
   hand: an `upstream_cdk` purchase on the demo (the E2E smoke covers it in CI).
-- **Production (c4) still runs `d881dfa`.** Dark mode (#6) and the Telegram language switch (#7) are on `main`
-  (`:main` images = `faaa5bf`, no migration, `deploy/` unchanged, so no sync). The deploy was **not done**:
-  the session's permission system refused the production command. To deploy (owner, or a session with that
-  permission): on c4 tag `goods24-{api,web}:rollback-d881dfa` from the running `:main`, `compose pull api
-  web`, `run --rm migrate`, `up -d --wait`, then `scripts/prod.sh smoke`. Do not use `scripts/prod.sh deploy`
-  (dead registry token).
-- **Next, in order:** (1) production deploy of `main` (above); (2) sandbox webhook (below; the account
-  expires **2026-11-18 10:57**); (3) review and merge PR #10 (TOTP 2FA, below); (4) redemption site (spec §8, own PR
-  from `feat/v12-procurement`); (5) M3.
+- **Production (c4) runs `24a64fb`** (deployed 2026-11-16 ~05:40 UTC by hand with the owner's explicit
+  go-ahead: dark mode #6 + Telegram language #7, no migration; `prod.sh smoke` all pass). Rollback images on
+  c4: `goods24-{api,web}:rollback-d881dfa`. Hand procedure (still do not use `scripts/prod.sh deploy`, dead
+  registry token): tag rollback images from the running `:main`, `compose pull api web`, `run --rm migrate`,
+  `up -d --wait`, `scripts/prod.sh smoke`.
+- **Two-factor login is merged to `main`** (PR #10, `eed9972`, migration `0022a_user_totp`) and merged into
+  this branch; `0023_procurement` now revises `0022a_user_totp`. **Not in production yet**: look at its UI on
+  the demo first, then deploy `main`. A database already at 0023+ (the demo) does not get 0022a from
+  `alembic upgrade`: apply its SQL by hand there.
+- **Next, in order:** (1) demo: this branch incl. two-factor login, check its UI, then deploy `main` to
+  production; (2) redemption site (spec §8): backend proxy, then the SPA; (3) sandbox webhook (below; the
+  account expires **2026-11-18 10:57**; owner confirmed 2026-11-16 that the signing keys match); (4) M3
+  (`upstream_vcc`, `upstream_direct`).
 - **Re-audit verdict (2026-11-15, head `2895860`): pass with notes — no Critical/High, no path to a double
   purchase or double delivery.** Original findings: H1, M1, M2, M4, M5, L1, L2, L4, L7 closed; H2, M3, L5
   partly; L3 and L6 deferred (`TODO(v12-M3)`). New findings and the decided fixes (paths under
@@ -308,6 +312,15 @@ Order of work: M1 (adapter + probe + process + admin Suppliers page) -> M2 (CDK,
 ops, redemption site) -> M3 (VCC, 3DS, direct top-up). Side PRs: `fix/pay-ux-reco` (USDT/Alipay pay UX,
 exclude-from-recommendations flag), `feat/totp-2fa` (optional TOTP, spec §13). Status of each: see the
 spec's §10 and the open PRs.
+**Optional two-factor login (2026-11-16, PR `feat/totp-2fa`, ADR-039, migration `0022a_user_totp`).** Buyers
+and staff can turn on an authenticator app (TOTP). Login for an enrolled account is password → pending token
+→ code (`POST /auth/login/2fa`); ten single-use recovery codes; admins can reset another user's second
+factor (Users page). Buyer app: second step on the login page (also after Google sign-in), My account →
+Settings → Two-factor login. Console: second step on the login page, user menu → Two-factor login. Tests:
+`tests/test_twofactor.py`, `tests/test_totp_core.py`. Not built: "require 2FA for staff". Security-reviewer (2026-11-16): pass with notes, no bypass of the second factor; its High finding (race in
+the wrong-code limiter) and the Medium ones (password reset keeps a squatter's enrolment; admin could reset
+another admin) are fixed, the rest are recorded as accepted risks in ADR-039. **Needs a human review before
+merge (auth path, AGENTS.md §5.3); the UI was typechecked by CI only and never seen in a browser.** When v12 reaches `main`, `0023_procurement` must revise `0022a_user_totp`.
 **Telegram notification language (2026-11-15, PR `feat/tg-language`).** Staff alerts are English by
 default; `notifications.telegram_language` (`en` | `zh-CN`, Settings → Notifications) switches them. All
 sentences live in one catalog (`app/core/notify_tg.py` `TEXTS`; callers pass `T(key, …)` and plain strings
