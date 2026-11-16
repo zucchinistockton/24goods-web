@@ -4,7 +4,88 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 ## Current state — hand-off (read this first in a new session)
 
-**Hand-off 2026-11-15 evening (session paused on quota; this block supersedes the one below).**
+**Hand-off 2026-11-16 (the 2026-11-15 night session stopped on the 5-hour quota at 17:48 UTC; this block
+supersedes the ones below).**
+
+- **START HERE: fix the payment-auditor re-audit findings on M2. Nothing of this is written yet.** The
+  implementer was killed by HTTP 429 after reading code only (no file changed, no commit). Branch
+  `feat/v12-procurement-m2`, worktree `.claude/worktrees/agent-af3aa371765135692`, draft PR #2. Order:
+  1. Start a fresh implementer (Sonnet) in that worktree with the list below. One commit per finding, each
+     with a test in `tests/test_procurement_audit.py` (or a sibling); schema changes go into a new migration
+     `0028` (never edit 0027); document new rules in spec §16.
+  2. Push, read CI on the new head. The last run (43742459446 on `2895860`) was green except one backend
+     test, `test_open_breaker_raises_one_staff_alert`, fixed in `4778d80`; that fix has not been through CI.
+  3. Short payment-auditor pass over the new commits only (N1–N8 and the hash rule), then merge `main` into
+     `feat/v12-procurement`, take PR #2 out of draft and **squash-merge** it into `feat/v12-procurement`.
+  4. Update the demo to that build: migration 0027 (+0028), the Redis ACL line for the `procurement` user
+     (`INCRBY`, by hand), and look at dark mode in both themes there before production.
+  5. Sandbox webhook (below) — **the sandbox account expires 2026-11-18 10:57**, so do this early.
+  6. Then: redemption site (spec §8, own PR), TOTP 2FA (below), deploy dark mode + Telegram language.
+- **Re-audit verdict (2026-11-15, head `2895860`): pass with notes — no Critical/High, no path to a double
+  purchase or double delivery.** Original findings: H1, M1, M2, M4, M5, L1, L2, L4, L7 closed; H2, M3, L5
+  partly; L3 and L6 deferred (`TODO(v12-M3)`). New findings and the decided fixes (paths under
+  `backend/app/`):
+  - **N1 (Medium)** the recovery of a closed job (`maybe_sent`, no `upstream_ref`) replays the key and can buy
+    for a refunded order, and skips the kill switches (`procurement/engine.py` `_offer_any`,
+    `_lease_detached`). Decision (orchestrator; **the owner may overrule**): the replay stays, because it is
+    the only way to learn whether a code exists, and the cost is bounded at one issue fee per job. It must
+    wait while the supplier is disabled or its `hard` breaker is open, then end in `needs_manual` with
+    `recover_blocked` (maybe charged). Document in §16.
+  - **N2 (Medium)** the recovery of a hand-fulfilled job can disable the code the buyer received
+    (`modules/admin/procurement_jobs.py` `_schedule_recovery`, `engine.py` dvoid). Fix: record `upstream_ref`
+    and write a critical audit row (`procurement.recovered_after_manual_fulfil`); never disable. Disabling
+    stays an explicit staff `void`. Jobs closed by refund / fail keep the disable.
+  - **N3 (Medium)** the pre-check uses the 60 s plan cache, so a just-paused plan still ends as maybe-sent
+    after ~27 min (`suppliers/zovocard/supplier.py`). Fix: fresh catalog in the pre-check; after an ambiguous
+    `request_failed` on a write, one fresh availability check — plan definitely not offered => `_unsent`,
+    `last_check_ok=false`, fail over.
+  - **N4 (Medium)** `last_balance_at` is stamped before `evaluate()`, whose errors are swallowed
+    (`procurement/service.py`). Fix: stamp only after a successful evaluation (or gate on `last_eval_at`).
+  - **N5 (Low)** a refund leaves `fulfilled` but undelivered units valid at the supplier. Fix: move them to
+    `void_pending` (disable + void the `card_stock` row) with audit rows; delivered units untouched.
+  - **N6 (Low)** the recovery's FATAL path clears `maybe_sent` on `IDEMPOTENCY_CONFLICT`; mirror the main path.
+  - **N7 (Low)** a passed pre-check resets `attempts`, so a RETRYABLE submit retries forever. Do not reset.
+  - **N8 (Low)** a queued, never-sent job parked behind a balance breaker never moves to a healthy source.
+    Fix: fail over when another usable source exists; the job-stuck alert also fires for a long park.
+  - **M5 caveat** a `maybe_sent` job with `request_hash` NULL is treated like a mismatch (`needs_manual`,
+    maybe charged); a never-sent job gets its hash at first lease.
+  - **N9–N11: no code change** (fail-closed `unknown_cost`, the 0027 trigger trusting `app_api`-writable job
+    columns, the conservative `first_sent_at` backfill). Optional one-liner: put `unknown_cost` and the
+    offending count into the breaker reason text.
+  - Tests the auditor asked for: stale-cache paused plan (N3); recovery vs disabled supplier and `hard`
+    breaker (N1); hand-fulfil where the recovered code is the pasted one (N2); failed evaluation after a good
+    balance read (N4); unbounded RETRYABLE (N7); parked job with a healthy alternative (N8); refund with a
+    fulfilled-undelivered unit (N5); recovery `IDEMPOTENCY_CONFLICT` (N6). The fresh pre-check adds one
+    `GET /gpt-direct/plans` per first send: check the mock's rate limit and the e2e scenario plans.
+- **Done in the 2026-11-15 night session.** Audit fixes for H1, H2, M1–M5, L1, L2, L4, L5, L7 (`38754af`..
+  `6469097`, migration 0027, 40 tests); admin page handles the new codes (`5531880`); `main` merged into the
+  branch and procurement alerts moved to the Telegram message catalog (`2895860`). Behaviour change: a source
+  cannot be switched on without a cost estimate unless the supplier reports its own USD price. On `main`:
+  dark mode (#6, `3ce457e`) and the Telegram language switch (#7, `faaa5bf`), CI green, images published,
+  **deployed nowhere**; dark mode has never been seen in a browser.
+- **Sandbox webhook: still no vendor-sent event.** Our side works: the demo verifies with the key-level key
+  (`ZOVOCARD_SANDBOX_KEY_WEBHOOK_SECRET` in `~/.secrets/zovocard.env`) and a self-signed event through
+  Cloudflare returns 200. Both vendor callbacks now point at `https://demo.kesiv.com/api/v1/webhooks/zovocard`
+  (the `kestv` typo is gone). Owner, 2026-11-16: the event types **are** selected on the API Key Webhook; the
+  vendor console has **no delivery log and no test button**. Next: one more issue / disable / enable /
+  disable on a sandbox CDK plus one redemption (`~/.secrets/gpt-test-session.json`), watching
+  `supplier_events` and the Caddy access log on the demo. If nothing arrives, the sandbox does not dispatch
+  webhooks: open a ZovoCard support ticket, and treat webhooks as unverified against the real vendor (the
+  engine's polling / reconcile path does not depend on them). The signing keys were pasted in chat: rotate
+  them with the other ZovoCard keys before go-live.
+- **TOTP 2FA (spec §13): barely started.** Branch `feat/totp-2fa` (worktree `.claude/worktrees/totp`, from
+  `main` `faaa5bf`, pushed), one commit `547564f`: `backend/app/core/totp.py` (RFC 6238, standard library
+  only) and `backend/tests/test_totp_core.py` (7 tests pass, ruff clean); no PR yet. Not started: migration (sealed secret,
+  recovery codes), enrol / verify / disable API, the login second step with rate limits, admin and buyer UI,
+  en + zh-CN strings, security-reviewer pass.
+- **Deployed:** production (c4) `d881dfa`; demo = local image `goods24-api:m2-demo` (`15d7f22`, an M2 build
+  from before the audit fixes; no migration 0027). Unchanged: do not use `scripts/prod.sh deploy` until its
+  registry login is fixed.
+- Housekeeping: `docs/research/zovocard/` is untracked in the main checkout (vendor docs; decide whether it
+  belongs in git); stale local branches `worktree-agent-*`, `fix/pay-ux`, `docs/deploy-*` can be deleted.
+
+**Hand-off 2026-11-15 evening (superseded by the block above; kept for the M2 build notes and the original
+audit findings).**
 
 - **START HERE.** Branch `feat/v12-procurement-m2` (worktree `.claude/worktrees/agent-af3aa371765135692`,
   draft PR #2). Order:
