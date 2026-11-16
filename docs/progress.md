@@ -95,18 +95,18 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
   cannot be switched on without a cost estimate unless the supplier reports its own USD price. On `main`:
   dark mode (#6, `3ce457e`) and the Telegram language switch (#7, `faaa5bf`), CI green, images published,
   **deployed nowhere**; dark mode has never been seen in a browser.
-- **Sandbox webhook: the vendor does send, but the signature did not verify.** 2026-11-16 01:39:10–16 UTC the
-  demo API logged three `POST /api/v1/webhooks/zovocard` (one event, two retries after 2 s and 4 s), all 401
-  "bad signature". They arrived 40 s BEFORE this session's sandbox calls, so something else triggered them
-  (most likely a save in the vendor console). Two scripted passes afterwards (issue / disable / enable /
-  disable, CDK ids 275 and 276) produced no delivery within 4 minutes. The demo image knows one key only
-  (the API-key-level key, `ZOVOCARD_SANDBOX_KEY_WEBHOOK_SECRET`); the event was probably signed with the
-  general-callback key, or the console issued a new key on save. Done since: the demo runs the merged build with BOTH sandbox keys (self-signed events with either
-  key -> 200, forged -> 401); a third scripted pass (CDK id 277) again produced no delivery. Next: ask the owner what was done in the console at 02:39 Berlin time and whether the
-  signing keys shown there still match `~/.secrets/zovocard.env`, then repeat that action. A packet capture of
-  requests to the demo API ran until about 07:45 UTC on 2026-11-16 (`all.pcap` in that session's scratchpad;
-  delete it after use: it also holds demo logins). The signing keys were pasted in chat: rotate them with the
-  other ZovoCard keys before go-live.
+- **Sandbox webhook: one vendor delivery seen, none since.** 2026-11-16 01:39:10–16 UTC the demo API logged
+  three `POST /api/v1/webhooks/zovocard` (one event, retries after 2 s and 4 s), all 401 "bad signature". At
+  that time the demo knew only the API-key-level key; the owner has since confirmed that the keys in
+  `~/.secrets/zovocard.env` match the console, so that event was almost certainly signed with the
+  general-callback key. The demo now verifies with BOTH keys (self-signed events with either -> 200, forged ->
+  401). The event arrived 40 s before this session's sandbox calls, so the API calls did not trigger it; three
+  scripted passes (issue / disable / enable / disable; CDK ids 275–277) produced no delivery, and a packet
+  capture until 06:00 UTC saw only our own test posts (capture stopped, file deleted). Conclusion so far: the
+  sandbox does not send CDK events for API-driven changes; something done in the console does. Next: ask the
+  owner to repeat a console action (save the webhook settings, redeem a CDK on the vendor's page) and watch
+  `supplier_events` on the demo. Unverified against the real vendor until then; the engine's polling /
+  reconcile path does not depend on webhooks. Rotate the signing keys (pasted in chat) before go-live.
 - **TOTP 2FA (spec §13): built, PR #10 open against `main`, CI green (backend, frontend, E2E).** Branch
   `feat/totp-2fa` (worktree `.claude/worktrees/totp`). Backend, buyer UI (login second step, Settings →
   Two-factor login), console UI (login second step, user menu, Users → Reset 2FA), en + zh-CN, API contract,
