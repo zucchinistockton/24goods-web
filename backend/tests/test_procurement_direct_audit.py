@@ -776,3 +776,82 @@ async def test_a_hand_pasted_card_id_and_a_matching_mask_both_block_a_funding_ca
     assert job.state == "needs_manual" and job.error_code == "no_source:plan_unavailable"
     assert not job.maybe_sent and vendor.direct_executions == 0
     assert buyer is not None
+
+
+# ------------------------------------------------------------------ [V] real sandbox preflight shapes
+def _adapter_env(vendor, env_name="sandbox"):
+    import httpx
+
+    from app.devtools.mock_zovocard import OK_KEY, create_mock_zovocard
+    from app.suppliers.zovocard import TokenBucket, ZovoCardSupplier, ZovoClient, ZovoConfig
+
+    http = httpx.AsyncClient(transport=httpx.ASGITransport(app=create_mock_zovocard(vendor)))
+    return ZovoCardSupplier(
+        "zovocard",
+        ZovoClient(
+            ZovoConfig(base_url="http://m/openapi/v1", app_secret=OK_KEY, env=env_name,
+                       allow_production_writes=True),
+            http=http, bucket=TokenBucket(6000, 100),
+        ),
+    )  # fmt: skip
+
+
+def _direct_spec(params=CLAUDE):
+    from app.suppliers.base import JobSpec, OfferSpec
+
+    jid = "aa" * 16
+    return JobSpec(
+        job_id=jid, step="sent", idempotency_key=f"pj:{jid}:submit",
+        offer=OfferSpec(kind="direct", params=params), credential=claude_session("A")
+        if params is CLAUDE else gpt_session(new_marker()),
+    )  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    ("over", "code"),
+    [
+        ({"blocking_reason": "account_locked"}, "preflight_blocked"),
+        ({"can_purchase_at": "2999-01-01T00:00:00Z"}, "purchase_not_yet"),
+        ({"subscription_recovery_required": True}, "subscription_recovery_required"),
+        ({"subscription_has_active": True}, "subscription_active"),
+    ],
+)
+async def test_the_accounts_own_preflight_state_blocks_the_order(over, code):
+    vendor = _vendor()
+    vendor.preflight_over = over
+    res = await _adapter_env(vendor).submit(_direct_spec())
+    assert res.outcome.value == "fatal" and res.error_code == code
+    assert vendor.direct_executions == 0 and not _posts(vendor, "/gpt-direct/orders")
+
+
+async def test_a_sandbox_that_never_quotes_does_not_fail_every_order():
+    vendor = _vendor()
+    vendor.direct_quotes_null = True  # [V] ``quotes: null``
+    sandbox = await _adapter_env(vendor, "sandbox").submit(_direct_spec(GPT))
+    assert sandbox.outcome.value == "accepted_pending" and vendor.direct_executions == 1
+    # production: no quote means no bound check, so no order
+    vendor2 = _vendor()
+    vendor2.direct_quotes_null = True
+    prod = await _adapter_env(vendor2, "production").submit(_direct_spec(GPT))
+    assert prod.outcome.value == "fatal" and prod.error_code == "quote_missing"
+    assert vendor2.direct_executions == 0
+    # Claude / Grok have a constant catalogue price: still bound-checked without a quote
+    vendor3 = _vendor()
+    vendor3.direct_quotes_null = True
+    ok = await _adapter_env(vendor3, "production").submit(_direct_spec(CLAUDE))
+    assert ok.outcome.value == "accepted_pending"
+
+
+async def test_a_busy_cooling_or_deleted_funding_card_is_not_used_now():
+    from app.suppliers.base import OfferSpec
+
+    vendor = _vendor()
+    sup = _adapter_env(vendor)
+    spec = OfferSpec(kind="direct", params=CLAUDE)
+    vendor.usage_busy.add(4242)
+    av = await sup.availability(spec)
+    assert not av.available and av.reason == "funding_card_busy"
+    vendor.usage_busy.clear()
+    vendor.cards[4242]["status"] = "DELETED"
+    av = await sup.availability(spec)
+    assert not av.available and av.reason == "funding_card_invalid"

@@ -287,6 +287,9 @@ class MockZovo:
     direct_expire_next: int = 0  # the next N preflight tokens are issued already expired
     direct_cancel_409: bool = False  # every cancel answers 409 (payment already started)
     direct_quote_factor: float = 1.0  # the preflight quotes are inflated by this factor
+    direct_quotes_null: bool = False  # [V] the real sandbox answers ``quotes: null``
+    preflight_over: dict[str, Any] = field(default_factory=dict)  # preflight fields overridden
+    usage_busy: set[int] = field(default_factory=set)  # funding cards that are busy / cooling
     direct_fee_status: str = "held"  # ``service_fee_status`` of an order that did not complete
     direct_omit: set[str] = field(default_factory=set)  # order-view fields left out (a quirk)
     direct_order_over: dict[str, Any] = field(default_factory=dict)  # order-view overrides
@@ -558,7 +561,12 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
                     ).isoformat(),
                     "payment_country": country,
                     "payment_currency": currency,
-                    "quotes": quotes,
+                    "quotes": None if mock.direct_quotes_null else quotes,
+                    "blocking_reason": "",
+                    "can_purchase_at": None,
+                    "subscription_has_active": False,
+                    "subscription_recovery_required": False,
+                    **mock.preflight_over,
                     "quote_error": mock.direct_quote_error,
                 },
             )
@@ -794,8 +802,12 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
                 return JSONResponse({"code": 404, "msg": "no card"}, 404)
             left = mock.usage_remaining.get(cid, 5)
             return JSONResponse(
-                _env(0, {"light": {"used": 5 - left, "remaining": left, "cap": 5},
-                         "pro20": {"used": 0, "remaining": 3, "cap": 3}})
+                _env(0, {"card_id": cid, "card_status": mock.cards[cid]["status"],
+                         "product": request.query_params.get("product", "gpt"),
+                         "light": {"used": 5 - left, "remaining": left, "cap": 5},
+                         "pro20": {"used": 0, "remaining": 3, "cap": 3},
+                         "count_failures": True, "cooling": False,
+                         "decline_count": 0, "busy": cid in mock.usage_busy})
             )  # fmt: skip
         m_order = re.fullmatch(r"/gpt-direct/orders/([0-9]{1,12})", path)
         if m_order:

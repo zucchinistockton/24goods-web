@@ -801,10 +801,12 @@ class ZovoCardSupplier:
             usage = await self.client.get(
                 f"/gpt-direct/cards/{spec.card_id}/usage", params={"product": spec.product}
             )
-            remaining = dr.usage_remaining(usage.data, spec.plan)
+            remaining, waiting, usage_status = dr.usage_state(usage.data, spec.plan)
         except SupplierError:
-            remaining = None
-        return dr.funding_card_problem(detail.status, enough, remaining), mask
+            remaining, waiting, usage_status = None, False, None
+        if usage_status is not None and usage_status != "ACTIVE":
+            return "funding_card_invalid", mask  # e.g. DELETED
+        return dr.funding_card_problem(detail.status, enough, remaining, waiting), mask
 
     async def _preflight(self, spec: dr.DirectSpec, credential: str) -> dr.Preflight | Result:
         """``POST /gpt-direct/preflight``: validates the credential and quotes (read-only upstream;
@@ -864,6 +866,9 @@ class ZovoCardSupplier:
                 return Result(Outcome.FATAL, error_code="session_other_account", **seen)
             if pf.current_plan == spec.plan:
                 return Result(Outcome.FATAL, error_code="plan_already_active", **seen)
+            blocked = _account_problem(pf)
+            if blocked is not None:  # support can explain these; nothing is sent
+                return Result(Outcome.FATAL, error_code=blocked, **seen)
             over = await self._quote_problem(spec, pf, job)
             if over is not None:
                 return Result(Outcome.FATAL, error_code=over, **seen)
@@ -914,8 +919,12 @@ class ZovoCardSupplier:
                 and entry.checkout_amount_minor is not None
             ):
                 quote = (entry.checkout_amount_minor, entry.checkout_currency or "USD", 2)
+            elif self.env == "sandbox":
+                # [V] the sandbox never quotes (``quotes: null``): the budget cannot be checked
+                # against a price that does not exist; the offer's cost bound stays the ceiling
+                return None
             else:
-                return "quote_missing"
+                return "quote_missing"  # production: no price, no bound check, no order
         minor, currency, exp = quote
         amount = Decimal(minor).scaleb(-exp)
         tol = Decimal(1) + job.quote_tolerance
@@ -1322,3 +1331,16 @@ def _order_detail(order: Mapping[str, Any]) -> str:
     if order.get("funding_hold_status"):
         parts.append(clean_status(order.get("funding_hold_status")))
     return ":".join(parts)[:32]
+
+
+def _account_problem(pf: dr.Preflight) -> str | None:
+    """The preflight says this account cannot take the order now [V]: refused before any send."""
+    if pf.blocking_reason:
+        return "preflight_blocked"
+    if pf.can_purchase_at is not None and pf.can_purchase_at > datetime.now(timezone.utc):
+        return "purchase_not_yet"
+    if pf.recovery_required:
+        return "subscription_recovery_required"
+    if pf.has_active:
+        return "subscription_active"
+    return None

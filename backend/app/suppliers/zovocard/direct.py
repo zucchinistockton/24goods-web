@@ -148,9 +148,12 @@ class Preflight:
     current_plan: str | None
     expires_at: datetime | None
     quote_error: bool
-    quotes: Mapping[str, tuple[int, str, int]] = field(
-        default_factory=dict
-    )  # plan -> (minor, cur, exp)
+    quotes: Mapping[str, tuple[int, str, int]] = field(default_factory=dict)
+    # [V] real sandbox preflight: the account's state, read before any order
+    blocking_reason: str = ""
+    can_purchase_at: datetime | None = None
+    has_active: bool = False
+    recovery_required: bool = False
 
 
 def parse_preflight(data: Any, parse_time: Any) -> Preflight | None:
@@ -184,15 +187,23 @@ def parse_preflight(data: Any, parse_time: Any) -> Preflight | None:
         expires_at=parse_time(data.get("preflight_expires_at")),
         quote_error=bool(str(data.get("quote_error") or "").strip()),
         quotes=quotes,
+        blocking_reason=clean_reason(data.get("blocking_reason")),
+        can_purchase_at=parse_time(data.get("can_purchase_at")),
+        has_active=data.get("subscription_has_active") is True,
+        recovery_required=data.get("subscription_recovery_required") is True,
     )
 
 
-def funding_card_problem(status: str, available_ok: bool, remaining: int | None) -> str | None:
+def funding_card_problem(
+    status: str, available_ok: bool, remaining: int | None, waiting: bool = False
+) -> str | None:
     """Why the funding card cannot pay (None = it can): not ACTIVE, or its usage cap is used up."""
     if status != "ACTIVE":
         return "funding_card_invalid"
     if remaining is not None and remaining == 0:
         return "funding_card_exhausted"
+    if waiting:
+        return "funding_card_busy"  # busy / cooling down: park, never send now
     if not available_ok:
         return "funding_card_low"
     return None
@@ -208,6 +219,22 @@ def usage_remaining(data: Any, plan: str) -> int | None:
     if isinstance(rem, bool) or not isinstance(rem, int) or rem < 0:
         return None
     return rem
+
+
+def clean_reason(v: Any) -> str:
+    """``blocking_reason`` is vendor text: only its presence matters; keep a machine-safe stub."""
+    s = str(v or "").strip()
+    return re.sub(r"[^a-z0-9_]", "_", s.lower())[:24] if s else ""
+
+
+def usage_state(data: Any, plan: str) -> tuple[int | None, bool, str | None]:
+    """``(remaining, busy_or_cooling, card_status)`` of ``GET /gpt-direct/cards/{id}/usage`` [V].
+    ``remaining`` -1 / unreadable -> ``None``; ``busy`` / ``cooling`` = not usable right now."""
+    if not isinstance(data, Mapping):
+        return None, False, None
+    waiting = data.get("busy") is True or data.get("cooling") is True
+    st = data.get("card_status")
+    return usage_remaining(data, plan), waiting, st.upper() if isinstance(st, str) else None
 
 
 def order_id_of(data: Any) -> str | None:
