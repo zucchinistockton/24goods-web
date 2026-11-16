@@ -1167,3 +1167,33 @@ async def test_n5_refund_leaves_a_delivered_unit_alone(env, up):
     assert r.status_code in (200, 409, 422), r.text
     job = await _job(up, order)
     assert job.state == "fulfilled" and len(mock.charged) == 1
+
+
+async def test_n8_parked_job_fails_over_to_a_healthy_source_and_alerts_when_stuck(env, up):
+    a = MockSupplier("mock_a")
+    await up.supplier(a, code="mock_a", priority=10)
+    _buyer, order = await up.paid_order()
+    await _create_jobs_only(up)  # queued on A, nothing sent
+    pause = (
+        "UPDATE suppliers SET breaker_open = true, breaker_kind = 'balance', "
+        "breaker_reason = 'balance_low' WHERE code = 'mock_a'"
+    )
+    await _sql(env, pause)
+    await up.run()
+    job = await _job(up, order)
+    assert job.state == "queued" and job.error_code == "balance_breaker"  # no alternative: parked
+    # a long park alerts like any stuck job
+    await _sql(env, "UPDATE procurement_jobs SET created_at = now() - interval '2 hours'")
+    await up.make_due()
+    await up.run()
+    assert await env.scalar(
+        "SELECT count(*) FROM audit_log WHERE action = 'procurement.job_stuck'"
+    ) == 1  # fmt: skip
+    # a healthy alternative appears: the parked job moves there at once (nothing was sent)
+    b = MockSupplier("mock_b")
+    await up.supplier(b, code="mock_b", priority=20)
+    await up.make_due()
+    for _ in range(3):
+        await up.run()
+    job = await _job(up, order)
+    assert job.state == "fulfilled" and a.calls == [] and len(b.charged) == 1

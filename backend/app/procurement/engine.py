@@ -895,8 +895,16 @@ async def _lease(ctx: ProcurementContext, job_id: uuid.UUID, tenant_id: uuid.UUI
             if gate := _balance_gate(ctx, offer, now):
                 # a low (breaker) or unknown (stale reading) balance: wait, never fail over or
                 # give up; the job resumes by itself when the balance is known and sufficient
+                if gate == "balance_breaker":
+                    # nothing was sent, so another usable source is safe to try right away (N8)
+                    tried = [*list(job.tried_offer_ids or []), job.offer_id]
+                    if await candidates(ctx, db, order, tried):
+                        await _failover(ctx, db, job, order, gate)
+                        await db.commit()
+                        return None
                 job.error_code = gate
                 job.next_poll_at = now + BALANCE_BACKOFF
+                await _alert_if_stuck(db, job, now)  # a long park is still a stuck job
                 await db.commit()
                 return None
             if job.step != "ready":
@@ -1212,6 +1220,24 @@ async def _apply_detached(
         job.next_poll_at = now + _backoff(job.attempts, res.retry_after)
 
 
+async def _alert_if_stuck(db: AsyncSession, job: ProcurementJob, now: datetime) -> None:
+    if (
+        job.state in ACTIVE
+        and job.alerted_at is None
+        and job.created_at is not None
+        and now - job.created_at > STUCK_AFTER
+    ):
+        job.alerted_at = now
+        await audit(
+            db,
+            tenant_id=job.tenant_id,
+            action="procurement.job_stuck",
+            target=f"procurement_job:{job.id}",
+            detail={"state": job.state, "order_id": str(job.order_id)},
+            severity="warning",
+        )
+
+
 async def _apply(ctx: ProcurementContext, lease: Lease, res: Result) -> None:
     now = utcnow()
     async with tenant_session(ctx.maker, lease.tenant_id) as db:
@@ -1287,21 +1313,7 @@ async def _apply(ctx: ProcurementContext, lease: Lease, res: Result) -> None:
             if res.error_code != "IDEMPOTENCY_CONFLICT":
                 _unsent(job)  # (a conflicting key HAS been used: the first request may have run)
             await _needs_manual(db, job, res.error_code or "fatal")
-        if (
-            job.state in ACTIVE
-            and job.alerted_at is None
-            and job.created_at is not None
-            and now - job.created_at > STUCK_AFTER
-        ):
-            job.alerted_at = now
-            await audit(
-                db,
-                tenant_id=job.tenant_id,
-                action="procurement.job_stuck",
-                target=f"procurement_job:{job.id}",
-                detail={"state": job.state, "order_id": str(job.order_id)},
-                severity="warning",
-            )
+        await _alert_if_stuck(db, job, now)
         await db.commit()
 
 
