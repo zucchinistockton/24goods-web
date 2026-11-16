@@ -225,6 +225,15 @@ const zhCN: WebMessages = {
     desktopHint: '客服回复且此页面在后台时提醒',
     denied: '浏览器已禁止通知，请在浏览器设置中允许',
   },
+  cardOtp: {
+    title: '此卡的验证码',
+    none: '使用此卡付款时，如果商家要求输入一次性验证码（3-D Secure），验证码会在几秒内显示在这里。付款时请保持此页面打开。',
+    check: '查询验证码',
+    expiresIn: '{time} 后消失',
+    copy: '复制验证码',
+    copied: '已复制',
+    copyFailed: '复制失败，请手动输入验证码。',
+  },
   twoFactor: {
     title: '两步验证',
     cellHint: '登录时需要输入手机上的验证码',

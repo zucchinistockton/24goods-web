@@ -167,11 +167,13 @@ const zhCN: MessageSchema = {
   deliveryMode: {
     auto_card: '自动发货',
     upstream_cdk: '自动发货',
+    upstream_vcc: '自动发货',
     manual: '人工发货',
   },
   deliveryModeLong: {
     auto_card: '自动发货（卡密即时到账）',
     upstream_cdk: '自动发货（卡密即时到账）',
+    upstream_vcc: '自动发货（虚拟卡即时到账）',
     manual: '卖家人工发货',
   },
   delivery: {

@@ -24,6 +24,7 @@ from app.core.deps import client_ip, get_db, get_res
 from app.core.ratelimit import hit
 from app.core.resources import Resources
 from app.models import Outbox, SupplierAccount, SupplierWebhookEvent, Tenant
+from app.modules.orders import card_otp
 from app.suppliers.base import WebhookRejected
 from app.suppliers.zovocard.webhook import MAX_BODY, normalise, verify_signature
 
@@ -93,7 +94,12 @@ async def zovocard_webhook(
         log.warning("zovocard webhook: no %s supplier account on this tenant", env)
         return Response(status_code=200)
     new = 0
-    for ev in events:
+    otps = {}  # event index -> (card id, code), read from the raw items only
+    for i, item in enumerate(items):
+        found = card_otp.extract_otp(item)
+        if found is not None:
+            otps[i] = found
+    for idx, ev in enumerate(events):
         eid = uuid.uuid4()
         inserted = await db.scalar(
             pg_insert(SupplierWebhookEvent)
@@ -111,6 +117,12 @@ async def zovocard_webhook(
         if inserted is None:
             continue  # duplicate delivery (at-least-once): already queued once
         new += 1
+        if idx in otps:  # a duplicate delivery never re-sends a code (dedup above)
+            card_id, otp = otps.pop(idx)
+            await card_otp.forward(
+                db, res.redis, tenant_id=tenant, supplier_id=supplier_id, card_id=card_id, otp=otp
+            )
+            del otp
         db.add(
             Outbox(
                 tenant_id=tenant,

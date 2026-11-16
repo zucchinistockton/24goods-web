@@ -120,6 +120,28 @@ def dec(value: Any) -> Decimal:
     return d
 
 
+CARD_FIELD_SEP = "----"  # the sealed card secret is ``<pan>----<MM/YY>----<cvv>``
+_PAN_RE = re.compile(r"^[0-9]{12,19}$")
+_EXP_RE = re.compile(r"^(0[1-9]|1[0-2])/([0-9]{2}|[0-9]{4})$")
+_CVV_RE = re.compile(r"^[0-9]{3,4}$")
+
+
+def card_secret(pan: str, expiry: str, cvv: str) -> str | None:
+    """The ONE sealed secret of a virtual card, or ``None`` for malformed fields. Used for what a
+    supplier returns and for a hand-pasted card, so both end up byte-identical in the vault."""
+    pan = re.sub(r"[ -]", "", str(pan or ""))
+    expiry, cvv = str(expiry or "").strip(), str(cvv or "").strip()
+    if not (_PAN_RE.fullmatch(pan) and _EXP_RE.fullmatch(expiry) and _CVV_RE.fullmatch(cvv)):
+        return None
+    return CARD_FIELD_SEP.join((pan, expiry, cvv))
+
+
+def canonical_card_secret(text: str) -> str | None:
+    """A pasted ``pan----MM/YY----cvv`` normalised (spaces in the number removed), or ``None``."""
+    parts = str(text or "").strip().split(CARD_FIELD_SEP)
+    return card_secret(*parts) if len(parts) == 3 else None
+
+
 @dataclass(frozen=True)
 class Money:
     amount: Decimal
@@ -140,14 +162,19 @@ class Result:
     cost: Money | None = None
     retry_after: timedelta | None = None
     supplier_stop: bool = False  # account-level refusal: open the supplier breaker
+    card_mask: str | None = None  # vcc: masked card number (never the full one)
 
     @classmethod
-    def from_error(cls, exc: SupplierError) -> Result:
+    def from_error(
+        cls, exc: SupplierError, *, upstream_ref: str | None = None, card_mask: str | None = None
+    ) -> Result:
         return cls(
             outcome=exc.outcome,
             error_code=exc.reason,
             retry_after=exc.retry_after,
             supplier_stop=exc.supplier_stop,
+            upstream_ref=upstream_ref,
+            card_mask=card_mask,
         )
 
 
@@ -171,6 +198,7 @@ class LedgerRow:
     balance_after: Decimal | None = None
     ref_id: str | None = None
     card_mask: str | None = None
+    card_id: str | None = None  # card rows: the vendor card id (links the row to its job)
 
 
 @dataclass(frozen=True)

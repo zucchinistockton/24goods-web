@@ -58,6 +58,7 @@ async def _exposure(
                 .where(
                     ProcurementJob.tenant_id == ref_tenant,
                     ProcurementJob.supplier_id == supplier_id,
+                    ProcurementJob.kind == "cdk",  # a card is paid at purchase: nothing to reserve
                     ProcurementJob.state == "fulfilled",
                     ProcurementJob.upstream_ref.is_not(None),
                     ProcurementJob.upstream_status.not_in(_REDEEMED)
@@ -107,7 +108,7 @@ async def _exposure(
             fn = getattr(supplier, "redemption_cost", None)
             if fn is not None:
                 try:
-                    money = await fn(OfferSpec(kind="cdk", params=dict(off.params or {})))
+                    money = await fn(OfferSpec(kind=off.kind, params=dict(off.params or {})))
                 except Exception as exc:  # an unreadable catalog falls back to the configured cost
                     log.warning("redemption cost unavailable error=%s", type(exc).__name__)
                     money = None

@@ -528,3 +528,204 @@ Engine rules added after the payment-auditor pass (migration `0027`; tests `test
 - **Refund (N5).** `fulfilled`, undelivered units go to `void_pending` (disable + void the `card_stock` row).
 - **Parked jobs (N8).** A queued never-sent job behind a balance breaker fails over when another source exists; the
   stuck alert also fires for a long park. A `maybe_sent` job with a NULL `request_hash` is treated like a mismatch.
+
+## 17. M3 — `upstream_vcc` (virtual cards bought per order)
+
+Migration `0028_procurement_vcc`; tests `backend/tests/test_procurement_vcc.py` (+ the `upstream_vcc` step of
+`e2e/smoke.py`). `upstream_direct` is **not** part of this part. Frontend: not built, the API it needs is listed below.
+Everything M2 and §16 established applies to cards unchanged (order-status check in every executing mode,
+`maybe_sent`, same-key replay, `request_hash`, replay age, recovery, void of fulfilled-undelivered units, both
+breakers, fail-closed cost). Production supplier writes stay gated exactly as in M2
+(`APP_PROCUREMENT_ALLOW_PRODUCTION_WRITES`).
+
+### 17.1 Offer parameters and availability
+
+A product with `delivery_mode = upstream_vcc` has sources (`supplier_offers.kind = 'vcc'`, the kind follows the
+TARGET product's mode, never the request). `params` (decimal strings, at most 2 decimals, validated by
+`vcc_spec()` on create/patch and again before every send):
+
+| key | meaning |
+|---|---|
+| `product_code` | the supplier's card product (`GET /products`) `[A-Za-z0-9_-]{1,40}` |
+| `init_amount` | opening amount in USD (> 0, <= 100000) |
+| `recharge_amount` | optional top-up after opening (own idempotency key, see below) |
+| `first_name`, `last_name` | optional cardholder name, letters only (default `Digital` / `Goods`) |
+
+Availability (read-only, fresh before the first send): the product is listed and `enabled is True`, `init_amount >=
+min_amount` and `init_amount + recharge_amount <= max_amount` (`amount_out_of_range` otherwise, a definite "no" that
+fails over / goes to `needs_manual` without a call). The adapter names the cost (`init + recharge + open_fee`), so a
+source can be enabled without a staff `cost_estimate` (`cost_known`). Amounts always come from the offer; a buyer
+never sends one (§1.3). Storefront stock follows the same rule as CDK (an enabled source, last check passed, breaker
+closed). Catalogue and offer cost are cached 60 s; the engine's pre-check bypasses the cache.
+
+### 17.2 State machine (one job per unit; same states as §4)
+
+```
+queued -> [precheck: availability, fresh] -> submitting (step ready -> sent; maybe_sent = true, committed first)
+   submit/query = ONE idempotent walk, every step under its own fixed key:
+     1. POST /cards/open      key pj:<job>:submit      ONLY while the job has no card id (17.8 F2); afterwards
+                              the walk continues on the recorded card, never opens again
+     2. GET /cards/{id}       balance witness: skip the top-up when available >= init + recharge (17.8 F5)
+        [recharge_amount]     else GET /cards/{id}/recharges first; a row = it ran (never POST again), else
+                              POST /cards/recharge   key pj:<job>:recharge
+     3. GET /cards/{id}       must be ACTIVE and hold the expected amount; PAN / expiry / CVV -> Result.secrets
+   OK                  -> fulfilled (card_stock row, procure.fulfilled when every unit is)
+   recharge "pending"  -> accepted_pending, step pending; polls re-run the walk, which reads the recharge list
+                          and NEVER POSTs the recharge again (the vendor's pending 400 is not cached)
+   AMBIGUOUS / timeout -> reconcile: the same walk under the same keys (open and recharge replay as cache hits)
+   refused after open  -> the card id is recorded on EVERY answer that carries it, so the job is never "nothing
+                          happened" (no failover, `needs_manual`, flagged maybe charged, voidable)
+fulfilled (delivered or not) / refund / close -> void_pending: DELETE /cards/{id} (key pj:<job>:void) -> voided
+                          (a refund of a DELIVERED card also deletes it, 17.8 F1); a refused / unresolved void ->
+                          needs_manual `void_failed` (17.8 F3)
+closed job with a possible card (recover) -> one same-key open replay learns the card id (no recharge, no reveal,
+                          nothing sealed), then the card is deleted
+```
+
+Void = **`DELETE /cards/{id}` only**. The vendor returns the whole remaining balance to the wallet on delete; the
+separate `POST /cards/refund` must leave USD 1 on the card and adds nothing (deviation from the §5 table, safer).
+`GET /cards/{id}` already answering `DELETED` is "done"; a `202` is "pending" (the engine asks again with backoff, the
+read answers). Recharge-pending is resolved only through `GET /cards/{id}/recharges` (`success` -> continue; failed ->
+FATAL `recharge_failed`; still pending -> keep waiting); a pending job whose list is still empty waits, it does not POST.
+Error mapping uses the existing table; `/cards/recharge` keeps the "400 without a known terminal code is pending" rule.
+
+### 17.3 The card secret path (§1.1)
+
+* PAN, expiry and CVV are read from `GET /cards/{id}` (the open answer's copies are dropped in the adapter), joined
+  into ONE secret `"<pan>----<MM/YY>----<cvv>"` (`base.card_secret()`; format-validated: PAN 12-19 digits, expiry
+  `MM/YY[YY]`, CVV 3-4 digits) and returned only in `Result.secrets`. `Result.__repr__` hides it.
+* The engine seals it with the vault PUBLIC key (`CardSealer`, AAD = tenant, product, card_stock id) straight into
+  `card_stock` as `status = 'sold', order_id = <order>` (the 0024 policy still forbids anything else). `fingerprint`
+  and `lookup_fp` do NOT derive from the secret (see 17.8 S1). Procurement
+  holds no private key and no SELECT on `card_stock`.
+* Delivery reveals it through the existing path unchanged: `POST /orders/{id}/reveal` -> `{"secrets": [...], "cards":
+  [{"id", "code"}]}` where `code` is that one string. The buyer app splits it by the product's `delivery_separator`
+  and labels the parts with `delivery_format`. Backward compatible: nothing in the reveal API changed.
+* For a `upstream_vcc` product the API forces `delivery_separator = "----"` and a default `delivery_format`
+  (`Card number----Expiry (MM/YY)----CVV`) on create and patch (the sealed format depends on it).
+* Stored outside the vault there is only `procurement_jobs.card_mask` (first 6 + last 4, `mask_pan`) and the vendor
+  card id (`upstream_ref`). Webhook payloads are masked before insert, balance-log rows are masked in the adapter (the
+  vendor's `remark` is dropped). No log line, audit row, exception, Redis key or outbox payload carries a card field
+  (`test_no_card_secret_outside_the_vault` greps all of them, plus the live Redis keyspace).
+* Hand fulfil (`POST /admin/procurement/jobs/{id}/fulfil`, ADMIN only for a card job) takes `code = "<pan>----<MM/YY>----<cvv>"`,
+  validated by the same `canonical_card_secret()` (422 `bad_card`), sealed through the same path, `card_mask` set.
+
+### 17.4 Cost ledger
+
+Cost is booked exactly once per vendor balance-log row (`UNIQUE(supplier_id, external_id)`; webhook `balance_change`
+and the 10-minute backfill share one insert path). The opening charge arrives as `card_recharge`, the open fee as a
+separate `open_card` row, a top-up as another `card_recharge`, a delete as `card_refund` (positive). The row's own
+`ref_id` is the vendor's and is NOT the card id, so migration 0028 adds `supplier_ledger.card_id`; a card row links to
+its `vcc` job through `card_id = upstream_ref`. `job.cost` is the estimate (`init + recharge + open_fee`); the ledger is
+the truth. A card is paid at purchase: the balance breaker reserves only IN-FLIGHT card jobs (the CDK
+"issued, unredeemed" reserve is limited to `kind = 'cdk'`).
+
+### 17.5 Webhooks and 3DS
+
+* `card_operation` / `card_transaction` / `card_fee` are hints. `card_operation` with a `card_id` of a `vcc` job
+  records `upstream_status = "<operation>:<status>"` and makes an ACTIVE job due (never under a live lease: L6 is
+  fixed for CDK events too). The re-query stays the truth; `card_transaction` / `card_fee` change nothing (fees reach the
+  ledger only as `balance_change`).
+* **3DS over SSE (built).** `card_3ds_otp` is the only event whose secret (`otp`) is read from the RAW verified body
+  (`modules/orders/card_otp.py`); `supplier_events` keeps only the masked whitelist payload. For a NEW event (a
+  duplicate delivery never re-sends) the code goes to the owner of the card only: webhook `card_id` -> `fulfilled`
+  `vcc` job -> order -> buyer, and only while the order is `delivered`/revealable; otherwise it is dropped. It is
+  `SET otp3ds:<order>:<unit> EX 300` in Redis and published once on that buyer's realtime channel as event `card_otp`;
+  it never reaches PostgreSQL, logs, audit rows (a `card.otp_forwarded` row records the unit, not the code) or the
+  outbox. Not verified against the real vendor: the field names are as documented (`otp`, `card_id`) and the sandbox
+  cannot trigger one (§12, §14.3). No vendor event was observed; the path is covered by signed self-made events.
+
+### 17.6 API the buyer app and the console need
+
+Buyer (`/api/v1`):
+
+| Route | Notes |
+|---|---|
+| `POST /orders` with an `upstream_vcc` product | unchanged; quantity capped by `MAX_UPSTREAM_QTY` (5); the existing out-of-stock error when no source is usable |
+| `POST /orders/{ref}/reveal` | unchanged; `cards[].code` is `pan----MM/YY----cvv` for card orders |
+| `GET /orders/{ref}/card-otp` | NEW. Owner only (404 otherwise, also for non-card orders), `Cache-Control: no-store`, 60 req/min. `{"items": [{"otp", "card" (masked), "unit", "expires_in" (s)}]}`; empty when none is live |
+| SSE `GET /stream`, event `card_otp` | NEW. `{"order_id", "otp", "card", "unit", "expires_in"}`; show it once, never persist it client-side beyond the page |
+| order detail | an order that is `paid` for a while shows the existing `paid`/`manual_review` messages; no new fields |
+
+Console (admin, staff):
+
+| Route | Change |
+|---|---|
+| `POST /admin/products`, `PATCH /admin/products/{id}` | `delivery_mode` accepts `upstream_vcc` (separator/format forced, see 17.3) |
+| `POST /admin/procurement/sources` / `PATCH .../{id}` | `params` for a card product: `product_code`, `init_amount`, optional `recharge_amount`, `first_name`, `last_name` (strings; `plan` is for CDK products only). Errors: 422 `bad_params`, `cost_required` (when enabling without a usable cost) |
+| `POST /admin/procurement/sources/{id}/check` | availability incl. `amount_out_of_range` / `not_purchasable` |
+| `GET /admin/procurement/jobs`, `/{id}` | new `card_mask`; `kind = "vcc"`; `upstream_status` is `active`/`deleted` or the last webhook `operation:status`; no secret ever |
+| `POST /admin/procurement/jobs/{id}/fulfil` | card jobs: `code = "<pan>----<MM/YY>----<cvv>"`, 422 `bad_card` |
+| `.../void`, `/fail`, `/retry`, `/requery`, `/switch` | unchanged semantics; void = delete at the supplier |
+
+New error codes: `bad_card` (422), `bad_params` (existing, now also for card params), job `error_code` values
+`amount_out_of_range`, `malformed_open`, `malformed_card`, `recharge_pending`, `recharge_failed`, `delete_pending`.
+Settings: none new (the M2 ones apply: `APP_REPLAY_MAX_AGE_S`, `APP_BALANCE_STALE_S`, `APP_JOB_LEASE_S`, the
+production-write gate). Tenant isolation: every query filters by tenant; `test_cross_tenant_card_job_is_invisible`
+covers list, detail, every action and a row-level-security read.
+
+### 17.8 Payment-audit and security-review fixes (2026-11-16)
+
+Tests: `backend/tests/test_procurement_vcc_audit.py`. No migration change (0028 untouched).
+
+| # | Rule now |
+|---|---|
+| F1 | A refund / close of an order whose card job is `fulfilled` voids the card even when the order is DELIVERED (`void_pending`, DELETE returns the remaining balance), the local `card_stock` row goes to `void`, and a critical `procurement.delivered_card_voided` audit row is written. Delivered CDK codes are unchanged (after-sales). |
+| F2 | `POST /cards/open` is sent only while the job has no card id. With `upstream_ref` known the walk continues on that card. An answer that carries a different id than the recorded one is never adopted: `needs_manual` `card_mismatch`, `maybe_sent` kept, critical `procurement.card_mismatch` audit with both ids (not secrets). The reference (and the first cost) is recorded on every answer that has one. |
+| F3 | A void the supplier refuses, or that is unresolved after its budget, ends in `needs_manual` with `error_code = void_failed` and a critical `procurement.void_failed` audit row (CDK too; also closes the M2 re-audit note). Staff can retry with `void`. Budgets: 10 retries for an error, `VOID_PENDING_MAX` = 100 polls (~24 h at the 15-minute cap) for a pending delete. |
+| F4 | After the first `202` the engine persists step `delete_pending`; from then on only `GET /cards/{id}` runs until it says `DELETED` (the DELETE is never re-sent). |
+| F5 | The card read is the balance witness: no top-up when `available_amount >= init + recharge`; before sealing the card must be `ACTIVE` (`card_not_active` otherwise, FROZEN is not delivered) and hold the expected amount (`balance_short` -> `needs_manual`). Unreadable amount/status = `malformed_card` (ambiguous). |
+| F6 | Hand-pasting a card whose mask differs from the vendor mask already recorded overwrites `card_mask` with the delivered card's, and writes a critical `procurement.manual_card_differs` audit row with BOTH masks and the vendor card id (the vendor's card is an orphan to delete with `void`). Every card paste writes `procurement.card_pasted` (mask only). |
+| F7 | A void waits (`recharge_pending`, same poll budget) while a recharge row is non-terminal instead of deleting under it. |
+| F8 | On `/cards/recharge` only a 400 WITHOUT `error_code` is "pending". A coded 400 keeps its table rule, an unknown code is FATAL (`needs_manual`). |
+| F9 | Any ledger row with a `card_id` links to its `vcc` job (not only the known card types). |
+| F10 | The estimate / reserve includes the top-up fee: `recharge_amount x catalogue recharge_fee` (a rate; 0 when the catalogue does not list one). The ledger rows stay the truth. |
+| F11 | `card_operation` dedup key uses the card id when `operation_id` is empty (delete); the OTP forwarder and the dedup MAC read the same field list (`otp`, `code`, `verification_code`). |
+| S1 | A card's `card_stock.fingerprint` is `HMAC(fp_key, tenant | "vcc" | vendor card id)` (hand-pasted: order id, unit, last 4) via `CardSealer.card_fingerprint`, and `lookup_fp` is NULL. No PAN / expiry / CVV is an input of any key the API can compute, so a database read plus `fp_key` recovers nothing. Staff find a card by `card_mask` / card id, not by its number ("find cards" no longer matches a card by content or first field). Imports and replacements only exist for `auto_card`. |
+| S2 | Hand fulfil of a `vcc` job needs an admin (403 for agents). A `reason` with 12+ digits (spaces/dashes allowed between them) is refused with 422 on every job action (fulfil, fail, void, ...). |
+| S3 | `test_card_secret_never_leaves_the_vault_strict_sweep`: every public table via `row_to_json`, admin job/source/order HTTP bodies, pub/sub payloads and DEBUG logs, with a standalone 4-digit CVV and a `MM/YY` expiry, across two failure paths (ambiguous open, malformed card read). |
+| S4 | `GET /orders/{ref}/card-otp` is empty unless the order status is revealable. |
+
+New fields / codes: job `error_code` `card_mismatch`, `void_failed`, `card_not_active`, `balance_short`; job `step`
+`delete_pending`; audit actions `procurement.delivered_card_voided`, `.card_mismatch`, `.void_failed`, `.card_pasted`,
+`.manual_card_differs`. Not changed: routes and settings.
+
+### 17.9 Re-audit notes (2026-11-16, round 3)
+
+* **Balance witness tolerates REPORTED fees.** Required balance = `init + recharge - (card open_fee + sum of the
+  successful recharge rows' fee)`, never below `init - open_fee`; a card under that is `balance_short`. A recharge row
+  existing still dominates ("it ran, never POST again"). A `balance_short` / `card_not_active` job has `upstream_ref`,
+  `maybe_sent`, `card_mask`; the job view adds `card_id` (the supplier's id, not secret), `charged_possible` is true,
+  `switch` is not offered and `void` deletes the card.
+* **Hand-pasted card dedup.** The fingerprint no longer derives from the secret, so a paste is refused with 409
+  `duplicate_code` when another non-voided card job of the tenant has the same `card_mask` (first 6 + last 4; a collision
+  of two different live cards in one tenant is rare and acceptable: void the other or give the vendor card id). The
+  paste body may carry the supplier's `card_id`; it becomes the fingerprint input exactly as in the engine path, so the
+  UNIQUE catches an engine/hand overlap (409 `duplicate_code`).
+* **`void_failed` alert.** A job that ends in `needs_manual` `void_failed` raises its own staff alert through the
+  reconciler's procurement alert path (`proc.void_failed`, en + zh-CN, once per job: key
+  `procurement_job:<id>:void_failed`), not only an audit row.
+* **Admin `void` and `delete_pending`.** Voiding a job whose step is `delete_pending` keeps that step (no second
+  DELETE, the card is only read); only a job in `void_failed` (step `done`) restarts the void from the beginning.
+
+### 17.7 Left open
+
+* The recharge-pending 400 body and the `card_3ds_otp` payload are still [I] (not reproducible in the sandbox); the
+  mock reproduces them as documented. Confirm with the first sandbox/production card.
+* `cards/open` replay window: the vendor's idempotency retention is unknown; `APP_REPLAY_MAX_AGE_S` (6 h) bounds it.
+* **Verified in the real sandbox [V] (saved responses, 2026-11-15):** `POST /cards/open` with 10 USD answers
+  `available_amount: 10`, `open_fee: 0`, `status: "ACTIVE"` (the card object carries `open_fee`);
+  `GET /cards/{id}/recharges` lists ONLY recharges (two recharges of 10 = two rows `{id, card_id, amount, fee, status:
+  "success"}`, the opening funding is not a row) and after two recharges the card read shows `available_amount: 30`;
+  `GET /cards/{id}` of a DELETED card answers HTTP 200 with `available_amount: 0` (not 404); `DELETE` answers
+  `{"pending": false}` (a `pending: true` is treated like a 202). Sandbox fees are 0, so whether a fee is taken from the
+  card balance or from the wallet is still unknown (17.9 tolerates exactly what the vendor reports). The mock mirrors
+  these shapes (`short_open`, `fee_from_card`, `recharge_fee` knobs).
+* The top-up fee uses the catalogue's `recharge_fee` as a rate (vendor 6.1); if the vendor changes its meaning the
+  estimate is off, the ledger is not.
+* `min_recharge` (card detail) is not read: a top-up below it answers `amount_below_min` (FATAL, `needs_manual`, the card
+  is deletable by `void`). Read it before the first top-up offers go live.
+* A card that is bought but never delivered because the buyer never reveals it stays `ACTIVE` at the supplier until the
+  refund/close path (no automatic expiry).
+* `upstream_direct`, the frontend (buyer card view with copy buttons + 3DS panel, console card-source form), and the
+  production egress allowlist (§14.4) remain.

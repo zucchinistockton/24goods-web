@@ -444,8 +444,10 @@ async function removeImage(url: string) {
             <el-radio-button value="auto_card">{{ t('deliveryMode.auto_card') }}</el-radio-button>
             <el-radio-button value="manual">{{ t('deliveryMode.manual') }}</el-radio-button>
             <el-radio-button value="upstream_cdk">{{ t('procurement.mode') }}</el-radio-button>
+            <el-radio-button value="upstream_vcc">{{ t('procurement.modeCard') }}</el-radio-button>
           </el-radio-group>
           <div v-if="form.delivery_mode === 'upstream_cdk'" class="hint muted">{{ t('procurement.modeHint') }}</div>
+          <div v-if="form.delivery_mode === 'upstream_vcc'" class="hint muted">{{ t('procurement.modeCardHint') }}</div>
         </el-form-item>
         <el-form-item :label="t('products.form.category')" :error="errors.category" required>
           <el-select v-model="form.category" filterable>

@@ -42,7 +42,7 @@ async def test_void_pending_disables_upstream_with_its_own_key(env, up):
     assert await env.scalar("SELECT count(*) FROM procurement_jobs WHERE state <> 'voided'") == 0
 
 
-async def test_void_rejected_puts_the_job_back(env, up):
+async def test_void_rejected_needs_staff_not_fulfilled(env, up):
     class Rejecting(MockSupplier):
         async def void(self, job: JobSpec) -> Result:
             self.calls.append(("void", job.idempotency_key))
@@ -57,7 +57,8 @@ async def test_void_rejected_puts_the_job_back(env, up):
     )
     await up.run()
     job = await _job(up)
-    assert job.state == "fulfilled" and job.error_code == "void_rejected:CDK_DISABLE_REJECTED"
+    # F3: never back to "fulfilled" while the supplier may still hold a live code
+    assert job.state == "needs_manual" and job.error_code == "void_failed"
     assert job.card_stock_ids
 
 

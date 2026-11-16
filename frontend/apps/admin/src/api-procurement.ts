@@ -14,8 +14,8 @@ export interface ProcSource {
   supplier_env: SupplierEnv
   supplier_enabled: boolean
   supplier_breaker_open: boolean
-  kind: 'cdk'
-  params: { plan: string; product?: string; payment_country?: string }
+  kind: 'cdk' | 'vcc'
+  params: SourceParams
   /** decimal string or null */
   cost_estimate: string | null
   currency: string
@@ -24,6 +24,18 @@ export interface ProcSource {
   last_check_ok: boolean | null
   last_check_at: string | null
   created_at: string
+}
+/** Code products use `plan` (+ `payment_country`); card products use `product_code` and the amounts. */
+export interface SourceParams {
+  plan?: string
+  product?: string
+  payment_country?: string
+  product_code?: string
+  /** decimal strings */
+  init_amount?: string
+  recharge_amount?: string
+  first_name?: string
+  last_name?: string
 }
 export interface SourceListing {
   product_id: string
@@ -35,14 +47,14 @@ export interface SourceInput {
   product_id: string
   variant_id?: string | null
   supplier_id: string
-  params: { plan: string; payment_country?: string }
+  params: SourceParams
   cost_estimate?: string
   currency?: string
   priority?: number
   enabled?: boolean
 }
 export interface SourcePatch {
-  params?: { plan: string; payment_country?: string }
+  params?: SourceParams
   cost_estimate?: string
   clear_cost?: boolean
   currency?: string
@@ -71,6 +83,9 @@ export interface ProcJob {
   attempts: number
   upstream_ref: string | null
   upstream_status: string | null
+  /** card jobs: first 6 + last 4 digits and the supplier's card id; never the full number */
+  card_mask?: string | null
+  card_id?: string | null
   cost: string | null
   currency: string | null
   next_poll_at: string | null
@@ -195,7 +210,8 @@ export function createProcurementApi(c: ApiClient) {
       requery: (id: string) => job(id, 'requery'),
       retry: (id: string) => job(id, 'retry'),
       switchSource: (id: string) => job(id, 'switch'),
-      fulfil: (id: string, code: string, reason: string) => job(id, 'fulfil', clean({ code, reason })),
+      fulfil: (id: string, code: string, reason: string, card_id?: string) =>
+        job(id, 'fulfil', clean({ code, reason, card_id })),
       void: (id: string, reason: string) => job(id, 'void', { reason }),
       fail: (id: string, reason: string) => job(id, 'fail', { reason }),
     },

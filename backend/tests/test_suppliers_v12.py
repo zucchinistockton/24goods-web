@@ -183,8 +183,13 @@ def test_recharge_pending_rule():
         classify(400, None, write=True, endpoint="cards.recharge").outcome
         is Outcome.ACCEPTED_PENDING
     )
-    pending = classify(400, "request_failed", write=True, endpoint="cards.recharge")
-    assert pending.outcome is Outcome.ACCEPTED_PENDING
+    # F8: a CODED 400 is an answer, never "pending": known codes keep their rule, unknown = FATAL
+    assert classify(400, "request_failed", write=True, endpoint="cards.recharge").outcome is (
+        Outcome.AMBIGUOUS
+    )
+    assert classify(400, "some_new_code", write=True, endpoint="cards.recharge").outcome is (
+        Outcome.FATAL
+    )
     for code in RECHARGE_TERMINAL_CODES:
         rule = classify(400, code, write=True, endpoint="cards.recharge")
         assert rule.outcome is not Outcome.ACCEPTED_PENDING

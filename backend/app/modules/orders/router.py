@@ -5,14 +5,16 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import Page, client_ip, current_user, get_db, get_lang, get_page, get_res
+from app.core.errors import NotFound
 from app.core.ratelimit import enforce
 from app.core.resources import Resources
 from app.core.storefront import Storefront, get_storefront
 from app.models import User
 from app.modules.challenges import service as challenge_service
+from app.modules.common.views import REVEALABLE
 from app.modules.orders import cancel as cancel_svc
+from app.modules.orders import card_otp, service
 from app.modules.orders import expedite as expedite_svc
-from app.modules.orders import service
 from app.modules.orders.riskctl import guard_order_create
 from app.modules.orders.schemas import BuyerCancelIn, BuyNowIn, InputIn, PayIn
 
@@ -125,6 +127,30 @@ async def reveal(
     return JSONResponse(
         {"secrets": [c["code"] for c in cards], "cards": cards},
         headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+    )
+
+
+@router.get("/{ref}/card-otp", response_model=None)
+async def card_otp_codes(
+    ref: str,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+    res: Resources = Depends(get_res),
+) -> JSONResponse:
+    """Live 3DS / one-time codes of the buyer's own virtual card(s), at most 5 minutes old. The
+    same codes are pushed on the buyer's SSE stream as ``card_otp``; this is for a page opened
+    late. Never cached, never stored in the database."""
+    await enforce(res.redis, "order:card-otp", str(user.id), 60, 60)
+    order = await service.get_owned(db, ref, user)
+    await db.commit()
+    if order.delivery_mode != "upstream_vcc":
+        raise NotFound("Order not found")
+    if order.status not in REVEALABLE:  # a code is only ever shown once the card is the buyer's
+        items: list = []
+    else:
+        items = await card_otp.pending_for(res.redis, order.id)
+    return JSONResponse(
+        {"items": items}, headers={"Cache-Control": "no-store", "Pragma": "no-cache"}
     )
 
 

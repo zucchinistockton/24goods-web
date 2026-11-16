@@ -27,11 +27,17 @@ from app.procurement.context import ProcurementContext
 from app.procurement.service import SupplierRef, make_supplier
 from app.suppliers.base import LedgerRow, clean_detail, dec
 from app.suppliers.registry import SupplierConfigError
-from app.suppliers.zovocard.supplier import parse_time
+from app.suppliers.zovocard.supplier import CARD_ROW_TYPES, parse_time
 
 log = logging.getLogger("app.procurement.ledger")
 
 LINK_TYPE_PREFIX = "gpt_direct"  # ref_id of these rows is the CDK / direct order, not a card id
+# card rows (review-v12 §12): the opening charge is booked as ``card_recharge``, the open fee as a
+# separate ``open_card`` row. Their ``ref_id`` is the vendor's own and is NOT the card id, so a card
+# row links to its job through ``card_id`` (= the job's ``upstream_ref`` of a ``vcc`` job).
+CARD_TYPES = CARD_ROW_TYPES
+
+
 MAX_ABS = Decimal("1000000000000")
 BACKFILL_PAGE_SIZE = 100
 BACKFILL_MAX_PAGES = 50  # hard cap per pass (5000 rows)
@@ -55,6 +61,12 @@ def row_from_event(payload: Mapping[str, Any]) -> LedgerRow | None:
     except ValueError:
         pass
     ref = payload.get("ref_id")
+    card = payload.get("card_id")
+    card_id = (
+        str(card)[:64]
+        if isinstance(card, (int, str)) and not isinstance(card, bool) and card != ""
+        else None
+    )
     mask = payload.get("card_number")
     cur = payload.get("currency")
     return LedgerRow(
@@ -66,6 +78,7 @@ def row_from_event(payload: Mapping[str, Any]) -> LedgerRow | None:
         balance_after=after,
         ref_id=str(ref)[:64] if isinstance(ref, (int, str)) and ref != "" else None,
         card_mask=mask[:24] if isinstance(mask, str) else None,
+        card_id=card_id,
     )
 
 
@@ -84,12 +97,16 @@ async def record_rows(
         if abs(r.amount) >= MAX_ABS:
             continue
         job_id = None
-        if r.ref_id and r.type.startswith(LINK_TYPE_PREFIX):
+        # any row that names a card links by card id (F9); gpt_direct rows by their order ref
+        card_row = r.card_id is not None
+        link = r.card_id if card_row else r.ref_id if r.type.startswith(LINK_TYPE_PREFIX) else None
+        if link:
             job_id = await db.scalar(
                 select(ProcurementJob.id).where(
                     ProcurementJob.tenant_id == tenant_id,
                     ProcurementJob.supplier_id == supplier_id,
-                    ProcurementJob.upstream_ref == r.ref_id,
+                    ProcurementJob.upstream_ref == link,
+                    *((ProcurementJob.kind == "vcc",) if card_row else ()),
                 )
             )
         inserted = await db.scalar(
@@ -106,6 +123,7 @@ async def record_rows(
                 job_id=job_id,
                 ref_id=r.ref_id,
                 card_mask=r.card_mask,
+                card_id=r.card_id,
                 occurred_at=r.occurred_at or fallback_time or datetime.now(timezone.utc),
             )
             .on_conflict_do_nothing(index_elements=["supplier_id", "external_id"])
@@ -141,7 +159,30 @@ async def link_rows(db: AsyncSession, tenant_id: uuid.UUID, supplier_id: uuid.UU
         )
         .values(job_id=job)
     )
-    return int(res.rowcount or 0)  # type: ignore[attr-defined]
+    card_job = (
+        select(ProcurementJob.id)
+        .where(
+            ProcurementJob.tenant_id == tenant_id,
+            ProcurementJob.supplier_id == supplier_id,
+            ProcurementJob.kind == "vcc",
+            ProcurementJob.upstream_ref == SupplierLedgerEntry.card_id,
+        )
+        .order_by(ProcurementJob.created_at)
+        .limit(1)
+        .scalar_subquery()
+    )
+    cards = await db.execute(
+        update(SupplierLedgerEntry)
+        .where(
+            SupplierLedgerEntry.tenant_id == tenant_id,
+            SupplierLedgerEntry.supplier_id == supplier_id,
+            SupplierLedgerEntry.job_id.is_(None),
+            SupplierLedgerEntry.card_id.is_not(None),
+            card_job.is_not(None),
+        )
+        .values(job_id=card_job)
+    )
+    return int(res.rowcount or 0) + int(cards.rowcount or 0)  # type: ignore[attr-defined]
 
 
 async def handle_balance_event(

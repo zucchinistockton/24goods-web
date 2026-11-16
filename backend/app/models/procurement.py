@@ -106,6 +106,8 @@ class ProcurementJob(Base):
     recover: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     lease_until: Mapped[datetime | None]
     first_sent_at: Mapped[datetime | None]
+    # 0028: masked card number of a purchased card (never the full number)
+    card_mask: Mapped[str | None] = mapped_column(String(24))
     created_at: Mapped[datetime] = created_at()
     updated_at: Mapped[datetime] = updated_at()
 
@@ -141,5 +143,6 @@ class SupplierLedgerEntry(Base):
     job_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("procurement_jobs.id"))
     ref_id: Mapped[str | None] = mapped_column(String(64))
     card_mask: Mapped[str | None] = mapped_column(String(24))
+    card_id: Mapped[str | None] = mapped_column(String(64))  # 0028: vendor card id of card rows
     occurred_at: Mapped[datetime]
     created_at: Mapped[datetime] = created_at()

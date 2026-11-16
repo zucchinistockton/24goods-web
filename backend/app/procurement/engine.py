@@ -76,7 +76,11 @@ TOPIC_FULFILLED = "procure.fulfilled"
 TOPIC_FAILED = "procure.failed"
 CONSUMED = (TOPIC_REQUESTED, TOPIC_EVENT)
 _CDK_TERMINAL = frozenset({"consumed", "disabled"})  # ZovoCard CDK statuses that do not move on
-UPSTREAM_MODES = ("upstream_cdk",)
+UPSTREAM_MODES = ("upstream_cdk", "upstream_vcc")
+MODE_KIND = {"upstream_cdk": "cdk", "upstream_vcc": "vcc"}  # delivery mode -> offer / job kind
+# vendor status recorded on a job: what a fresh purchase looks like / what a void leaves
+ISSUED_STATUS = {"cdk": "unused", "vcc": "active"}
+VOIDED_STATUS = {"cdk": "disabled", "vcc": "deleted"}
 ACTIVE = ("queued", "submitting", "accepted_pending")
 WORK = (*ACTIVE, "void_pending")  # states the poller leases (void_pending: disable upstream)
 POLL_STEPS = (15, 30, 60, 120, 300, 600, 900)  # seconds; capped at 15 min (spec §6)
@@ -85,7 +89,13 @@ MAX_RECONCILE = 40
 STUCK_AFTER = timedelta(minutes=30)
 # availability() reasons that mean "this plan cannot be bought" (anything else = lookup failed)
 PLAN_REFUSALS = frozenset(
-    {"not_purchasable", "invalid_offer", "cdk_gpt_only", "kind_not_supported_m1"}
+    {
+        "not_purchasable",
+        "invalid_offer",
+        "cdk_gpt_only",
+        "kind_not_supported_m1",
+        "amount_out_of_range",
+    }
 )
 OUTBOX_MAX_ATTEMPTS = 8
 
@@ -163,8 +173,9 @@ async def candidates(
     *,
     balance_open: bool = False,
 ) -> list[OfferRow]:
-    """Enabled ``cdk`` offers of enabled suppliers with a closed breaker for this exact target
-    (variant offers for variant orders, variant-less offers otherwise), in failover order.
+    """Enabled offers of the order mode's kind (``cdk`` / ``vcc``) of enabled suppliers with a
+    closed breaker for this exact target (variant offers for variant orders, variant-less offers
+    otherwise), in failover order.
     ``balance_open`` also lists suppliers held by the self-closing balance breaker (never a hard
     one): their queued jobs wait for the balance instead of failing."""
     variant_match = (
@@ -189,7 +200,7 @@ async def candidates(
             SupplierOffer.product_id == order.product_id,
             variant_match,
             SupplierOffer.enabled.is_(True),
-            SupplierOffer.kind == "cdk",
+            SupplierOffer.kind == MODE_KIND.get(order.delivery_mode, "cdk"),
             SupplierAccount.enabled.is_(True),
             SupplierAccount.breaker_open.is_(False)
             if not balance_open
@@ -392,9 +403,13 @@ async def close_order_jobs(
         if job.state in CLOSABLE:
             await close_job(db, job, reason, actor_id=actor_id, actor_role=actor_role, ip=ip)
             n += 1
-        elif job.state == "fulfilled" and undelivered:
-            # a code bound but never handed over (N5): never leave it valid at the supplier
-            await _void_fulfilled(db, job, reason, actor_id, actor_role, ip)
+        elif job.state == "fulfilled" and (undelivered or job.kind == "vcc"):
+            # a code bound but never handed over (N5): never leave it valid at the supplier. A
+            # CARD is live money even once delivered: a refund deletes it (the supplier returns
+            # whatever balance remains), unlike a delivered CDK code which after-sales handles.
+            await _void_fulfilled(
+                db, job, reason, actor_id, actor_role, ip, delivered=not undelivered
+            )
             n += 1
     return n
 
@@ -409,11 +424,25 @@ async def _void_fulfilled(
     actor_id: uuid.UUID | None,
     actor_role: str,
     ip: str | None,
+    *,
+    delivered: bool = False,
 ) -> None:
     """``fulfilled`` but undelivered unit of a refunded order: disable the code at the supplier
     (``void_pending``; ``voided`` at once when there is nothing to disable) and void the sealed
     ``card_stock`` row. Delivered units are never touched here (after-sales handles them)."""
     job.error_code = clean_detail(reason)
+    if delivered:
+        await audit(
+            db,
+            tenant_id=job.tenant_id,
+            action="procurement.delivered_card_voided",
+            actor_id=actor_id,
+            actor_role=actor_role,
+            target=f"procurement_job:{job.id}",
+            detail={"order_id": str(job.order_id), "reason": clean_detail(reason)},
+            severity="critical",
+            ip=ip,
+        )
     if job.upstream_ref and job.offer_id is not None:
         job.step, job.attempts, job.next_poll_at = "void", 0, utcnow()
         to = "void_pending"
@@ -485,7 +514,7 @@ async def handle_requested(ctx: ProcurementContext, db: AsyncSession, payload: d
             unit_no=unit,
             offer_id=offer.id if offer else None,
             supplier_id=offer.supplier_id if offer else None,
-            kind="cdk",
+            kind=MODE_KIND[order.delivery_mode],
             state="queued",
             step="submit",
             idempotency_key=job_idempotency_key(jid.hex, "submit"),
@@ -523,6 +552,41 @@ async def handle_requested(ctx: ProcurementContext, db: AsyncSession, payload: d
 
 
 # ------------------------------------------------------------------ supplier events
+CARD_EVENTS = ("card_operation", "card_transaction", "card_fee", "card_3ds_otp")
+
+
+def _leased(job: ProcurementJob, now: datetime) -> bool:
+    return job.lease_until is not None and job.lease_until > now
+
+
+async def _card_event(db: AsyncSession, ev: SupplierWebhookEvent, now: datetime) -> None:
+    """A card webhook is a hint: it records the vendor's last operation status on the job that
+    owns the card (``operation:status``, e.g. ``recharge:success``) and makes an active job due for
+    its re-query, which stays the truth. Transactions, fees and 3DS codes change nothing here (3DS
+    codes never reach the database at all: the API hands them to the buyer's live channel)."""
+    payload = ev.payload or {}
+    if ev.kind != "card_operation":
+        return
+    jobs = list(
+        await db.scalars(
+            select(ProcurementJob)
+            .where(
+                ProcurementJob.tenant_id == ev.tenant_id,
+                ProcurementJob.supplier_id == ev.supplier_id,
+                ProcurementJob.kind == "vcc",
+                ProcurementJob.upstream_ref == str(payload["card_id"])[:128],
+            )
+            .with_for_update()
+        )
+    )
+    op, status = payload.get("operation"), payload.get("status")
+    for job in jobs:
+        if isinstance(op, str) and isinstance(status, str) and job.upstream_status != "deleted":
+            job.upstream_status = clean_detail(f"{op}:{status}", 32)
+        if job.state in ACTIVE and not _leased(job, now):
+            job.next_poll_at = now
+
+
 async def handle_event(ctx: ProcurementContext, db: AsyncSession, payload: dict) -> None:
     """A webhook is a hint (spec §6): it updates the last known upstream status and makes a
     matching active job due for an immediate re-query; it never fulfils by itself."""
@@ -534,7 +598,10 @@ async def handle_event(ctx: ProcurementContext, db: AsyncSession, payload: dict)
     if ev is None or ev.processed_at is not None:
         return
     ref = (ev.payload or {}).get("cdk_id")
-    if ev.kind.startswith("cdk.") and ref is not None:
+    now = utcnow()
+    if ev.kind in CARD_EVENTS and (ev.payload or {}).get("card_id") is not None:
+        await _card_event(db, ev, now)
+    elif ev.kind.startswith("cdk.") and ref is not None:
         jobs = list(
             await db.scalars(
                 select(ProcurementJob)
@@ -551,10 +618,8 @@ async def handle_event(ctx: ProcurementContext, db: AsyncSession, payload: dict)
             # terminal one (the re-query below stays the truth either way)
             if isinstance(status, str) and job.upstream_status not in _CDK_TERMINAL:
                 job.upstream_status = clean_detail(status, 32)
-            if job.state in ACTIVE:
-                # TODO(v12-M3): this pulls next_poll_at forward even on a leased job (L6 of the
-                # M2 payment audit); the lease_until column now lets it skip a live lease.
-                job.next_poll_at = utcnow()
+            if job.state in ACTIVE and not _leased(job, now):
+                job.next_poll_at = now  # (L6: never pulled forward under a live lease)
     elif ev.kind == "balance_change":
         # cost ledger: the same unique insert path as the balance-logs backfill (ledger.py);
         # card_fee events are never booked (their money arrives as a balance_change)
@@ -639,10 +704,13 @@ def _spec(job: ProcurementJob, offer: OfferRow, mode: str) -> JobSpec:
     voiding = mode in ("void", "dvoid")
     return JobSpec(
         job_id=job.id.hex,
-        step="void" if voiding else job.step,
+        # a pending delete is only ever READ afterwards (step ``delete_pending``, F4)
+        step=("delete_pending" if job.step == "delete_pending" else "void")
+        if voiding
+        else job.step,
         # the vendor caches answers per key: a void never reuses the issue key
         idempotency_key=job_idempotency_key(job.id.hex, "void") if voiding else job.idempotency_key,
-        offer=OfferSpec(kind="cdk", params=offer.params),
+        offer=OfferSpec(kind=offer.kind, params=offer.params),  # type: ignore[arg-type]
         upstream_ref=job.upstream_ref,
     )
 
@@ -1088,14 +1156,24 @@ async def _fulfil(
     card_id = uuid.uuid4()
     tid = str(order.tenant_id)
     code = res.secrets[0]
+    # a card is ONE sealed secret ``<pan>----<MM/YY>----<cvv>``. Its dedup fingerprint is NOT
+    # derived from the secret (cardvault.card_fingerprint: the card id) and it has no lookup_fp:
+    # a keyed hash over a PAN/expiry/CVV is brute-forceable by anyone holding fp_key (S1)
+    vcc = job.kind == "vcc"
+    fingerprint = (
+        sealer.card_fingerprint(tid, job.upstream_ref or f"job:{job.id}")
+        if vcc
+        else sealer.fingerprint(tid, code)
+    )
+    lookup_fp = None if vcc else sealer.lookup_fingerprint(tid, code)
     values = {
         "id": card_id,
         "tenant_id": order.tenant_id,
         "product_id": order.product_id,
         "variant_id": order.variant_id,
         "blob": sealer.seal(code, CardContext(tid, str(order.product_id), str(card_id))),
-        "fingerprint": sealer.fingerprint(tid, code),
-        "lookup_fp": sealer.lookup_fingerprint(tid, code),
+        "fingerprint": fingerprint,
+        "lookup_fp": lookup_fp,
         "kid": sealer.active_kid,
         "status": "sold",
         "order_id": order.id,
@@ -1109,7 +1187,7 @@ async def _fulfil(
         await _needs_manual(db, job, "duplicate_code")
         return
     job.card_stock_ids = [card_id]
-    job.upstream_status = "unused"
+    job.upstream_status = ISSUED_STATUS.get(job.kind, "unused")
     job.error_code = None
     job.step = "done"
     job.next_poll_at = None
@@ -1117,19 +1195,44 @@ async def _fulfil(
     await emit_if_complete(db, order)
 
 
+VOID_PENDING_MAX = 100  # ~24 h of cheap GET polls (capped at 15 min) for a pending delete
+
+
+async def _void_failed(db: AsyncSession, job: ProcurementJob, reason: str) -> None:
+    """A void the supplier refused or that never resolved: the sealed card stays voided locally
+    but the supplier may still hold a live code/card, so staff must look (never back to
+    ``fulfilled``). A critical audit row names the reason (no secret)."""
+    await audit(
+        db,
+        tenant_id=job.tenant_id,
+        action="procurement.void_failed",
+        target=f"procurement_job:{job.id}",
+        detail={"reason": clean_detail(reason), "order_id": str(job.order_id)},
+        severity="critical",
+    )
+    job.step = "done"
+    await _needs_manual(db, job, "void_failed", notify_order=False)
+
+
 async def _apply_void(db: AsyncSession, job: ProcurementJob, res: Result, now: datetime) -> None:
-    """``void_pending`` -> ``voided`` once the supplier disabled the code; a refusal ("already
-    redeemed", unknown code) puts the job back where it was and tells staff why."""
+    """``void_pending`` -> ``voided`` once the supplier disabled/deleted the code; a refusal
+    ("already redeemed", unknown code) or an exhausted retry budget ends in ``needs_manual`` with
+    ``void_failed``. A pending delete (202) keeps polling for ~24 h without re-sending."""
     o = res.outcome
     if o is Outcome.OK:
         job.step, job.next_poll_at, job.error_code = "done", None, None
-        job.upstream_status = "disabled"
+        job.upstream_status = VOIDED_STATUS.get(job.kind, "disabled")
         await _transition(db, job, "voided", "void_ok")
+    elif o is Outcome.ACCEPTED_PENDING:
+        job.error_code = clean_detail(res.error_code or "void_pending")
+        if job.attempts > VOID_PENDING_MAX:
+            await _void_failed(db, job, f"void_unresolved:{res.error_code or ''}")
+            return
+        if res.error_code == "delete_pending":
+            job.step = "delete_pending"  # from now on only the card is read
+        job.next_poll_at = now + _backoff(job.attempts, res.retry_after)
     elif o is Outcome.FATAL or job.attempts > MAX_RETRIES:
-        job.error_code = clean_detail(f"void_rejected:{res.error_code or 'unresolved'}")
-        job.step, job.next_poll_at = "done", None
-        back = "fulfilled" if job.card_stock_ids else "needs_manual"
-        await _transition(db, job, back, "void_rejected", severity="warning")
+        await _void_failed(db, job, f"void_rejected:{res.error_code or 'unresolved'}")
     else:  # RETRYABLE / AMBIGUOUS / UNAVAILABLE: the same void key is replayed later
         job.error_code = clean_detail(res.error_code or "void_retry")
         job.next_poll_at = now + _backoff(job.attempts, res.retry_after)
@@ -1182,7 +1285,7 @@ async def _apply_detached(
             job.upstream_ref = res.upstream_ref or job.upstream_ref
             if res.cost is not None:
                 job.cost, job.currency = res.cost.amount, res.cost.currency
-            job.upstream_status = "unused"
+            job.upstream_status = ISSUED_STATUS.get(job.kind, "unused")
             if not job.upstream_ref:
                 await _stop_recovery(db, job, "recover_no_ref")
                 return
@@ -1220,14 +1323,31 @@ async def _apply_detached(
         return
     # dvoid
     if o is Outcome.OK:
-        job.recover, job.next_poll_at, job.upstream_status = False, None, "disabled"
+        job.recover, job.next_poll_at = False, None
+        job.upstream_status = VOIDED_STATUS.get(job.kind, "disabled")
         if job.state == "failed":
             await _transition(db, job, "voided", "recovered_void", severity="warning")
+    elif o is Outcome.ACCEPTED_PENDING:
+        job.error_code = clean_detail(res.error_code or "void_pending")
+        if job.attempts > VOID_PENDING_MAX:
+            await _dvoid_failed(db, job, f"void_unresolved:{res.error_code or ''}")
+            return
+        if res.error_code == "delete_pending":
+            job.step = "delete_pending"
+        job.next_poll_at = now + _backoff(job.attempts, res.retry_after)
     elif o is Outcome.FATAL or job.attempts > MAX_RETRIES:
-        await _stop_recovery(db, job, f"void_rejected:{res.error_code or 'unresolved'}")
+        await _dvoid_failed(db, job, f"void_rejected:{res.error_code or 'unresolved'}")
     else:
         job.error_code = clean_detail(res.error_code or "void_retry")
         job.next_poll_at = now + _backoff(job.attempts, res.retry_after)
+
+
+async def _dvoid_failed(db: AsyncSession, job: ProcurementJob, reason: str) -> None:
+    job.recover, job.next_poll_at = False, None
+    if job.state == "failed":
+        await _void_failed(db, job, reason)
+    else:  # a hand-fulfilled job: only the critical audit row
+        await _stop_recovery(db, job, reason)
 
 
 async def _alert_if_stuck(db: AsyncSession, job: ProcurementJob, now: datetime) -> None:
@@ -1246,6 +1366,42 @@ async def _alert_if_stuck(db: AsyncSession, job: ProcurementJob, now: datetime) 
             detail={"state": job.state, "order_id": str(job.order_id)},
             severity="warning",
         )
+
+
+def _record_reference(job: ProcurementJob, res: Result, mode: str) -> str | None:
+    """A multi-step purchase (a card) knows its supplier reference before it is finished: record it
+    on EVERY answer that carries one (ambiguous, pending, refused after the open), so the job is
+    never "nothing happened" once the supplier holds something for it and a void can find it."""
+    other: str | None = None
+    if mode in ("submit", "query", "verify", "recover") and res.upstream_ref:
+        if job.upstream_ref and job.upstream_ref != res.upstream_ref:
+            other = res.upstream_ref  # a SECOND card for one job: never silently adopted
+        job.upstream_ref = job.upstream_ref or res.upstream_ref
+        if res.cost is not None and job.cost is None:
+            job.cost, job.currency = res.cost.amount, res.cost.currency
+    if res.card_mask and not job.card_mask:
+        job.card_mask = res.card_mask[:24]
+    return other
+
+
+async def _card_mismatch(db: AsyncSession, job: ProcurementJob, other: str) -> None:
+    """The supplier answered with a card id other than the one recorded: two cards may exist for
+    one job. Nothing is sealed; both ids (not secrets) go to a critical audit row and the job is
+    parked for staff, flagged maybe charged (it keeps ``upstream_ref`` and ``maybe_sent``)."""
+    await audit(
+        db,
+        tenant_id=job.tenant_id,
+        action="procurement.card_mismatch",
+        target=f"procurement_job:{job.id}",
+        detail={
+            "recorded": clean_detail(job.upstream_ref),
+            "answered": clean_detail(other),
+            "order_id": str(job.order_id),
+        },
+        severity="critical",
+    )
+    job.maybe_sent = True
+    await _needs_manual(db, job, "card_mismatch")
 
 
 async def _apply(ctx: ProcurementContext, lease: Lease, res: Result) -> None:
@@ -1270,6 +1426,11 @@ async def _apply(ctx: ProcurementContext, lease: Lease, res: Result) -> None:
             return
         if res.supplier_stop:
             await _open_breaker(db, job, res.error_code or "supplier_stop")
+        other = _record_reference(job, res, lease.mode)
+        if other is not None:
+            await _card_mismatch(db, job, other)
+            await db.commit()
+            return
         if lease.mode in ("recover", "dvoid"):
             await _apply_detached(db, job, lease, res, now)
             await db.commit()

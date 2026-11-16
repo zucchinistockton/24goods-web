@@ -14,7 +14,7 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from app.suppliers.base import (
@@ -31,7 +31,9 @@ from app.suppliers.base import (
     SupplierError,
     SupplierEvent,
     WebhookRejected,
+    card_secret,
     dec,
+    job_idempotency_key,
 )
 from app.suppliers.zovocard.client import ZovoClient
 from app.suppliers.zovocard.webhook import mask_pan, parse_webhook
@@ -79,6 +81,7 @@ class CardProduct:
     min_amount: Decimal | None
     max_amount: Decimal | None
     enabled: Any  # raw; usable only when it is exactly True
+    recharge_fee: Decimal | None = None  # a RATE (vendor 6.1), applied to a top-up
 
 
 def is_purchasable(catalog: PlanCatalog, key: str) -> bool:
@@ -198,6 +201,12 @@ def parse_balance_logs(data: Any) -> tuple[list[LedgerRow], int | None]:
             continue
         after = _dec_or_none(item.get("after"))
         ref = item.get("ref_id")
+        card = item.get("card_id")
+        card_id = (
+            str(card)[:64]
+            if isinstance(card, (int, str)) and not isinstance(card, bool) and str(card)
+            else None
+        )
         rows.append(
             LedgerRow(
                 external_id=str(rid).strip()[:64],
@@ -208,6 +217,7 @@ def parse_balance_logs(data: Any) -> tuple[list[LedgerRow], int | None]:
                 balance_after=after,
                 ref_id=str(ref)[:64] if isinstance(ref, (int, str)) and ref != "" else None,
                 card_mask=mask_pan(item["card_number"]) if item.get("card_number") else None,
+                card_id=card_id,
             )
         )
     total = data.get("total")
@@ -236,6 +246,7 @@ def parse_card_products(data: Any) -> list[CardProduct]:
                 open_fee=_dec_or_none(p.get("open_fee")),
                 min_amount=_dec_or_none(p.get("min_amount")),
                 max_amount=_dec_or_none(p.get("max_amount")),
+                recharge_fee=_dec_or_none(p.get("recharge_fee")),
                 # the documented /products shape has no ``enabled``: listed means openable
                 enabled=p.get("enabled", True),
             )
@@ -254,6 +265,7 @@ class ZovoCardSupplier:
         self.client = client
         self.env = client.config.env
         self._plans: dict[str, tuple[float, PlanCatalog]] = {}
+        self._cards: tuple[float, list[CardProduct]] | None = None
 
     async def aclose(self) -> None:
         await self.client.aclose()
@@ -288,6 +300,8 @@ class ZovoCardSupplier:
         plan's ``expectedAmountMinor`` plus the balance buffer (``balanceBufferBps``, at least
         ``minBalanceBufferUsdMinor``) plus ``serviceFeeUsdMinor`` from the cached plans, only when
         the plan currency is USD. Otherwise ``None``: the per-offer configured cost applies."""
+        if offer.kind == "vcc":
+            return await self._vcc_cost(offer)
         product = offer.params.get("product", "gpt")
         key = offer.params.get("plan")
         if product not in DIRECT_PRODUCTS or not isinstance(key, str):
@@ -307,9 +321,27 @@ class ZovoCardSupplier:
         minor = Decimal(expected) + buffer + Decimal(fee)
         return Money((minor / 100).quantize(Decimal("0.01")), "USD")
 
-    async def card_products(self) -> list[CardProduct]:
+    async def card_products(self, *, fresh: bool = False) -> list[CardProduct]:
+        hit = self._cards
+        now = time.monotonic()
+        if hit is not None and not fresh and now - hit[0] < PLANS_TTL_S:
+            return hit[1]
         resp = await self.client.get("/products")
-        return parse_card_products(resp.data)
+        products = parse_card_products(resp.data)
+        self._cards = (now, products)
+        return products
+
+    async def _vcc_cost(self, offer: OfferSpec) -> Money | None:
+        """What one card costs the wallet (opening amount + top-up + the catalogue's open fee)."""
+        spec = vcc_spec(offer)
+        if spec is None:
+            return None
+        prod = next(
+            (p for p in await self.card_products() if p.product_code == spec.product_code), None
+        )
+        if prod is None or prod.open_fee is None:
+            return None
+        return Money(_vcc_total(spec, prod), "USD")
 
     async def availability_fresh(self, offer: OfferSpec) -> Availability:
         """The engine's pre-check before a send: never answered from the 60 s plan cache (N3)."""
@@ -317,6 +349,8 @@ class ZovoCardSupplier:
 
     async def availability(self, offer: OfferSpec, *, fresh: bool = False) -> Availability:
         now = datetime.now(timezone.utc)
+        if offer.kind == "vcc":
+            return await self._vcc_availability(offer, now, fresh=fresh)
         if offer.kind not in ("cdk", "direct"):
             return Availability(False, "kind_not_supported_m1", checked_at=now)
         product = offer.params.get("product", "gpt")
@@ -395,7 +429,10 @@ class ZovoCardSupplier:
 
     # ---- writes (M2: upstream_cdk only; vcc/direct arrive in M3)
     async def submit(self, job: JobSpec) -> Result:
-        """``POST /gpt-direct/cdks`` with ``count: 1`` under the job's idempotency key."""
+        """``POST /gpt-direct/cdks`` with ``count: 1`` under the job's idempotency key (``vcc``:
+        open -> optional recharge -> reveal, every step under its own fixed key)."""
+        if job.offer.kind == "vcc":
+            return await self._vcc_run(job)
         body = cdk_issue_body(job.offer)
         if body is None:
             return Result(Outcome.FATAL, error_code="invalid_offer")
@@ -428,6 +465,8 @@ class ZovoCardSupplier:
         ref = job.upstream_ref or ""
         if not ref.isdigit() or len(ref) > 20:
             return Result(Outcome.FATAL, error_code="invalid_upstream_ref")
+        if job.offer.kind == "vcc":
+            return await self._vcc_void(job, ref)
         try:
             resp = await self.client.request(
                 "POST",
@@ -442,6 +481,238 @@ class ZovoCardSupplier:
         if status not in (None, "disabled"):
             return Result(Outcome.AMBIGUOUS, error_code="unexpected_status", upstream_ref=ref)
         return Result(Outcome.OK, upstream_ref=ref)
+
+    # ---- upstream_vcc (M3): open -> optional recharge -> reveal
+    async def _vcc_availability(
+        self, offer: OfferSpec, now: datetime, *, fresh: bool = False
+    ) -> Availability:
+        spec = vcc_spec(offer)
+        if spec is None:
+            return Availability(False, "invalid_offer", checked_at=now)
+        try:
+            products = await self.card_products(fresh=fresh)
+        except SupplierError as exc:
+            return Availability(False, exc.reason, checked_at=now)
+        prod = next((p for p in products if p.product_code == spec.product_code), None)
+        if prod is None or prod.enabled is not True:
+            return Availability(False, "not_purchasable", checked_at=now)
+        # the catalogue bounds apply to the opening amount and to the total ever put on the card
+        lo, hi = prod.min_amount, prod.max_amount
+        if (lo is not None and spec.init_amount < lo) or (
+            hi is not None and spec.init_amount + (spec.recharge_amount or Decimal(0)) > hi
+        ):
+            return Availability(False, "amount_out_of_range", checked_at=now)
+        cost = Money(_vcc_total(spec, prod), "USD")
+        return Availability(True, cost_estimate=cost, checked_at=now)
+
+    async def _vcc_run(self, job: JobSpec) -> Result:
+        """The whole purchase, idempotent end to end: ``submit`` and ``query`` are the same walk.
+
+        * ``open`` is POSTed ONLY while the job has no card id yet (under the job's key; a replay
+          of a 2xx answers from the vendor cache: same card). Once ``job.upstream_ref`` is known the
+          walk continues on THAT card and never opens again (a different card from a replay would
+          be a second purchase);
+        * ``GET /cards/{id}`` is the balance witness: a top-up is skipped when the card already
+          holds ``init + recharge``; otherwise the recharge list decides (a row = it ran, never
+          POST again; the vendor's "pending" 400 is not cached) and the POST goes under
+          ``pj:<job>:recharge``;
+        * before sealing the card must be ACTIVE and hold the expected amount (``balance_short``);
+        * PAN / expiry / CVV leave this method only inside ``Result.secrets`` (sealed by the caller
+          at once); nothing is logged or kept.
+
+        A closed job (``step == "done"``: refund / fail) only learns the card id (so it can be
+        deleted) and returns no secret."""
+        spec = vcc_spec(job.offer)
+        if spec is None:
+            return Result(Outcome.FATAL, error_code="invalid_offer")
+        known = job.upstream_ref if job.upstream_ref and job.upstream_ref.isdigit() else None
+        mask: str | None = None
+        cost: Money | None = None
+        fee: Decimal | None = None
+        if known is None:
+            try:
+                opened = await self.client.request(
+                    "POST",
+                    "/cards/open",
+                    json_body=spec.open_body(),
+                    idempotency_key=job.idempotency_key,
+                )
+            except SupplierError as exc:
+                return Result.from_error(exc)
+            card = parse_card_open(opened.data)
+            if card is None:
+                return Result(Outcome.AMBIGUOUS, error_code="malformed_open")
+            card_id, mask, fee = card
+            if fee is not None:
+                total = spec.init_amount + (spec.recharge_amount or Decimal(0)) + fee
+                cost = Money(total + await self._recharge_fee(spec), "USD")
+        else:
+            card_id = known
+        base: dict[str, Any] = {"upstream_ref": card_id, "card_mask": mask, "cost": cost}
+        if job.step == "done":
+            return Result(Outcome.OK, **base)
+        want = spec.init_amount + (spec.recharge_amount or Decimal(0))
+        detail = await self._card_detail(card_id, base)
+        if isinstance(detail, Result):
+            return detail
+        if detail.available < want and spec.recharge_amount is not None:
+            rc = await self._vcc_recharge(job, spec, card_id, base)
+            if rc is not None:
+                return rc
+            detail = await self._card_detail(card_id, base)  # the witness after the top-up
+            if isinstance(detail, Result):
+                return detail
+        base["card_mask"] = detail.mask or mask
+        if detail.status != "ACTIVE":
+            return Result(Outcome.FATAL, error_code="card_not_active", **base)
+        if detail.available < want:
+            # a fee the vendor REPORTS (the card's open_fee, each recharge row's fee) may have been
+            # taken from the card: tolerate exactly that much, never more (sandbox fees are 0, so
+            # where a real fee is booked is still unknown). Floor: init - open_fee.
+            fees = await self._reported_fees(card_id)
+            if fees is None:
+                return Result(Outcome.RETRYABLE, error_code="recharge_list_unreadable", **base)
+            open_fee = detail.open_fee if detail.open_fee is not None else (fee or Decimal(0))
+            required = max(spec.init_amount - open_fee, want - open_fee - fees)
+            if detail.available < required:
+                return Result(Outcome.FATAL, error_code="balance_short", **base)
+        secret = card_secret(detail.pan, detail.expire, detail.cvv)
+        if secret is None:
+            return Result(Outcome.AMBIGUOUS, error_code="malformed_card", **base)
+        return Result(Outcome.OK, secrets=(secret,), **base)
+
+    async def _reported_fees(self, card_id: str) -> Decimal | None:
+        """Sum of ``fee`` over the card's successful recharge rows (``None`` = list unreadable)."""
+        try:
+            listing = await self.client.get(f"/cards/{card_id}/recharges")
+        except SupplierError:
+            return None
+        total = Decimal(0)
+        for r in _recharge_rows(listing.data):
+            if str(r.get("status") or "").lower() in _RECHARGE_OK:
+                f = _dec_or_none(r.get("fee"))
+                if f is not None and f > 0:
+                    total += f
+        return total
+
+    async def _recharge_fee(self, spec: VccSpec) -> Decimal:
+        """The catalogue's top-up fee (``recharge_fee`` is a rate) for the estimate; 0 when the
+        catalogue cannot say. The ledger rows stay the truth."""
+        if spec.recharge_amount is None:
+            return Decimal(0)
+        try:
+            prod = next(
+                (p for p in await self.card_products() if p.product_code == spec.product_code), None
+            )
+        except SupplierError:
+            return Decimal(0)
+        rate = prod.recharge_fee if prod is not None and prod.recharge_fee is not None else 0
+        return (spec.recharge_amount * Decimal(rate)).quantize(Decimal("0.01"))
+
+    async def _card_detail(self, card_id: str, base: dict[str, Any]) -> CardDetail | Result:
+        try:
+            resp = await self.client.get(f"/cards/{card_id}")
+        except SupplierError as exc:
+            # the card exists: whatever the read says, this is never "nothing happened"
+            outcome = Outcome.RETRYABLE if exc.outcome is Outcome.UNAVAILABLE else exc.outcome
+            return Result(outcome, error_code=exc.reason, retry_after=exc.retry_after, **base)
+        d = parse_card_detail(resp.data)
+        if d is None:
+            return Result(Outcome.AMBIGUOUS, error_code="malformed_card", **base)
+        return d
+
+    async def _vcc_recharge(
+        self, job: JobSpec, spec: VccSpec, card_id: str, base: dict[str, Any]
+    ) -> Result | None:
+        """``None`` = recharged (continue); otherwise the Result that ends this walk."""
+        try:
+            listing = await self.client.get(f"/cards/{card_id}/recharges")
+        except SupplierError as exc:
+            return Result(
+                Outcome.RETRYABLE if exc.outcome is not Outcome.FATAL else Outcome.AMBIGUOUS,
+                error_code=exc.reason,
+                **base,
+            )
+        rows = _recharge_rows(listing.data)
+        if rows:
+            statuses = {str(r.get("status") or "").lower() for r in rows}
+            if statuses & _RECHARGE_OK:
+                return None
+            if statuses & _RECHARGE_FAILED and not statuses - _RECHARGE_FAILED:
+                return Result(Outcome.FATAL, error_code="recharge_failed", **base)
+            return Result(Outcome.ACCEPTED_PENDING, error_code="recharge_pending", **base)
+        if job.step == "pending":
+            # the engine already saw "result pending": never POST it again, wait for the list
+            return Result(Outcome.ACCEPTED_PENDING, error_code="recharge_pending", **base)
+        try:
+            resp = await self.client.request(
+                "POST",
+                "/cards/recharge",
+                json_body={"card_id": int(card_id), "amount": wire_amount(spec.recharge_amount)},
+                idempotency_key=job_idempotency_key(job.job_id, "recharge"),
+                endpoint="cards.recharge",
+            )
+        except SupplierError as exc:
+            return Result(
+                exc.outcome,
+                error_code=exc.reason,
+                retry_after=exc.retry_after,
+                supplier_stop=exc.supplier_stop,
+                **base,
+            )
+        data = resp.data if isinstance(resp.data, Mapping) else {}
+        if data.get("pending") is True:
+            return Result(Outcome.ACCEPTED_PENDING, error_code="recharge_pending", **base)
+        return None
+
+    async def _vcc_void(self, job: JobSpec, card_id: str) -> Result:
+        """Delete the card (the vendor returns the whole remaining balance to the wallet; a
+        separate refund would have to leave USD 1 on the card, so it adds nothing).
+
+        * a recharge still in flight is waited out first (deleting under it could strand money);
+        * ``DELETED`` = done; a ``202`` is persisted by the engine as step ``delete_pending`` and
+          from then on ONLY the card is read (the DELETE is never re-sent while it is pending)."""
+        try:
+            detail = await self.client.get(f"/cards/{card_id}")
+        except SupplierError as exc:
+            return Result.from_error(exc)
+        status = (
+            str(detail.data.get("status", "")).upper() if isinstance(detail.data, Mapping) else ""
+        )
+        if status == "DELETED":
+            return Result(Outcome.OK, upstream_ref=card_id)
+        if job.step == "delete_pending":
+            return Result(
+                Outcome.ACCEPTED_PENDING, error_code="delete_pending", upstream_ref=card_id
+            )
+        try:
+            listing = await self.client.get(f"/cards/{card_id}/recharges")
+        except SupplierError as exc:
+            if exc.outcome is Outcome.FATAL and exc.status == 404:
+                listing = None
+            else:
+                return Result.from_error(exc)
+        if listing is not None:
+            for r in _recharge_rows(listing.data):
+                st = str(r.get("status") or "").lower()
+                if st not in _RECHARGE_OK and st not in _RECHARGE_FAILED:
+                    return Result(
+                        Outcome.ACCEPTED_PENDING,
+                        error_code="recharge_pending",
+                        upstream_ref=card_id,
+                    )
+        try:
+            resp = await self.client.request(
+                "DELETE", f"/cards/{card_id}", idempotency_key=job.idempotency_key
+            )
+        except SupplierError as exc:
+            return Result.from_error(exc)
+        pending = isinstance(resp.data, Mapping) and resp.data.get("pending") is True
+        if resp.status == 202 or pending:
+            return Result(
+                Outcome.ACCEPTED_PENDING, error_code="delete_pending", upstream_ref=card_id
+            )
+        return Result(Outcome.OK, upstream_ref=card_id)
 
     def verify_webhook(self, raw: bytes, headers: Mapping[str, str]) -> list[SupplierEvent]:
         if not self.webhook_secret:
@@ -487,3 +758,143 @@ def parse_cdk_issue(data: Any) -> Result:
     if isinstance(fee, int) and not isinstance(fee, bool) and fee >= 0:
         cost = Money((Decimal(fee) / 100).quantize(Decimal("0.01")), "USD")
     return Result(Outcome.OK, upstream_ref=str(ref), secrets=(code.strip(),), cost=cost)
+
+
+# ---------------------------------------------------------------- upstream_vcc helpers
+CARD_ROW_TYPES = frozenset({"open_card", "card_recharge", "card_refund", "card_fee", "card_delete"})
+_RECHARGE_OK = frozenset({"success", "succeeded", "completed", "done"})
+_RECHARGE_FAILED = frozenset({"failed", "fail", "failure", "rejected", "cancelled", "canceled"})
+_PRODUCT_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
+_NAME_RE = re.compile(r"^[A-Za-z]{1,32}$")
+MAX_CARD_AMOUNT = Decimal("100000")
+
+
+@dataclass(frozen=True)
+class VccSpec:
+    product_code: str
+    init_amount: Decimal
+    recharge_amount: Decimal | None
+    first_name: str
+    last_name: str
+
+    def open_body(self) -> dict[str, Any]:
+        """Deterministic, so a replay is byte-identical and ``request_hash`` can pin it."""
+        return {
+            "product_code": self.product_code,
+            "first_name": self.first_name,
+            "last_name": self.last_name,
+            "init_amount": wire_amount(self.init_amount),
+        }
+
+
+def wire_amount(value: Decimal | None) -> int | float:
+    """JSON number for the vendor (it takes plain numbers): an int when whole, else the exact
+    two-decimal value. Never used for arithmetic."""
+    if value is None:
+        raise ValueError("no amount")
+    return int(value) if value == value.to_integral_value() else float(value)
+
+
+def _money_param(v: Any) -> Decimal | None:
+    if isinstance(v, bool) or v is None:
+        return None
+    try:
+        d = Decimal(str(v))
+    except (InvalidOperation, ValueError):
+        return None
+    if not d.is_finite() or d <= 0 or d > MAX_CARD_AMOUNT or d != d.quantize(Decimal("0.01")):
+        return None
+    return d
+
+
+def vcc_spec(offer: OfferSpec) -> VccSpec | None:
+    """Validate a ``vcc`` offer's parameters BEFORE any call: product code, opening amount,
+    optional top-up and cardholder name. Amounts come from the staff-set offer, never a client."""
+    if offer.kind != "vcc":
+        return None
+    p = offer.params
+    code = p.get("product_code")
+    init = _money_param(p.get("init_amount"))
+    if not isinstance(code, str) or not _PRODUCT_RE.fullmatch(code) or init is None:
+        return None
+    recharge = None
+    if p.get("recharge_amount") not in (None, ""):
+        recharge = _money_param(p.get("recharge_amount"))
+        if recharge is None:
+            return None
+    first, last = p.get("first_name", "Digital"), p.get("last_name", "Goods")
+    if not (isinstance(first, str) and _NAME_RE.fullmatch(first)):
+        return None
+    if not (isinstance(last, str) and _NAME_RE.fullmatch(last)):
+        return None
+    return VccSpec(code, init, recharge, first, last)
+
+
+def parse_card_open(data: Any) -> tuple[str, str, Decimal | None] | None:
+    """``POST /cards/open`` -> ``(card id, masked number, open fee)``. The PAN / CVV / expiry in
+    this answer are DROPPED here: the secret is read again from ``GET /cards/{id}`` to seal it."""
+    if not isinstance(data, Mapping):
+        return None
+    cid = data.get("id")
+    if isinstance(cid, bool) or not isinstance(cid, (int, str)) or not str(cid).isdigit():
+        return None
+    if len(str(cid)) > 20:
+        return None
+    fee = _dec_or_none(data.get("open_fee"))
+    return (
+        str(cid),
+        mask_pan(data.get("card_number")),
+        fee if fee is not None and fee >= 0 else None,
+    )
+
+
+@dataclass(frozen=True)
+class CardDetail:
+    status: str
+    available: Decimal
+    open_fee: Decimal | None = None  # the card object's own open_fee, when the read carries it
+    pan: str = field(repr=False, default="")
+    expire: str = field(repr=False, default="")
+    cvv: str = field(repr=False, default="")
+
+    @property
+    def mask(self) -> str | None:
+        return mask_pan(self.pan) if self.pan else None
+
+
+def _vcc_total(spec: VccSpec, prod: CardProduct) -> Decimal:
+    """Wallet cost of one card: opening amount + top-up + open fee + the top-up's fee (a rate)."""
+    top = spec.recharge_amount or Decimal(0)
+    rate = prod.recharge_fee or Decimal(0)
+    return (
+        spec.init_amount
+        + top
+        + (prod.open_fee or Decimal(0))
+        + (top * rate).quantize(Decimal("0.01"))
+    )
+
+
+def parse_card_detail(data: Any) -> CardDetail | None:
+    """``GET /cards/{id}``; ``None`` when the amount or status cannot be read (never guessed)."""
+    if not isinstance(data, Mapping):
+        return None
+    try:
+        available = dec(data.get("available_amount"))
+    except ValueError:
+        return None
+    status = str(data.get("status") or "").upper()
+    if not status:
+        return None
+    fee = _dec_or_none(data.get("open_fee"))
+    return CardDetail(
+        status,
+        available,
+        fee if fee is not None and fee >= 0 else None,
+        str(data.get("card_number") or ""),
+        str(data.get("expire") or ""),
+        str(data.get("cvv") or ""),
+    )
+
+
+def _recharge_rows(data: Any) -> list[Mapping[str, Any]]:
+    return [r for r in (data if isinstance(data, list) else []) if isinstance(r, Mapping)]

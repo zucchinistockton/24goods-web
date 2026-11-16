@@ -43,9 +43,10 @@ export interface User {
 }
 
 /** `upstream_cdk` (review-v12): a code bought from a supplier per order; instant for the buyer. */
-export type DeliveryMode = 'auto_card' | 'manual' | 'upstream_cdk'
+/** `upstream_vcc` (review-v12 M3): a virtual card bought from a supplier per order. */
+export type DeliveryMode = 'auto_card' | 'manual' | 'upstream_cdk' | 'upstream_vcc'
 /** Code deliveries the buyer reveals at once (local pool or supplier), as opposed to staff delivery. */
-export const isInstantMode = (m: DeliveryMode | undefined | null): boolean => m === 'auto_card' || m === 'upstream_cdk'
+export const isInstantMode = (m: DeliveryMode | undefined | null): boolean => m === 'auto_card' || m === 'upstream_cdk' || m === 'upstream_vcc'
 
 /** v11 W1: a purchasable SKU of a product (buyer view; prices already include the storefront markup). */
 export interface ProductVariant {
@@ -928,4 +929,17 @@ export interface TestPaymentView {
   created_at: string
   paid_at: string | null
   trade_no: string | null
+}
+
+/** v12 M3: a 3DS one-time code for a delivered virtual card. Show it; never persist it. */
+export interface CardOtp {
+  otp: string
+  /** masked card number */
+  card: string
+  unit: number
+  /** seconds until the code is forgotten by the server */
+  expires_in: number
+}
+export interface CardOtpEvent extends CardOtp {
+  order_id: string
 }

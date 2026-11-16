@@ -7,6 +7,7 @@ import {
   type Conversation,
   type Order,
   type RealtimeState,
+  type CardOtpEvent,
   type StreamMessageEvent,
   type TypingEvent,
 } from '@24goods/shared'
@@ -18,6 +19,7 @@ type Events = {
   order: Order
   agent_status: AgentStatus
   typing: TypingEvent
+  card_otp: CardOtpEvent
   /** Polling tick (SSE down) or resync after reconnect: pages should catch up. */
   sync: void
 }
@@ -38,6 +40,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
         order: (o) => bus.emit('order', o),
         agent_status: (s) => bus.emit('agent_status', s),
         typing: (e) => bus.emit('typing', e),
+        card_otp: (e) => bus.emit('card_otp', e),
         poll: () => bus.emit('sync', undefined),
         resync: () => bus.emit('sync', undefined),
         state: (s) => (state.value = s),

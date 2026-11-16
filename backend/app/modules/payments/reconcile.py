@@ -551,6 +551,18 @@ async def alert_procurement_jobs(
     )  # fmt: skip
     await db.rollback()
     for jid, oid, state, code in rows:
+        if code == "void_failed":
+            # a refunded / closed order whose supplier card or code may still be live: its own
+            # alert (not "waits for a code"), once per job
+            notify_tg.notify_bg(
+                res,
+                tid,
+                "payment_review",
+                [notify_tg.T("proc.void_failed", job=str(jid)[:8], order=str(oid)[:36])],
+                link=notify_tg.admin_link(res, "orders"),
+                once=(f"procurement_job:{jid}:void_failed", 30 * 86400),
+            )
+            continue
         notify_tg.notify_bg(
             res,
             tid,
