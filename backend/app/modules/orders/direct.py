@@ -118,9 +118,23 @@ async def owner_info(db: AsyncSession, order: Order) -> dict[str, Any]:
             .limit(1)
         )
     ).first()
-    plan = None
-    if row is not None and row.params:
-        plan = f"{row.params.get('product')}/{row.params.get('plan')}"
+    params = row.params if row is not None and row.params else None
+    if params is None:  # no job yet: the plan of the target's first enabled direct source
+        params = await db.scalar(
+            select(SupplierOffer.params)
+            .where(
+                SupplierOffer.tenant_id == order.tenant_id,
+                SupplierOffer.product_id == order.product_id,
+                SupplierOffer.variant_id == order.variant_id
+                if order.variant_id is not None
+                else SupplierOffer.variant_id.is_(None),
+                SupplierOffer.kind == "direct",
+                SupplierOffer.enabled.is_(True),
+            )
+            .order_by(SupplierOffer.priority, SupplierOffer.created_at)
+            .limit(1)
+        )
+    plan = f"{params.get('product')}/{params.get('plan')}" if params else None
     return info_view(order, row.account_mask if row else None, cred_mask, plan,
                      row.state if row else None)  # fmt: skip
 

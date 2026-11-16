@@ -16,8 +16,9 @@ BUYER's own account with the account session the buyer supplied at checkout).
   everyone else     nothing (``app_delivery`` has no grant at all).
   ================  =====================================================================
 
-  A scan policy lets ``app_procurement`` find and delete credentials across tenants (the sweeper
-  runs unpinned, exactly like its scan of ``procurement_jobs``); every other path is pinned.
+  Scan / sweep policies let ``app_procurement`` list and delete credentials across tenants ONLY
+  from a session that is not pinned to a tenant (the sweeper); a pinned session (the engine's call
+  path) sees just its own tenant's rows, like every other tenant table.
 - ``procurement_jobs.account_mask``: the MASKED account e-mail the supplier's preflight reported
   (``u***@example.com``), for the console and the buyer's delivery text. Never the session.
 
@@ -35,6 +36,10 @@ branch_labels = None
 depends_on = None
 
 TENANT_PREDICATE = "tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid"
+
+# the scan / sweep policies apply to UNPINNED sessions only (the sweeper): a session pinned to a
+# tenant sees that tenant's rows and nothing else, like every other table
+UNPINNED = "NULLIF(current_setting('app.tenant_id', true), '') IS NULL"
 
 UP = [
     "ALTER TABLE products DROP CONSTRAINT IF EXISTS products_delivery_mode_check",
@@ -60,10 +65,10 @@ UP = [
     "ALTER TABLE procurement_credentials FORCE ROW LEVEL SECURITY",
     f"CREATE POLICY tenant_isolation ON procurement_credentials USING ({TENANT_PREDICATE}) "
     f"WITH CHECK ({TENANT_PREDICATE})",
-    "CREATE POLICY procurement_scan ON procurement_credentials FOR SELECT TO app_procurement "
-    "USING (true)",
-    "CREATE POLICY procurement_sweep ON procurement_credentials FOR DELETE TO app_procurement "
-    "USING (true)",
+    f"CREATE POLICY procurement_scan ON procurement_credentials FOR SELECT TO app_procurement "
+    f"USING ({UNPINNED})",
+    f"CREATE POLICY procurement_sweep ON procurement_credentials FOR DELETE TO app_procurement "
+    f"USING ({UNPINNED})",
     "REVOKE ALL ON procurement_credentials FROM PUBLIC",
     "GRANT INSERT ON procurement_credentials TO app_api",
     "GRANT SELECT (id, tenant_id, order_id, product, email_masked, created_at) "
