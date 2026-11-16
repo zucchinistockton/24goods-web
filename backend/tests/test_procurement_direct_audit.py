@@ -981,3 +981,13 @@ async def test_a_late_completion_after_the_order_was_refunded_is_flagged_not_del
     )[0]
     assert tuple(row) == ("critical", "true")
     assert await _creds(env, order) == 0 and buyer is not None
+
+
+def test_only_the_vendors_real_sandbox_gets_orders_without_a_preflight_token():
+    """Verified 2026-11-16: sandbox.zovocard.com refuses an order carrying a preflight token."""
+    from app.suppliers.zovocard import direct as dr
+
+    assert dr.omit_preflight_token("https://sandbox.zovocard.com/openapi/v1", "sandbox")
+    assert not dr.omit_preflight_token("https://zovocard.com/openapi/v1", "production")
+    assert not dr.omit_preflight_token("https://sandbox.zovocard.com/openapi/v1", "production")
+    assert not dr.omit_preflight_token("http://mockzovo:8005/openapi/v1", "sandbox")

@@ -20,6 +20,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
+from urllib.parse import urlsplit
 
 from app.suppliers.base import OfferSpec
 from app.suppliers.direct_credential import DIRECT_PRODUCTS, mask_email
@@ -112,6 +113,14 @@ def preflight_body(spec: DirectSpec, credential: str) -> dict[str, Any]:
         body["payment_country"] = spec.country
         body["payment_currency"] = spec.currency
     return body
+
+
+def omit_preflight_token(base_url: str, env: str) -> bool:
+    """The vendor's REAL sandbox refuses an order that carries a preflight token (HTTP 400
+    ``GPT_DIRECT_ORDER_REJECTED``, "preflight token invalid") and accepts the same order without
+    one (verified 2026-11-16). Production keeps the token: it pins the quote."""
+    host = (urlsplit(base_url).hostname or "").lower()
+    return env == "sandbox" and host == "sandbox.zovocard.com"
 
 
 def order_body(
