@@ -140,14 +140,19 @@ class Result:
     cost: Money | None = None
     retry_after: timedelta | None = None
     supplier_stop: bool = False  # account-level refusal: open the supplier breaker
+    card_mask: str | None = None  # vcc: masked card number (never the full one)
 
     @classmethod
-    def from_error(cls, exc: SupplierError) -> Result:
+    def from_error(
+        cls, exc: SupplierError, *, upstream_ref: str | None = None, card_mask: str | None = None
+    ) -> Result:
         return cls(
             outcome=exc.outcome,
             error_code=exc.reason,
             retry_after=exc.retry_after,
             supplier_stop=exc.supplier_stop,
+            upstream_ref=upstream_ref,
+            card_mask=card_mask,
         )
 
 

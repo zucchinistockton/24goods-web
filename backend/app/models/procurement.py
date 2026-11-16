@@ -106,6 +106,8 @@ class ProcurementJob(Base):
     recover: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     lease_until: Mapped[datetime | None]
     first_sent_at: Mapped[datetime | None]
+    # 0028: masked card number of a purchased card (never the full number)
+    card_mask: Mapped[str | None] = mapped_column(String(24))
     created_at: Mapped[datetime] = created_at()
     updated_at: Mapped[datetime] = updated_at()
 

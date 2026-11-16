@@ -17,6 +17,12 @@ Fixtures are synthetic and only *shaped* like real responses: camelCase ``plans{
 ``acc_plan_key`` (Claude/Grok), a non-purchasable plan and a registry row without
 ``purchasable``.
 
+Cards (review-v12 §17): ``POST /cards/open`` and ``/cards/recharge``, ``GET /cards/{id}`` and
+``/cards/{id}/recharges``, ``DELETE /cards/{id}``, with the vendor envelope.
+``recharge_pending_next`` reproduces the documented "pending" 400 (no error_code, not cached),
+``delete_pending_next`` the 202 delete; balance-log rows carry the FULL PAN like the sandbox (the
+adapter masks it).
+
 Scenario plans (``MockZovo.scenarios`` / ``APP_MOCKZOVO_SCENARIOS=1``, used by the E2E smoke so
 no control channel is needed): GPT plans ``scn_lost`` (answer lost after execution: 504, the
 same-key replay returns the code), ``scn_409`` (first attempt 409, then executes), ``scn_202``
@@ -240,6 +246,15 @@ class MockZovo:
     redeem_calls: list[tuple[str, str, bool]] = field(default_factory=list)
     redeem_orders: dict[str, dict[str, Any]] = field(default_factory=dict)  # client_request_id
     result_404: bool = False  # the real sandbox never returns a result
+    # cards (M3): vendor id -> card; recharge rows by card; knobs for the documented quirks
+    cards: dict[int, dict[str, Any]] = field(default_factory=dict)
+    recharges: dict[int, list[dict[str, Any]]] = field(default_factory=dict)
+    next_card: int = 500
+    next_log: int = 9000
+    card_opens: int = 0  # how many opens really ran (tests: never twice per key)
+    card_recharges: int = 0  # how many recharges really ran
+    recharge_pending_next: int = 0  # the next N recharges answer the "pending" 400 (documented)
+    delete_pending_next: int = 0  # the next N deletes answer 202 and settle after two reads
 
     def force(self, path: str, quirk: str, times: int = 1) -> None:
         if quirk not in QUIRKS:
@@ -319,7 +334,124 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
             )
         return JSONResponse(_env(0, {"requested": count, "issued": issued}))
 
+    # ---- cards (M3). Amounts are JSON floats like the vendor's; PAN/CVV/expiry are synthetic.
+    def _log(card: dict[str, Any], kind: str, amount: float) -> None:
+        mock.next_log += 1
+        mock.balance_logs.insert(
+            0,
+            {
+                "id": mock.next_log,
+                "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "amount": amount,
+                "before": 0,
+                "after": 0,
+                "type": kind,
+                "remark": f"card {card['card_number']}",  # the vendor puts the full PAN here
+                "ref_id": "",
+                "wallet": "main",
+                "card_id": card["id"],
+                "card_number": card["card_number"],
+            },
+        )
+
+    def _card_view(card: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "card_id": f"card{card['id']:020d}",
+            "card_number": card["card_number"],
+            "cvv": card["cvv"],
+            "expire": card["expire"],
+            "status": card["status"],
+            "available_amount": card["available_amount"],
+            "card_type": "save",
+        }
+
+    def _open_card(body: dict[str, Any]) -> JSONResponse:
+        prod = next(
+            (p for p in products_fixture() if p["product_code"] == body.get("product_code")), None
+        )
+        amount = body.get("init_amount")
+        if prod is None or not prod["enabled"]:
+            return JSONResponse({"code": 400, "msg": "product unavailable"}, status_code=400)
+        if (
+            isinstance(amount, bool)
+            or not isinstance(amount, (int, float))
+            or amount < prod["min_amount"]
+            or amount > prod["max_amount"]
+            or not body.get("first_name")
+            or not body.get("last_name")
+        ):
+            return JSONResponse({"code": 400, "msg": "bad parameters"}, status_code=400)
+        mock.card_opens += 1
+        mock.next_card += 1
+        cid = mock.next_card
+        pan = f"4111{cid:012d}"
+        year = (datetime.now(timezone.utc).year + 4) % 100
+        card = {
+            "id": cid, "card_number": pan, "cvv": f"{(cid * 37) % 900 + 100}",
+            "expire": f"{(cid % 12) + 1:02d}/{year:02d}", "status": "ACTIVE",
+            "available_amount": float(amount), "product_code": prod["product_code"],
+        }  # fmt: skip
+        mock.cards[cid] = card
+        mock.recharges[cid] = []
+        _log(card, "card_recharge", -float(amount))  # the opening charge, as the sandbox books it
+        _log(card, "open_card", -float(prod["open_fee"]))
+        return JSONResponse(
+            _env(
+                0,
+                {
+                    "id": cid, "issuer": prod["issuer"], "card_number": pan, "cvv": card["cvv"],
+                    "expire": card["expire"], "product_code": prod["product_code"],
+                    "available_amount": float(amount), "status": "ACTIVE",
+                    "open_fee": prod["open_fee"],
+                },
+            )
+        )  # fmt: skip
+
+    def _recharge_card(body: dict[str, Any]) -> JSONResponse:
+        card = mock.cards.get(body.get("card_id")) if isinstance(body.get("card_id"), int) else None
+        amount = body.get("amount")
+        if card is None or card["status"] != "ACTIVE":
+            return JSONResponse({"code": 404, "error_code": "not_found", "msg": "no card"}, 404)
+        if isinstance(amount, bool) or not isinstance(amount, (int, float)) or amount < 10:
+            return JSONResponse(
+                {"code": 400, "error_code": "amount_below_min", "msg": "below minimum"}, 400
+            )
+        row = {"id": len(mock.recharges[card["id"]]) + 1, "amount": float(amount), "fee": 0}
+        if mock.recharge_pending_next > 0:
+            # the documented quirk: "result pending" is a 400 WITHOUT error_code, not cached; the
+            # recharge IS in flight and shows up as pending, then settles by itself
+            mock.recharge_pending_next -= 1
+            mock.card_recharges += 1
+            mock.recharges[card["id"]].append({**row, "status": "pending", "polls": 0})
+            return JSONResponse({"code": 400, "msg": "recharge result pending"}, status_code=400)
+        mock.card_recharges += 1
+        mock.recharges[card["id"]].append({**row, "status": "success"})
+        card["available_amount"] += float(amount)
+        _log(card, "card_recharge", -float(amount))
+        return JSONResponse(_env(0, {"pending": False}, msg="ok"))
+
+    def _delete_card(cid: int) -> JSONResponse:
+        card = mock.cards.get(cid)
+        if card is None:
+            return JSONResponse({"code": 404, "error_code": "not_found", "msg": "no card"}, 404)
+        if card["status"] == "DELETED":
+            return JSONResponse(_env(0, None))
+        if mock.delete_pending_next > 0:
+            mock.delete_pending_next -= 1
+            card["status"], card["polls"] = "DELETING", 0
+            return JSONResponse({"msg": "accepted"}, status_code=202)
+        card["status"] = "DELETED"
+        _log(card, "card_refund", card["available_amount"])
+        return JSONResponse(_env(0, None))
+
     def _write(request: Request, path: str, body: dict[str, Any]) -> JSONResponse:
+        if path == "/cards/open":
+            return _open_card(body)
+        if path == "/cards/recharge":
+            return _recharge_card(body)
+        m_del = re.fullmatch(r"/cards/([0-9]{1,12})", path)
+        if m_del and request.method == "DELETE":
+            return _delete_card(int(m_del.group(1)))
         if path == "/gpt-direct/cdks":
             return _issue(body)
         m = re.fullmatch(r"/gpt-direct/cdks/([0-9]{1,12})/disable", path)
@@ -384,6 +516,29 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
                 queue.popleft()
                 return JSONResponse({}, status_code=504)
             return resp
+        m_card = re.fullmatch(r"/cards/([0-9]{1,12})(/recharges)?", path)
+        if m_card:
+            card = mock.cards.get(int(m_card.group(1)))
+            if card is None:
+                return JSONResponse({"code": 404, "error_code": "not_found", "msg": "no card"}, 404)
+            if m_card.group(2):
+                rows = mock.recharges[card["id"]]
+                for r in rows:  # a pending recharge settles on the second read
+                    if r["status"] == "pending":
+                        r["polls"] += 1
+                        if r["polls"] >= 2:
+                            r["status"] = "success"
+                            card["available_amount"] += r["amount"]
+                            _log(card, "card_recharge", -r["amount"])
+                return JSONResponse(
+                    _env(0, [{k: v for k, v in r.items() if k != "polls"} for r in rows])
+                )
+            if card["status"] == "DELETING":
+                card["polls"] = card.get("polls", 0) + 1
+                if card["polls"] >= 2:
+                    card["status"] = "DELETED"
+                    _log(card, "card_refund", card["available_amount"])
+            return JSONResponse(_env(0, _card_view(card)))
         if path == "/gpt-direct/cdks":
             items = sorted(mock.cdks.values(), key=lambda c: -c["id"])
             return JSONResponse(_env(0, {"total": len(items), "list": items}))

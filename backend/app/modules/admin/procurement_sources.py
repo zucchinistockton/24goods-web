@@ -27,19 +27,33 @@ from app.core.resources import Resources
 from app.models import Product, ProductVariant, SupplierAccount, SupplierOffer, User
 from app.modules.admin.suppliers import _dec, _iso, platform_admin
 from app.suppliers.base import OfferSpec
-from app.suppliers.zovocard.supplier import cdk_issue_body
+from app.suppliers.zovocard.supplier import cdk_issue_body, vcc_spec
 
 router = APIRouter(prefix="/admin/procurement/sources", tags=["admin"])
 
 MAX_OFFERS_PER_TARGET = 10
 COST_RE = r"^[0-9]{1,9}(\.[0-9]{1,6})?$"
-ALLOWED_PARAMS = ("plan", "product", "payment_country")
+ALLOWED_PARAMS = (
+    "plan", "product", "payment_country",
+    "product_code", "init_amount", "recharge_amount", "first_name", "last_name",
+)  # fmt: skip
+AMOUNT_RE = r"^[0-9]{1,6}(\.[0-9]{1,2})?$"
 
 
 class OfferParams(BaseModel):
-    plan: str = Field(pattern=r"^[a-z0-9_]{1,40}$")
+    """Offer parameters. ``cdk``: ``plan`` (+ ``payment_country``). ``vcc`` (virtual card): the
+    supplier's ``product_code``, the opening ``init_amount`` and an optional ``recharge_amount``
+    top-up (decimal strings, at most 2 decimals), plus an optional cardholder name. Which set
+    applies follows the TARGET product's delivery mode, never the request."""
+
+    plan: str | None = Field(default=None, pattern=r"^[a-z0-9_]{1,40}$")
     product: Literal["gpt"] = "gpt"  # CDK issue is GPT-only (vendor appendix A.5)
     payment_country: str | None = Field(default=None, pattern=r"^[A-Z]{2}$")
+    product_code: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,40}$")
+    init_amount: str | None = Field(default=None, pattern=AMOUNT_RE)
+    recharge_amount: str | None = Field(default=None, pattern=AMOUNT_RE)
+    first_name: str | None = Field(default=None, pattern=r"^[A-Za-z]{1,32}$")
+    last_name: str | None = Field(default=None, pattern=r"^[A-Za-z]{1,32}$")
 
 
 class SourceIn(BaseModel):
@@ -89,8 +103,20 @@ def _require_cost(offer: SupplierOffer, supplier: SupplierAccount) -> None:
     )
 
 
-def _params(p: OfferParams) -> dict[str, Any]:
-    return p.model_dump(exclude_none=True)
+VCC_KEYS = ("product_code", "init_amount", "recharge_amount", "first_name", "last_name")
+
+
+def _params(p: OfferParams, kind: str = "cdk") -> dict[str, Any]:
+    """The parameters of ONE kind only; an offer never carries the other kind's keys."""
+    data = p.model_dump(exclude_none=True)
+    if kind == "vcc":
+        return {k: v for k, v in data.items() if k in VCC_KEYS}
+    return {k: v for k, v in data.items() if k not in VCC_KEYS}
+
+
+def _valid_params(kind: str, params: dict[str, Any]) -> bool:
+    spec = OfferSpec(kind=kind, params=params)  # type: ignore[arg-type]
+    return (vcc_spec(spec) if kind == "vcc" else cdk_issue_body(spec)) is not None
 
 
 def _view(o: SupplierOffer, s: SupplierAccount) -> dict[str, Any]:
@@ -216,7 +242,19 @@ async def add_source(
 ) -> dict:
     await enforce(res.redis, "procurement:sources", str(admin.id), 60, 3600)
     tid = admin.tenant_id
-    await _target(db, tid, body.product_id, body.variant_id)
+    target = await _target(db, tid, body.product_id, body.variant_id)
+    kind = (
+        "vcc"
+        if (
+            target.delivery_mode
+            if isinstance(target, Product)
+            else await db.scalar(
+                select(Product.delivery_mode).where(Product.id == target.product_id)
+            )
+        )
+        == "upstream_vcc"
+        else "cdk"
+    )
     supplier = await db.scalar(
         select(SupplierAccount).where(
             SupplierAccount.id == body.supplier_id, SupplierAccount.tenant_id == tid
@@ -224,8 +262,8 @@ async def add_source(
     )
     if supplier is None:
         raise NotFound("Supplier not found")
-    params = _params(body.params)
-    if cdk_issue_body(OfferSpec(kind="cdk", params=params)) is None:
+    params = _params(body.params, kind)
+    if not _valid_params(kind, params):
         raise Validation("These source parameters cannot be sent to a supplier", code="bad_params")
     existing = await _offers(db, tid, body.product_id, body.variant_id)
     if len(existing) >= MAX_OFFERS_PER_TARGET:
@@ -238,7 +276,7 @@ async def add_source(
         supplier_id=supplier.id,
         product_id=body.product_id,
         variant_id=body.variant_id,
-        kind="cdk",
+        kind=kind,
         params=params,
         cost_estimate=Decimal(body.cost_estimate) if body.cost_estimate is not None else None,
         currency=body.currency,
@@ -369,8 +407,8 @@ async def update_source(
     offer, supplier = await _own(db, admin.tenant_id, offer_id, lock=True)
     before = _snap(offer)
     if body.params is not None:
-        params = _params(body.params)
-        if cdk_issue_body(OfferSpec(kind="cdk", params=params)) is None:
+        params = _params(body.params, offer.kind)
+        if not _valid_params(offer.kind, params):
             raise Validation(
                 "These source parameters cannot be sent to a supplier", code="bad_params"
             )

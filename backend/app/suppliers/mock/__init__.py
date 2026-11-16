@@ -30,7 +30,7 @@ from app.suppliers.base import (
 
 
 class MockSupplier:
-    capabilities = frozenset({Capability.CDK, Capability.VOID})
+    capabilities = frozenset({Capability.CDK, Capability.VCC, Capability.VOID})
 
     def __init__(
         self,
@@ -42,7 +42,9 @@ class MockSupplier:
         outcomes: Iterable[Outcome] = (),
         unit_cost: Decimal = Decimal("1.00"),
         redemption: Money | None = None,
+        card_products: Iterable[str] = ("MOCKCARD",),
     ) -> None:
+        self.card_products = set(card_products)
         self.redemption = redemption
         self.code = code
         self.env = env
@@ -79,7 +81,10 @@ class MockSupplier:
 
     async def availability(self, offer: OfferSpec) -> Availability:
         plan = offer.params.get("plan")
-        ok = offer.kind == "cdk" and isinstance(plan, str) and plan in self.purchasable
+        if offer.kind == "vcc":
+            ok = offer.params.get("product_code") in self.card_products
+        else:
+            ok = offer.kind == "cdk" and isinstance(plan, str) and plan in self.purchasable
         return Availability(
             available=ok,
             reason=None if ok else "not_purchasable",
@@ -98,12 +103,25 @@ class MockSupplier:
         if outcome is not Outcome.OK:
             return Result(outcome=outcome, error_code=f"mock_{outcome.value}")
         self.spendable -= self.unit_cost
-        result = Result(
-            outcome=Outcome.OK,
-            upstream_ref="mock:" + job.idempotency_key,
-            secrets=(self._code_for(job.idempotency_key),),
-            cost=Money(self.unit_cost, "USD"),
-        )
+        if job.offer.kind == "vcc":
+            # one sealed structured secret per card: "<pan>----<MM/YY>----<cvv>" (synthetic)
+            digest = hashlib.sha256(job.idempotency_key.encode()).hexdigest()
+            pan = "4" + "".join(str(int(c, 16) % 10) for c in digest[:15])
+            secret = "----".join((pan, "12/30", str(int(digest[20:23], 16) % 900 + 100)))
+            result = Result(
+                outcome=Outcome.OK,
+                upstream_ref="mock:" + job.idempotency_key,
+                secrets=(secret,),
+                cost=Money(self.unit_cost, "USD"),
+                card_mask=f"{pan[:6]}****{pan[-4:]}",
+            )
+        else:
+            result = Result(
+                outcome=Outcome.OK,
+                upstream_ref="mock:" + job.idempotency_key,
+                secrets=(self._code_for(job.idempotency_key),),
+                cost=Money(self.unit_cost, "USD"),
+            )
         self.charged[job.idempotency_key] = result
         return result
 
