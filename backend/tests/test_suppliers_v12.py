@@ -580,7 +580,9 @@ async def test_probe_degraded_when_direct_permission_missing():
 
 
 async def test_availability_via_adapter():
-    s = _supplier()
+    mock = MockZovo()
+    mock.add_funding_card(7, available=500.0)  # the funding card of the direct offers below
+    s = _supplier(mock)
     assert (await s.availability(OfferSpec("cdk", {"product": "gpt", "plan": "plus"}))).available
     for plan in ("pro_20x", "pro_5x_renew", "credit250", "nope"):
         a = await s.availability(OfferSpec("cdk", {"product": "gpt", "plan": plan}))
