@@ -10,7 +10,7 @@ import asyncio
 import logging
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 
 from sqlalchemy import select, update
@@ -145,6 +145,9 @@ async def probe(
     report = await run_probe(ctx, ref)
     health, detail = _health_of(report)
     await record_health(ctx, ref, health, detail, balance=report.balance, probed=True)
+    if report.balance is not None:
+        # a probe's reading also becomes "fresh", but only through the breaker evaluation (N4)
+        await refresh_balance(ctx, replace(ref, health=health))
     return report
 
 
