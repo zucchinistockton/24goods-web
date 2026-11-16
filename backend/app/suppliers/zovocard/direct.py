@@ -38,6 +38,9 @@ DONE = frozenset({"completed"})
 FAILED = frozenset({"declined", "failed_precharge", "cancelled", "failed", "rejected", "expired"})
 CANCELLABLE = frozenset({"queued", "awaiting_card", "funding_pending"})
 NOT_CHARGED = frozenset({"cancelled", "failed_precharge"})
+# a failed / cancelled order is "nothing to undo" only when its fee status says nothing is held
+# (vendor 6.18.4: ``service_fee_status`` is ``held`` while reserved, ``settled`` once taken)
+NOTHING_HELD_FEE = frozenset({"released", "refunded", "none"})
 
 
 @dataclass(frozen=True)
@@ -145,6 +148,9 @@ class Preflight:
     current_plan: str | None
     expires_at: datetime | None
     quote_error: bool
+    quotes: Mapping[str, tuple[int, str, int]] = field(
+        default_factory=dict
+    )  # plan -> (minor, cur, exp)
 
 
 def parse_preflight(data: Any, parse_time: Any) -> Preflight | None:
@@ -155,13 +161,53 @@ def parse_preflight(data: Any, parse_time: Any) -> Preflight | None:
     if token is not None and (not isinstance(token, str) or not (8 <= len(token) <= 512)):
         return None
     plan = data.get("currentPlan")
+    quotes: dict[str, tuple[int, str, int]] = {}
+    raw_quotes = data.get("quotes")
+    if isinstance(raw_quotes, Mapping):
+        for key, q in raw_quotes.items():
+            if not isinstance(q, Mapping) or not isinstance(key, str):
+                continue
+            minor, cur, exp = q.get("amountMinor"), q.get("currency"), q.get("minorUnitExponent", 2)
+            if (
+                isinstance(minor, int)
+                and not isinstance(minor, bool)
+                and minor >= 0
+                and isinstance(cur, str)
+                and isinstance(exp, int)
+                and not isinstance(exp, bool)
+            ):
+                quotes[key] = (minor, cur.upper()[:3], exp)
     return Preflight(
         token=token or None,
         account_mask=mask_email(data.get("email")),
         current_plan=plan.strip().lower()[:40] if isinstance(plan, str) else None,
         expires_at=parse_time(data.get("preflight_expires_at")),
         quote_error=bool(str(data.get("quote_error") or "").strip()),
+        quotes=quotes,
     )
+
+
+def funding_card_problem(status: str, available_ok: bool, remaining: int | None) -> str | None:
+    """Why the funding card cannot pay (None = it can): not ACTIVE, or its usage cap is used up."""
+    if status != "ACTIVE":
+        return "funding_card_invalid"
+    if remaining is not None and remaining == 0:
+        return "funding_card_exhausted"
+    if not available_ok:
+        return "funding_card_low"
+    return None
+
+
+def usage_remaining(data: Any, plan: str) -> int | None:
+    """``remaining`` of ``GET /gpt-direct/cards/{id}/usage`` for the plan's bucket (``pro20`` for
+    Pro 20x, else ``light``); ``-1`` = unlimited -> ``None``. Unreadable -> ``None`` [I]."""
+    if not isinstance(data, Mapping):
+        return None
+    bucket = data.get("pro20" if plan.startswith("pro_20x") else "light")
+    rem = bucket.get("remaining") if isinstance(bucket, Mapping) else None
+    if isinstance(rem, bool) or not isinstance(rem, int) or rem < 0:
+        return None
+    return rem
 
 
 def order_id_of(data: Any) -> str | None:
@@ -198,6 +244,7 @@ __all__ = [
     "DIRECT_PRODUCTS",
     "DONE",
     "FAILED",
+    "NOTHING_HELD_FEE",
     "NOT_CHARGED",
     "USD_PRODUCTS",
     "DirectSpec",

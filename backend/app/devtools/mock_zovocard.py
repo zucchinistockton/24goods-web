@@ -286,10 +286,25 @@ class MockZovo:
     direct_polls: int = 3  # the Nth read ends the order (1st: queued, then running)
     direct_expire_next: int = 0  # the next N preflight tokens are issued already expired
     direct_cancel_409: bool = False  # every cancel answers 409 (payment already started)
+    direct_quote_factor: float = 1.0  # the preflight quotes are inflated by this factor
+    direct_fee_status: str = "held"  # ``service_fee_status`` of an order that did not complete
+    direct_omit: set[str] = field(default_factory=set)  # order-view fields left out (a quirk)
+    direct_order_over: dict[str, Any] = field(default_factory=dict)  # order-view overrides
+    usage_remaining: dict[int, int] = field(default_factory=dict)  # funding card -> remaining uses
+    list_cap: int = 100  # rows per page the order list really returns (paging tests)
     direct_current_plan: str = "free"  # what the preflight reports as the account's plan
     direct_quote_error: str = ""  # a non-empty quote_error on the preflight
     direct_cancelled: int = 0
     direct_product_seen: list[str] = field(default_factory=list)  # product exactly as sent
+
+    def add_funding_card(self, cid: int, available: float = 500.0, status: str = "ACTIVE") -> None:
+        """A card of OUR vendor account for ``upstream_direct`` offers (``card_id``)."""
+        self.cards[cid] = {
+            "id": cid, "card_number": f"5378{cid:012d}", "cvv": "123", "expire": "12/30",
+            "status": status, "available_amount": available, "open_fee": 0.0,
+            "product_code": "FUND",
+        }  # fmt: skip
+        self.recharges[cid] = []
 
     def force(self, path: str, quirk: str, times: int = 1) -> None:
         if quirk not in QUIRKS:
@@ -514,6 +529,16 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
         mock.direct_tokens[token] = expires
         country = body.get("payment_country") or "PH"
         currency = body.get("payment_currency") or ("USD" if country == "US" else "PHP")
+        quotes: dict[str, Any] = {}
+        for prod in ("gpt", "claude", "grok"):
+            for row in plans_fixture(prod, mock.scenarios)["registry"]:
+                if row["checkout_amount_minor"]:
+                    quotes[row["key"]] = {
+                        "country": country, "currency": row["checkout_currency"],
+                        "plan": row["key"],
+                        "amountMinor": int(row["checkout_amount_minor"] * mock.direct_quote_factor),
+                        "minorUnitExponent": 2,
+                    }  # fmt: skip
         return JSONResponse(
             _env(
                 0,
@@ -527,13 +552,20 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
                     ).isoformat(),
                     "payment_country": country,
                     "payment_currency": currency,
-                    "quotes": {},
+                    "quotes": quotes,
                     "quote_error": mock.direct_quote_error,
                 },
             )
         )
 
     def _order_view(o: dict[str, Any]) -> dict[str, Any]:
+        view = _order_view_raw(o)
+        view.update(mock.direct_order_over)
+        for k in mock.direct_omit:
+            view.pop(k, None)
+        return view
+
+    def _order_view_raw(o: dict[str, Any]) -> dict[str, Any]:
         return {
             "order_id": o["id"],
             "client_request_id": o["client_request_id"],
@@ -546,6 +578,9 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
             "final_amount_minor": o["amount"] if o["status"] == "completed" else None,
             "account_email": "b***@example.test",
             "card_id": o["card_id"],
+            "service_fee_status": "settled"
+            if o["status"] == "completed"
+            else mock.direct_fee_status,
         }
 
     def _create_order(body: dict[str, Any]) -> JSONResponse:
@@ -746,13 +781,23 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
                 view.pop("status"), view.pop("available_amount")  # secrets present, shape broken
                 return JSONResponse(_env(0, view))
             return JSONResponse(_env(0, _card_view(card)))
+        m_usage = re.fullmatch(r"/gpt-direct/cards/([0-9]{1,12})/usage", path)
+        if m_usage:
+            cid = int(m_usage.group(1))
+            if cid not in mock.cards:
+                return JSONResponse({"code": 404, "msg": "no card"}, 404)
+            left = mock.usage_remaining.get(cid, 5)
+            return JSONResponse(
+                _env(0, {"light": {"used": 5 - left, "remaining": left, "cap": 5},
+                         "pro20": {"used": 0, "remaining": 3, "cap": 3}})
+            )  # fmt: skip
         m_order = re.fullmatch(r"/gpt-direct/orders/([0-9]{1,12})", path)
         if m_order:
             return _read_order(int(m_order.group(1)))
         if path == "/gpt-direct/orders":
             try:
                 page = max(1, int(request.query_params.get("page", "1")))
-                size = min(100, max(1, int(request.query_params.get("page_size", "20"))))
+                size = min(mock.list_cap, max(1, int(request.query_params.get("page_size", "20"))))
             except ValueError:
                 return JSONResponse({"code": 400, "msg": "bad paging"}, status_code=400)
             ordered = sorted(mock.direct_orders.values(), key=lambda o: -o["id"])

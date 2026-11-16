@@ -774,7 +774,32 @@ class ZovoCardSupplier:
             cost = await self._direct_cost(offer)
         except SupplierError:
             cost = None
+        problem = await self._funding_card_problem(spec, cost)
+        if problem is not None:
+            return Availability(False, problem, cost_estimate=cost, checked_at=now)
         return Availability(True, cost_estimate=cost, checked_at=now)
+
+    async def _funding_card_problem(self, spec: dr.DirectSpec, cost: Money | None) -> str | None:
+        """The funding card must be OURS (``GET /cards/{id}`` answers for our account only: a
+        404 means it is not ours), ACTIVE, hold at least the order's cost (USD) and have capacity
+        left under the vendor's usage cap (``GET /gpt-direct/cards/{id}/usage``, [I] shape: an
+        unreadable answer does not block). The PAN / CVV in the card read are dropped at once."""
+        try:
+            resp = await self.client.get(f"/cards/{spec.card_id}")
+        except SupplierError as exc:
+            return "funding_card_invalid" if exc.status in (400, 404) else exc.reason
+        detail = parse_card_detail(resp.data)
+        if detail is None:
+            return "funding_card_invalid"
+        enough = cost is None or detail.available >= cost.amount
+        try:
+            usage = await self.client.get(
+                f"/gpt-direct/cards/{spec.card_id}/usage", params={"product": spec.product}
+            )
+            remaining = dr.usage_remaining(usage.data, spec.plan)
+        except SupplierError:
+            remaining = None
+        return dr.funding_card_problem(detail.status, enough, remaining)
 
     async def _preflight(self, spec: dr.DirectSpec, credential: str) -> dr.Preflight | Result:
         """``POST /gpt-direct/preflight``: validates the credential and quotes (read-only upstream;
@@ -812,7 +837,7 @@ class ZovoCardSupplier:
         ref = job.upstream_ref if job.upstream_ref and job.upstream_ref.isdigit() else None
         rid = dr.client_request_id(job.job_id)
         if ref is not None:
-            return await self._direct_status(spec, ref, rid, None)
+            return await self._direct_status(spec, ref, rid, None, job.account_mask)
         if not job.credential:
             return Result(Outcome.FATAL, error_code="credential_missing")
         try:
@@ -829,8 +854,14 @@ class ZovoCardSupplier:
             seen: dict[str, Any] = {"account_mask": mask, "preflight_expires_at": expires}
             if pf.quote_error:  # the vendor: do not create an order while quote_error is set
                 return Result(Outcome.RETRYABLE, error_code="quote_error", **seen)
+            if job.account_mask and pf.account_mask and job.account_mask != pf.account_mask:
+                # the session belongs to ANOTHER account than the first one (re-supplied)
+                return Result(Outcome.FATAL, error_code="session_other_account", **seen)
             if pf.current_plan == spec.plan:
                 return Result(Outcome.FATAL, error_code="plan_already_active", **seen)
+            over = await self._quote_problem(spec, pf, job)
+            if over is not None:
+                return Result(Outcome.FATAL, error_code=over, **seen)
             try:
                 version = (await self.plans(spec.product, fresh=attempt > 1)).version
             except SupplierError:
@@ -859,6 +890,49 @@ class ZovoCardSupplier:
             return await self._direct_created(spec, resp.data, rid, seen)
         return Result(Outcome.RETRYABLE, error_code="GPT_PRICE_UNCONFIRMED", account_mask=mask)
 
+    async def _quote_problem(
+        self, spec: dr.DirectSpec, pf: dr.Preflight, job: JobSpec
+    ) -> str | None:
+        """Use the preflight quote (the price the buyer's account is actually charged): refuse
+        before any order when it is above what the offer allows. A USD quote (Claude / Grok, and
+        USD GPT regions) is compared with ``job.cost_bound`` (offer cost x (1 + tolerance)), or,
+        without one, the catalogue's own USD cost x (1 + tolerance). A non-USD quote (a GPT plan in
+        PHP...) cannot be compared with a USD budget: it is compared, in its own currency, with the
+        plan's ``maxAmountMinor`` (else ``expectedAmountMinor`` x (1 + tolerance))."""
+        quote = pf.quotes.get(spec.plan)
+        catalog = await self.plans(spec.product)
+        entry = catalog.registry.get(spec.plan)
+        if quote is None:
+            if (
+                spec.product in dr.USD_PRODUCTS
+                and entry
+                and entry.checkout_amount_minor is not None
+            ):
+                quote = (entry.checkout_amount_minor, entry.checkout_currency or "USD", 2)
+            else:
+                return "quote_missing"
+        minor, currency, exp = quote
+        amount = Decimal(minor).scaleb(-exp)
+        tol = Decimal(1) + job.quote_tolerance
+        if currency == "USD":
+            bound = job.cost_bound
+            if bound is None:
+                est = await self._direct_cost(job.offer)
+                bound = Money(est.amount * tol, "USD") if est else None
+            if bound is None or bound.currency != "USD":
+                return "quote_unbounded"
+            return "quote_over_bound" if amount > bound.amount else None
+        plan = catalog.plans.get(entry.acc_plan_key or "") if entry else None
+        if not isinstance(plan, Mapping) or str(plan.get("currency", "")).upper() != currency:
+            return "quote_currency_mismatch"
+        ceiling = _int_or_none(plan.get("maxAmountMinor"))
+        if ceiling is None:
+            expected = _int_or_none(plan.get("expectedAmountMinor"))
+            ceiling = int(Decimal(expected) * tol) if expected is not None else None
+        if ceiling is None:
+            return "quote_unbounded"
+        return "quote_over_bound" if minor > ceiling else None
+
     async def _direct_created(
         self, spec: dr.DirectSpec, data: Any, rid: str, seen: dict[str, Any]
     ) -> Result:
@@ -878,11 +952,16 @@ class ZovoCardSupplier:
                 Outcome.FATAL, error_code=f"order_{clean_status(status)}", upstream_ref=ref, **seen
             )
         if phase == "done":
-            return await self._direct_status(spec, ref, rid, seen.get("account_mask"))
+            return await self._direct_status(spec, ref, rid, seen.get("account_mask"), None)
         return Result(Outcome.ACCEPTED_PENDING, upstream_ref=ref, **seen)
 
     async def _direct_status(
-        self, spec: dr.DirectSpec, ref: str, rid: str, mask_hint: str | None
+        self,
+        spec: dr.DirectSpec,
+        ref: str,
+        rid: str,
+        mask_hint: str | None,
+        account_mask: str | None = None,
     ) -> Result:
         """``GET /gpt-direct/orders/{id}`` -> a Result. Pure read; the reference rides on EVERY
         answer, so the job never forgets an order the vendor holds."""
@@ -905,19 +984,36 @@ class ZovoCardSupplier:
             return Result(Outcome.FATAL, error_code="plan_mismatch", upstream_ref=ref)
         status = order.get("status")
         phase = dr.order_phase(status)
+        detail = _order_detail(order)
+        if phase == "done" and not (
+            isinstance(crid, str)
+            and crid == rid
+            and isinstance(plan, str)
+            and plan == spec.plan
+            and not (account_mask and mask and account_mask != mask)
+        ):
+            # a COMPLETED order is only delivered when it provably is OUR order for this plan
+            # and this account: the request id and plan must be present and equal
+            return Result(
+                Outcome.FATAL, error_code="order_mismatch", upstream_ref=ref, detail=detail
+            )
         if phase == "failed":
             return Result(
                 Outcome.FATAL,
                 error_code=f"order_{clean_status(status)}",
                 upstream_ref=ref,
                 account_mask=mask,
+                detail=detail,
             )
         if phase == "pending":
-            return Result(Outcome.ACCEPTED_PENDING, upstream_ref=ref, account_mask=mask)
+            return Result(
+                Outcome.ACCEPTED_PENDING, upstream_ref=ref, account_mask=mask, detail=detail
+            )
         return Result(
             Outcome.OK,
             upstream_ref=ref,
             account_mask=mask,
+            detail=detail,
             secrets=(dr.delivery_text(spec, mask, ref),),  # plan, masked account, order: no secret
             cost=_order_cost(order),
         )
@@ -931,8 +1027,9 @@ class ZovoCardSupplier:
             return Result(Outcome.FATAL, error_code="invalid_offer")
         rid = dr.client_request_id(job.job_id)
         if job.upstream_ref and job.upstream_ref.isdigit():
-            return await self._direct_status(spec, job.upstream_ref, rid, None)
-        for page in (1, 2, 3):
+            return await self._direct_status(spec, job.upstream_ref, rid, None, job.account_mask)
+        seen_rows = 0
+        for page in range(1, ORDER_LIST_MAX_PAGES + 1):
             try:
                 resp = await self.client.get(
                     "/gpt-direct/orders", params={"page": str(page), "page_size": "100"}
@@ -942,15 +1039,23 @@ class ZovoCardSupplier:
             rows = resp.data.get("list") if isinstance(resp.data, Mapping) else None
             if not isinstance(rows, list):
                 return Result(Outcome.AMBIGUOUS, error_code="malformed_order_list")
+            seen_rows += len(rows)
+            total = resp.data.get("total") if isinstance(resp.data, Mapping) else None
             for item in rows:
                 if isinstance(item, Mapping) and item.get("client_request_id") == rid:
                     found = dr.order_id_of(item)
                     if found is None:
                         return Result(Outcome.AMBIGUOUS, error_code="malformed_order")
-                    return await self._direct_status(spec, found, rid, None)
-            if len(rows) < 100:
-                break
-        return Result(Outcome.UNAVAILABLE, error_code="order_not_found")
+                    return await self._direct_status(spec, found, rid, None, job.account_mask)
+            # page until the vendor says there is no more (``total`` rows seen, or a short page)
+            if isinstance(total, int) and not isinstance(total, bool):
+                done = not rows or seen_rows >= total
+            else:
+                done = len(rows) < 100
+            if done:
+                return Result(Outcome.UNAVAILABLE, error_code="order_not_found")
+        # the list is longer than we are willing to read: "not found" would be a guess
+        return Result(Outcome.AMBIGUOUS, error_code="order_list_too_long")
 
     async def _direct_void(self, job: JobSpec, ref: str) -> Result:
         """What "void" means for a direct order. A subscription that COMPLETED cannot be undone by
@@ -966,10 +1071,21 @@ class ZovoCardSupplier:
         if not isinstance(order, Mapping):
             return Result(Outcome.AMBIGUOUS, error_code="malformed_order", upstream_ref=ref)
         status = str(order.get("status") or "").strip().lower()
-        if status in dr.NOT_CHARGED or status in dr.FAILED:
-            return Result(Outcome.OK, upstream_ref=ref)  # nothing to undo
+        detail = _order_detail(order)
+        fee = str(order.get("service_fee_status") or "").strip().lower()
+        if status in dr.NOT_CHARGED and fee in dr.NOTHING_HELD_FEE:
+            return Result(Outcome.OK, upstream_ref=ref, detail=detail)  # nothing to undo
+        if status in dr.FAILED:
+            # declined / unknown failure, or a cancel whose fee is not confirmed released: money
+            # may be held, so it stays visible to staff (status and fee in the job view)
+            return Result(
+                Outcome.FATAL, error_code="order_failure_unconfirmed", upstream_ref=ref,
+                detail=detail,
+            )  # fmt: skip
         if status in dr.DONE:
-            return Result(Outcome.FATAL, error_code="order_completed", upstream_ref=ref)
+            return Result(
+                Outcome.FATAL, error_code="order_completed", upstream_ref=ref, detail=detail
+            )
         if status not in dr.CANCELLABLE or job.step == "delete_pending":
             return Result(Outcome.ACCEPTED_PENDING, error_code="void_waiting", upstream_ref=ref)
         try:
@@ -1187,3 +1303,17 @@ def _order_cost(order: Mapping[str, Any]) -> Money | None:
         if isinstance(v, int) and not isinstance(v, bool) and v >= 0:
             return Money((Decimal(v) / 100).quantize(Decimal("0.01")), "USD")
     return None
+
+
+ORDER_LIST_MAX_PAGES = 50  # 5000 orders: beyond that a "not found" would be a guess
+
+
+def _order_detail(order: Mapping[str, Any]) -> str:
+    """``status:fee_status[:funding]`` of a vendor order for staff (machine alphabet, 32 chars)."""
+    parts = [
+        clean_status(order.get("status")),
+        clean_status(order.get("service_fee_status") or "-"),
+    ]
+    if order.get("funding_hold_status"):
+        parts.append(clean_status(order.get("funding_hold_status")))
+    return ":".join(parts)[:32]

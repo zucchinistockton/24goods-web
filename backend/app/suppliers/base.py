@@ -166,6 +166,8 @@ class Result:
     # direct: masked account e-mail the supplier's preflight reported, and the token's expiry
     account_mask: str | None = None
     preflight_expires_at: datetime | None = None
+    # direct: short machine summary of the vendor order (``status:fee_status``), shown to staff
+    detail: str | None = None
 
     @classmethod
     def from_error(
@@ -238,6 +240,11 @@ class JobSpec:
     # upstream_direct ONLY: the buyer's account session, opened in memory by the engine for this one
     # call. A live credential: hidden from ``repr``, never logged, never copied anywhere.
     credential: str | None = field(default=None, repr=False)
+    # direct: the masked account the job's FIRST preflight reported (a later one must match),
+    # the most the order may cost (USD, offer cost x (1 + tolerance)) and that tolerance
+    account_mask: str | None = None
+    cost_bound: Money | None = None
+    quote_tolerance: Decimal = Decimal("0.10")
 
     def __post_init__(self) -> None:
         if not IDEMPOTENCY_KEY_RE.fullmatch(self.idempotency_key):

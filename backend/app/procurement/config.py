@@ -48,6 +48,12 @@ class ProcurementSettings:
     # an upstream_direct order still pending at the supplier after this long goes to needs_manual
     # (``pending_too_long``): a subscription takes minutes, an order that never moves needs staff
     direct_pending_max_s: float = 7200.0
+    # a preflight quote may exceed the offer's cost by this fraction before the order is refused
+    direct_quote_tolerance: float = 0.10
+    # consecutive declined / failed_precharge orders on ONE source before it is switched off
+    direct_decline_limit: int = 3
+    # orders at the vendor at the same time on ONE funding card
+    direct_card_inflight_max: int = 1
     # engine (review-v12 §3, §6)
     jobs_poll_s: float = 2.0
     job_lease_s: float = 120.0
@@ -77,6 +83,11 @@ class ProcurementSettings:
     redeem_global_limits: str = "preview=25,preflight=20,redeem=15,result=55"
     redeem_code_per_10min: int = 10  # preview attempts per code (hashed) before a cool-down
     redeem_token_per_min: int = 40  # per redemption token (hashed), all steps
+
+    def __post_init__(self) -> None:
+        # the database backstop (migration 0030) lets the API delete a session older than 6 h
+        if not 0 < self.cred_max_age_s <= 21600:
+            raise ValueError("APP_CRED_MAX_AGE_S must be between 1 and 21600 (6 h)")
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> ProcurementSettings:

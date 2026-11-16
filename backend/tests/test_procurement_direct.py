@@ -78,6 +78,16 @@ class DUp(Up):
         self.ctx.settings = replace(self.ctx.settings, cred_sweep_interval_s=0.0)
         self.ctx.cred_opener = CredentialOpener({CRED_KID: CRED_PRIV})
 
+    async def supplier(self, supplier, **kw):
+        sid, oid = await super().supplier(supplier, **kw)
+        # a realistic budget: the preflight quote (USD 20 for Claude Pro) must fit it
+        async with self.env.owner_session() as db:
+            await db.execute(
+                text("UPDATE supplier_offers SET cost_estimate = 25 WHERE id = :o"), {"o": oid}
+            )
+            await db.commit()
+        return sid, oid
+
     async def paid_direct(self, session: str, *, product=None):
         buyer, _user = await self.env.login("buyer")
         order = await buy(buyer, product or self.product, 1, session=session)
@@ -95,7 +105,9 @@ async def dup(env):
 
 
 def _vendor() -> MockZovo:
-    return MockZovo(scenarios=True)  # scenarios: a 5000 USD wallet, so no balance breaker
+    v = MockZovo(scenarios=True)  # scenarios: a 5000 USD wallet, so no balance breaker
+    v.add_funding_card(4242)  # the funding card of the offers below (ours, ACTIVE)
+    return v
 
 
 async def _drive(env, up: DUp, order, buyer, *, want: str = "delivered", rounds: int = 10) -> None:
@@ -692,6 +704,7 @@ async def test_hand_fulfil_is_admin_only_needs_a_reason_and_leaves_a_critical_ro
 
 async def test_balance_breaker_reserves_the_in_flight_direct_order(env, dup):
     vendor = MockZovo()  # 12.34 USD: less than one Claude Pro order (21.15) while it is in flight
+    vendor.add_funding_card(4242)
     vendor.direct_end = "running"
     sid, _ = await _zovo(dup, vendor, CLAUDE)
     _buyer, order = await dup.paid_direct(claude_session(new_marker()))
