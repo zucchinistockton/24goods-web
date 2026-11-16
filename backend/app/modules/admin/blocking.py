@@ -20,6 +20,7 @@ from app.core.resources import Resources
 from app.core.settings_v5 import ip_in_nets
 from app.core.suspend import is_suspended
 from app.models import BlockedIP, User
+from app.modules.auth import twofactor
 from app.modules.catalog.service import escape_like
 from app.modules.common.views import iso
 
@@ -158,6 +159,28 @@ async def suspend(
     await db.commit()
     await res.sessions.revoke_user_sessions(user.id)
     return user_row(user)
+
+
+@router.post("/users/{user_id}/2fa/reset")
+async def reset_two_factor(
+    user_id: uuid.UUID,
+    request: Request,
+    staff: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+    res: Resources = Depends(get_res),
+) -> dict:
+    """An admin removes another user's two-factor login (lost device). Their sessions end."""
+    user = await db.scalar(
+        select(User).where(User.id == user_id, User.tenant_id == staff.tenant_id).with_for_update()
+    )
+    if user is None:
+        raise NotFound("User not found")
+    if user.id == staff.id:
+        raise Forbidden("Use your own account settings to turn two-factor login off")
+    uid = user.id
+    removed = await twofactor.reset_by_staff(db, staff, user, client_ip(request))
+    await res.sessions.revoke_user_sessions(uid)
+    return {"id": str(uid), "two_factor": False, "removed": removed}
 
 
 @router.post("/users/{user_id}/unsuspend")

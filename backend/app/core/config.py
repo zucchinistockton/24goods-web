@@ -216,6 +216,10 @@ class Settings(BaseSettings):
             raise ValueError("APP_SETTINGS_KEY is required in prod")
         return hmac.new(self.pow_secret(), b"settings-secretbox/v1", hashlib.sha256).digest()
 
+    def totp_secret(self) -> bytes:
+        """Key for sealed TOTP secrets and recovery-code hashes (derived from the settings key)."""
+        return hmac.new(self.settings_secret(), b"totp/v1", hashlib.sha256).digest()
+
     def lookup_secret(self) -> bytes:
         if self.lookup_key.strip():
             return decode_key(self.lookup_key)

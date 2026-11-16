@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import exists, select, update
+from sqlalchemy import delete, exists, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,7 +16,7 @@ from app.core.errors import ApiError, Conflict, Forbidden, Validation
 from app.core.ratelimit import enforce
 from app.core.resources import Resources
 from app.core.security import STAFF_ROLES, hash_password, verify_password
-from app.models import AfterSales, Attachment, Conversation, Message, Order, User
+from app.models import AfterSales, Attachment, Conversation, Message, Order, User, UserTotp
 from app.modules.auth import codes
 from app.modules.auth.schemas import INSTANT_DOMAIN
 from app.modules.me.schemas import CredentialsIn, DeleteIn, ProfileIn
@@ -236,6 +236,7 @@ async def delete_account(
         raise HasOpenOrders("Finish or cancel your open orders and after-sales requests first")
     uid, tid, role = user.id, user.tenant_id, user.role
     _, keys = await anonymize(db, user)
+    await db.execute(delete(UserTotp).where(UserTotp.user_id == uid, UserTotp.tenant_id == tid))
     await audit(
         db,
         tenant_id=tid,

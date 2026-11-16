@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, File, Request, Response, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,11 +11,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import audit
 from app.core.deps import client_ip, current_user, get_db, get_lang, get_res
 from app.core.errors import NotFound, Validation
+from app.core.i18n import pick
 from app.core.ratelimit import enforce
 from app.core.resources import Resources
 from app.core.security import verify_password
+from app.core.settings_v5 import section
 from app.models import User
-from app.modules.auth import codes
+from app.modules.auth import codes, twofactor
 from app.modules.common.views import user_view
 from app.modules.content.site import tenant_settings
 from app.modules.me import service
@@ -228,3 +230,84 @@ async def get_avatar(
             "Vary": "Cookie",
         },
     )
+
+
+# ------------------------------------------------------------------ two-factor login (optional)
+class TwoFactorSetupIn(BaseModel):
+    password: str | None = Field(None, max_length=128)
+
+
+class TwoFactorCodeIn(BaseModel):
+    code: str = Field(min_length=6, max_length=32)
+
+
+def _no_store(body: dict) -> JSONResponse:
+    return JSONResponse(body, headers={"Cache-Control": "no-store"})
+
+
+@router.get("/2fa")
+async def two_factor_status(
+    user: User = Depends(current_user), db: AsyncSession = Depends(get_db)
+) -> dict:
+    return await twofactor.status(db, user)
+
+
+@router.post("/2fa/setup")
+async def two_factor_setup(
+    body: TwoFactorSetupIn,
+    request: Request,
+    lang: str = Depends(get_lang),
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+    res: Resources = Depends(get_res),
+) -> JSONResponse:
+    """Start enrolment: the secret and its ``otpauth://`` URI, shown once (client draws the QR)."""
+    names = section(await tenant_settings(db, user.tenant_id), "general")["site_name_i18n"]
+    issuer = (pick(names, lang) if names else "") or res.settings.brand_name
+    out = await twofactor.begin_setup(
+        db, res.redis, res.settings, user, body.password, issuer, client_ip(request)
+    )
+    return _no_store(out)
+
+
+@router.post("/2fa/enable")
+async def two_factor_enable(
+    body: TwoFactorCodeIn,
+    request: Request,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+    res: Resources = Depends(get_res),
+) -> JSONResponse:
+    """Confirm enrolment. Other sessions of the account end; recovery codes are shown once."""
+    uid = user.id
+    recovery = await twofactor.enable(
+        db, res.redis, res.settings, user, body.code, client_ip(request)
+    )
+    await res.sessions.revoke_user_sessions(uid, keep=res.sessions.token_from(request.cookies))
+    return _no_store({"enabled": True, "recovery_codes": recovery})
+
+
+@router.post("/2fa/disable", status_code=204)
+async def two_factor_disable(
+    body: TwoFactorCodeIn,
+    request: Request,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+    res: Resources = Depends(get_res),
+) -> Response:
+    await twofactor.disable(db, res.redis, res.settings, user, body.code, client_ip(request))
+    return Response(status_code=204)
+
+
+@router.post("/2fa/recovery-codes")
+async def two_factor_recovery_codes(
+    body: TwoFactorCodeIn,
+    request: Request,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+    res: Resources = Depends(get_res),
+) -> JSONResponse:
+    recovery = await twofactor.regenerate(
+        db, res.redis, res.settings, user, body.code, client_ip(request)
+    )
+    return _no_store({"recovery_codes": recovery})

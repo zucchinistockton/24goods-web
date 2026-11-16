@@ -23,13 +23,14 @@ from app.core.security import STAFF_ROLES
 from app.core.settings_v5 import section
 from app.core.turnstile import require_turnstile
 from app.models import User
-from app.modules.auth import codes, service
+from app.modules.auth import codes, service, twofactor
 from app.modules.auth.schemas import (
     EmailCodeIn,
     InstantIn,
     LoginIn,
     PasswordResetIn,
     RegisterIn,
+    TwoFactorLoginIn,
 )
 from app.modules.common.views import user_view
 from app.modules.content.site import tenant_settings
@@ -121,7 +122,9 @@ async def login(
         request, await tenant_settings(db, tenant_id), "login", body.turnstile_token
     )
     try:
-        user = await service.login(db, res.redis, res.settings, tenant_id, body, client_ip(request))
+        user, second = await service.login(
+            db, res.redis, res.settings, tenant_id, body, client_ip(request)
+        )
     except ApiError:
         sampled, _ = await hit(
             res.redis, "login:denied-log", str(tenant_id) + ":" + (client_ip(request) or "-"), 1, 60
@@ -141,21 +144,79 @@ async def login(
             )
             await db.commit()
         raise
+    if user.role in STAFF_ROLES:
+        await forbid_custom_host(request, db, tenant_id)
+    if second is not None:
+        # two-factor account: the password alone opens no session and changes no cookie
+        token = await twofactor.start_pending(res.redis, user, second)
+        return JSONResponse(
+            {
+                "two_factor_required": True,
+                "pending_token": token,
+                "expires_in": twofactor.PENDING_TTL_S,
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+    await _login_event(request, db, res, tenant_id, user, "authenticated")
+    return await _start_session(request, res, user)
+
+
+async def _login_event(
+    request: Request,
+    db: AsyncSession,
+    res: Resources,
+    tenant_id: uuid.UUID,
+    user: User | None,
+    reason: str,
+    outcome: str = "success",
+) -> None:
     await record_event(
         db,
         tenant_id=tenant_id,
         environment=res.settings.env,
         family="login",
         action="auth.login",
-        outcome="success",
-        reason="authenticated",
-        actor_id=user.id,
+        outcome=outcome,
+        reason=reason,
+        actor_id=user.id if user is not None else None,
         ip=client_ip(request),
         user_agent=request.headers.get("user-agent"),
     )
     await db.commit()
+
+
+@router.post("/login/2fa")
+async def login_second_factor(
+    body: TwoFactorLoginIn,
+    request: Request,
+    tenant_id: uuid.UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+    res: Resources = Depends(get_res),
+) -> JSONResponse:
+    """Second step of a two-factor login: pending token + authenticator or recovery code."""
+    try:
+        user, kind = await twofactor.complete_login(
+            db,
+            res.redis,
+            res.settings,
+            tenant_id,
+            body.pending_token,
+            body.code,
+            client_ip(request),
+        )
+    except twofactor.TwoFactorInvalid:
+        sampled, _ = await hit(
+            res.redis, "login:denied-log", str(tenant_id) + ":" + (client_ip(request) or "-"), 1, 60
+        )
+        budget, _ = await hit(res.redis, "login:denied-log-budget", str(tenant_id), 8, 60)
+        if sampled and budget:
+            await _login_event(
+                request, db, res, tenant_id, None, "second_factor_rejected", outcome="denied"
+            )
+        raise
     if user.role in STAFF_ROLES:
         await forbid_custom_host(request, db, tenant_id)
+    await _login_event(request, db, res, tenant_id, user, f"authenticated_{kind}")
     return await _start_session(request, res, user)
 
 

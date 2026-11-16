@@ -21,7 +21,7 @@ from app.models.orders import Checkout, Order, OrderEvent, Payment
 from app.models.payment_config import LegacyPayUrl, PaymentAttempt, PaymentGateway, PaymentTest
 from app.models.system import AuditLog, Outbox
 from app.models.tenancy import CustomDomain, Tenant
-from app.models.users import AgentStatus, User
+from app.models.users import AgentStatus, User, UserTotp
 
 __all__ = [
     "AfterSales",
@@ -67,6 +67,7 @@ __all__ = [
     "Tenant",
     "TenantSecret",
     "User",
+    "UserTotp",
 ]
 
 from app.models.operations import (
