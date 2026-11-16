@@ -30,7 +30,7 @@ from app.suppliers.base import (
 
 
 class MockSupplier:
-    capabilities = frozenset({Capability.CDK, Capability.VCC, Capability.VOID})
+    capabilities = frozenset({Capability.CDK, Capability.VCC, Capability.DIRECT, Capability.VOID})
 
     def __init__(
         self,
@@ -54,6 +54,8 @@ class MockSupplier:
         self.unit_cost = unit_cost
         self.charged: dict[str, Result] = {}  # idempotency key -> first OK result
         self.calls: list[tuple[str, str]] = []  # (operation, idempotency key)
+        # direct: whether each submit carried a credential (the credential itself is never kept)
+        self.credentials_seen: list[bool] = []
 
     async def aclose(self) -> None:
         return None
@@ -84,7 +86,11 @@ class MockSupplier:
         if offer.kind == "vcc":
             ok = offer.params.get("product_code") in self.card_products
         else:
-            ok = offer.kind == "cdk" and isinstance(plan, str) and plan in self.purchasable
+            ok = (
+                offer.kind in ("cdk", "direct")
+                and isinstance(plan, str)
+                and plan in self.purchasable
+            )
         return Availability(
             available=ok,
             reason=None if ok else "not_purchasable",
@@ -103,7 +109,17 @@ class MockSupplier:
         if outcome is not Outcome.OK:
             return Result(outcome=outcome, error_code=f"mock_{outcome.value}")
         self.spendable -= self.unit_cost
-        if job.offer.kind == "vcc":
+        if job.offer.kind == "direct":
+            self.credentials_seen.append(bool(job.credential))
+            ref = "mock:" + job.idempotency_key
+            result = Result(
+                outcome=Outcome.OK,
+                upstream_ref=ref,
+                secrets=(f"mock/{job.offer.params.get('plan')}----m***@example.test----{ref}",),
+                cost=Money(self.unit_cost, "USD"),
+                account_mask="m***@example.test",
+            )
+        elif job.offer.kind == "vcc":
             # one sealed structured secret per card: "<pan>----<MM/YY>----<cvv>" (synthetic)
             digest = hashlib.sha256(job.idempotency_key.encode()).hexdigest()
             pan = "4" + "".join(str(int(c, 16) % 10) for c in digest[:15])

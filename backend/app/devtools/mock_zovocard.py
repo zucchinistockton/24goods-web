@@ -39,6 +39,16 @@ country/currency (Grok/Claude plans: no token); ``redeem`` answers ``succeeded``
 ``400 CDK_UNAVAILABLE``. A credential containing ``invalid`` is ``400 GPT_SESSION_INVALID``.
 The credential and the code are never stored in ``requests``.
 
+Direct orders (review-v12 §18): ``POST /gpt-direct/preflight`` (no Idempotency-Key; a single-use
+token valid ``DIRECT_TOKEN_TTL_S``; the full e-mail is reported, the adapter masks it),
+``POST /gpt-direct/orders`` (``202 accepted``, status ``queued``; the vendor's pitfall 1 is
+reproduced: an UNKNOWN ``product`` silently becomes ``gpt``; a repeated ``client_request_id``
+returns the original order; a missing / used / expired token is ``400 GPT_PRICE_UNCONFIRMED``),
+``GET /gpt-direct/orders`` (list) and ``/{id}`` (``data.order`` + ``data.events``; the order moves
+queued -> running -> completed over successive reads, or ends ``declined`` / stays ``running``
+forever through ``direct_end``), ``POST /gpt-direct/orders/{id}/cancel`` (200 only while
+``queued``, else ``409`` without error_code). The session is NEVER stored: only a digest.
+
 Force a quirk from tests with ``MockZovo.force(path, name)`` or, on a running dev server,
 ``POST /__mock/force {"path": "/balance", "quirk": "429"}``. Refuses to start unless
 ``APP_ENV`` is dev or test.
@@ -47,6 +57,7 @@ Force a quirk from tests with ``MockZovo.force(path, name)`` or, on a running de
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -63,6 +74,8 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 PREFIX = "/openapi/v1"
+DIRECT_TOKEN_TTL_S = 600.0  # vendor 6.18.3: the preflight token is valid 10 minutes, single use
+MOCK_EMAIL = "buyer.person@example.test"  # the vendor reports it in full; the adapter masks it
 OK_KEY = "sk_mock_ok"
 NOALLOW_KEY = "sk_mock_noallow"
 _IDEM_RE = re.compile(r"^[A-Za-z0-9._:-]{1,80}$")
@@ -262,6 +275,18 @@ class MockZovo:
     fee_from_card: bool = False  # open / recharge fees are taken from the card balance
     recharge_fee: float = 0.0  # reported on every recharge row (0 in the real sandbox)
     malformed_detail: int = 0  # the next N card reads lack ``status`` / ``available_amount``
+    # direct orders (M3 part 2): vendor id -> order; session digests only, never the session
+    direct_orders: dict[int, dict[str, Any]] = field(default_factory=dict)
+    direct_tokens: dict[str, float] = field(default_factory=dict)  # preflight token -> expiry
+    next_direct: int = 800
+    direct_executions: int = 0  # how many orders really ran (tests: never twice per job)
+    preflights: int = 0
+    direct_end: str = "completed"  # completed | declined | running (never ends)
+    direct_polls: int = 2  # GETs before the order completes
+    direct_current_plan: str = "free"  # what the preflight reports as the account's plan
+    direct_quote_error: str = ""  # a non-empty quote_error on the preflight
+    direct_cancelled: int = 0
+    direct_product_seen: list[str] = field(default_factory=list)  # product exactly as sent
 
     def force(self, path: str, quirk: str, times: int = 1) -> None:
         if quirk not in QUIRKS:
@@ -461,7 +486,152 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
         card["available_amount"] = 0.0  # the sandbox answers 200 with 0, not 404
         return JSONResponse(_env(0, {"pending": False}))
 
+    # ---- direct orders (M3 part 2)
+    def _credential_ok(cred: Any) -> bool:
+        return (
+            isinstance(cred, dict)
+            and cred.get("mode") == "session"
+            and isinstance(cred.get("session"), str)
+            and 8 <= len(cred["session"])
+            and "invalid" not in cred["session"].lower()
+        )
+
+    def _preflight(body: dict[str, Any]) -> JSONResponse:
+        cred = body.get("credential")
+        if not _credential_ok(cred):
+            return JSONResponse(
+                {"code": 400, "error_code": "GPT_SESSION_INVALID", "msg": "bad session"}, 400
+            )
+        mock.preflights += 1
+        token = "pf-" + secrets.token_hex(12)
+        expires = time.monotonic() + DIRECT_TOKEN_TTL_S
+        mock.direct_tokens[token] = expires
+        country = body.get("payment_country") or "PH"
+        currency = body.get("payment_currency") or ("USD" if country == "US" else "PHP")
+        return JSONResponse(
+            _env(
+                0,
+                {
+                    "email": MOCK_EMAIL,
+                    "currentPlan": mock.direct_current_plan,
+                    "credentialMode": "session",
+                    "preflight_token": token,
+                    "preflight_expires_at": (
+                        datetime.now(timezone.utc) + timedelta(seconds=DIRECT_TOKEN_TTL_S)
+                    ).isoformat(),
+                    "payment_country": country,
+                    "payment_currency": currency,
+                    "quotes": {},
+                    "quote_error": mock.direct_quote_error,
+                },
+            )
+        )
+
+    def _order_view(o: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "order_id": o["id"],
+            "client_request_id": o["client_request_id"],
+            "plan": o["plan"],
+            "source": "api",
+            "status": o["status"],
+            "stage": o["status"],
+            "currency": o["currency"],
+            "quoted_amount_minor": o["amount"],
+            "final_amount_minor": o["amount"] if o["status"] == "completed" else None,
+            "account_email": "b***@example.test",
+            "card_id": o["card_id"],
+        }
+
+    def _create_order(body: dict[str, Any]) -> JSONResponse:
+        mock.direct_product_seen.append(str(body.get("product", "")))
+        rid = body.get("client_request_id")
+        if not isinstance(rid, str) or not 1 <= len(rid) <= 80:
+            return JSONResponse(
+                {"code": 400, "error_code": "INVALID_REQUEST", "msg": "client_request_id"}, 400
+            )
+        for o in mock.direct_orders.values():  # a repeated client_request_id: the original order
+            if o["client_request_id"] == rid:
+                return JSONResponse(
+                    _env(0, {"id": o["id"], "plan": o["plan"], "status": o["status"],
+                             "client_request_id": rid}, msg="accepted"), status_code=202,
+                )  # fmt: skip
+        product = body.get("product")
+        if product not in ("gpt", "claude", "grok"):
+            product = "gpt"  # vendor pitfall 1: an unknown product is silently a GPT order
+        plan = body.get("plan")
+        reg = {r["key"]: r for r in plans_fixture(str(product), mock.scenarios)["registry"]}
+        row = reg.get(plan) if isinstance(plan, str) else None
+        if row is None or row.get("purchasable") is not True:
+            return JSONResponse(
+                {"code": 400, "error_code": "INVALID_REQUEST", "msg": "unknown plan"}, 400
+            )
+        if not isinstance(body.get("card_id"), int) or isinstance(body.get("card_id"), bool):
+            return JSONResponse(
+                {"code": 400, "error_code": "INVALID_REQUEST", "msg": "card_id"}, 400
+            )
+        cred = body.get("credential")
+        if not _credential_ok(cred):
+            return JSONResponse(
+                {"code": 400, "error_code": "GPT_SESSION_INVALID", "msg": "bad session"}, 400
+            )
+        token = body.get("preflight_token")
+        live = mock.direct_tokens.pop(token, None) if isinstance(token, str) else None
+        if live is None or live < time.monotonic():
+            return JSONResponse(
+                {"code": 400, "error_code": "GPT_PRICE_UNCONFIRMED", "msg": "re-preflight"}, 400
+            )
+        mock.direct_executions += 1
+        mock.next_direct += 1
+        oid = mock.next_direct
+        mock.direct_orders[oid] = {
+            "id": oid,
+            "client_request_id": rid,
+            "plan": plan,
+            "product": product,
+            "status": "queued",
+            "polls": 0,
+            "currency": row["checkout_currency"],
+            "amount": row["checkout_amount_minor"],
+            "card_id": body["card_id"],
+            "cred": hashlib.sha256(cred["session"].encode()).hexdigest()[:16],
+        }
+        return JSONResponse(
+            _env(0, {"id": oid, "plan": plan, "source": "api", "status": "queued",
+                     "client_request_id": rid, "currency": row["checkout_currency"],
+                     "quoted_amount_minor": row["checkout_amount_minor"]}, msg="accepted"),
+            status_code=202,
+        )  # fmt: skip
+
+    def _cancel_order(oid: int) -> JSONResponse:
+        o = mock.direct_orders.get(oid)
+        if o is None:
+            return JSONResponse({"code": 404, "msg": "no order"}, 404)
+        if o["status"] != "queued":  # payment started or done: too late (no error_code)
+            return JSONResponse({"code": 409, "msg": "cannot cancel"}, 409)
+        o["status"] = "cancelled"
+        mock.direct_cancelled += 1
+        return JSONResponse(_env(0, {"id": oid, "status": "cancelled"}))
+
+    def _read_order(oid: int) -> JSONResponse:
+        o = mock.direct_orders.get(oid)
+        if o is None:
+            return JSONResponse({"code": 404, "msg": "no order"}, 404)
+        if o["status"] in ("queued", "running"):
+            o["polls"] += 1
+            if mock.direct_end == "running":
+                o["status"] = "running"
+            elif o["polls"] >= mock.direct_polls:
+                o["status"] = mock.direct_end
+            else:
+                o["status"] = "running"
+        return JSONResponse(_env(0, {"order": _order_view(o), "events": []}))
+
     def _write(request: Request, path: str, body: dict[str, Any]) -> JSONResponse:
+        if path == "/gpt-direct/orders":
+            return _create_order(body)
+        m_cancel = re.fullmatch(r"/gpt-direct/orders/([0-9]{1,12})/cancel", path)
+        if m_cancel:
+            return _cancel_order(int(m_cancel.group(1)))
         if path == "/cards/open":
             return _open_card(body)
         if path == "/cards/recharge":
@@ -494,6 +664,14 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
         blocked = _gate(request, path)
         if blocked is not None:
             return blocked
+        if request.method == "POST" and path == "/gpt-direct/preflight":
+            try:  # read-only upstream: no Idempotency-Key, nothing cached
+                pre = json.loads(await request.body() or b"{}")
+            except ValueError:
+                pre = None
+            if not isinstance(pre, dict):
+                return JSONResponse({"code": 400, "error_code": "INVALID_REQUEST"}, 400)
+            return _preflight(pre)
         if request.method != "GET":
             idem = request.headers.get("idempotency-key")
             if not idem:
@@ -562,6 +740,21 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
                 view.pop("status"), view.pop("available_amount")  # secrets present, shape broken
                 return JSONResponse(_env(0, view))
             return JSONResponse(_env(0, _card_view(card)))
+        m_order = re.fullmatch(r"/gpt-direct/orders/([0-9]{1,12})", path)
+        if m_order:
+            return _read_order(int(m_order.group(1)))
+        if path == "/gpt-direct/orders":
+            try:
+                page = max(1, int(request.query_params.get("page", "1")))
+                size = min(100, max(1, int(request.query_params.get("page_size", "20"))))
+            except ValueError:
+                return JSONResponse({"code": 400, "msg": "bad paging"}, status_code=400)
+            ordered = sorted(mock.direct_orders.values(), key=lambda o: -o["id"])
+            rows = [
+                {k: v for k, v in _order_view(o).items() if k != "account_email"}
+                for o in ordered[(page - 1) * size : page * size]
+            ]
+            return JSONResponse(_env(0, {"total": len(ordered), "list": rows}))
         if path == "/gpt-direct/cdks":
             items = sorted(mock.cdks.values(), key=lambda c: -c["id"])
             return JSONResponse(_env(0, {"total": len(items), "list": items}))
