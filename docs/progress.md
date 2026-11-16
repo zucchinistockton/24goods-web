@@ -9,7 +9,7 @@ block of `docs/progress.md` on branch **`feat/v12-procurement`** (local worktree
 `.claude/worktrees/agent-af3aa371765135692`): `git show origin/feat/v12-procurement:docs/progress.md | head -110`.
 In short: v12 procurement M2 is merged into `feat/v12-procurement` (PR #2, all payment-audit findings fixed
 except two deferred to M3) and runs on the demo with the procurement process; it is not on `main`. Optional
-TOTP 2FA has its backend on `feat/totp-2fa` (no UI, no PR yet). Open: production deploy of `main` (dark mode
+TOTP 2FA is PR #10 (`feat/totp-2fa`, block below). Open: production deploy of `main` (dark mode
 #6 and the Telegram language switch #7 are merged and checked on the demo, production still runs `d881dfa`),
 the ZovoCard sandbox webhook (account expires 2026-11-18 10:57), the redemption site, M3.
 
