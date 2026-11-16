@@ -27,6 +27,7 @@ from app.core.resources import Resources
 from app.models import Product, ProductVariant, SupplierAccount, SupplierOffer, User
 from app.modules.admin.suppliers import _dec, _iso, platform_admin
 from app.suppliers.base import OfferSpec
+from app.suppliers.zovocard.direct import direct_spec
 from app.suppliers.zovocard.supplier import cdk_issue_body, vcc_spec
 
 router = APIRouter(prefix="/admin/procurement/sources", tags=["admin"])
@@ -34,7 +35,7 @@ router = APIRouter(prefix="/admin/procurement/sources", tags=["admin"])
 MAX_OFFERS_PER_TARGET = 10
 COST_RE = r"^[0-9]{1,9}(\.[0-9]{1,6})?$"
 ALLOWED_PARAMS = (
-    "plan", "product", "payment_country",
+    "plan", "product", "payment_country", "payment_currency", "card_id",
     "product_code", "init_amount", "recharge_amount", "first_name", "last_name",
 )  # fmt: skip
 AMOUNT_RE = r"^[0-9]{1,6}(\.[0-9]{1,2})?$"
@@ -47,8 +48,13 @@ class OfferParams(BaseModel):
     applies follows the TARGET product's delivery mode, never the request."""
 
     plan: str | None = Field(default=None, pattern=r"^[a-z0-9_]{1,40}$")
-    product: Literal["gpt"] = "gpt"  # CDK issue is GPT-only (vendor appendix A.5)
+    # ``cdk``: GPT only (vendor appendix A.5; defaults to gpt). ``direct``: REQUIRED and one of the
+    # vendor's closed list (an unknown product is silently turned into a GPT order by the vendor)
+    product: Literal["gpt", "claude", "grok"] | None = None
     payment_country: str | None = Field(default=None, pattern=r"^[A-Z]{2}$")
+    payment_currency: str | None = Field(default=None, pattern=r"^[A-Z]{3}$")  # direct, GPT only
+    # direct: the funding card (a card of OUR vendor account) the supplier pays with
+    card_id: int | None = Field(default=None, ge=1, le=10**12)
     product_code: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,40}$")
     init_amount: str | None = Field(default=None, pattern=AMOUNT_RE)
     recharge_amount: str | None = Field(default=None, pattern=AMOUNT_RE)
@@ -104,19 +110,47 @@ def _require_cost(offer: SupplierOffer, supplier: SupplierAccount) -> None:
 
 
 VCC_KEYS = ("product_code", "init_amount", "recharge_amount", "first_name", "last_name")
+DIRECT_KEYS = ("product", "plan", "card_id", "payment_country", "payment_currency")
+CDK_KEYS = ("product", "plan", "payment_country")
 
 
 def _params(p: OfferParams, kind: str = "cdk") -> dict[str, Any]:
-    """The parameters of ONE kind only; an offer never carries the other kind's keys."""
+    """The parameters of ONE kind only; an offer never carries the other kinds' keys."""
     data = p.model_dump(exclude_none=True)
     if kind == "vcc":
         return {k: v for k, v in data.items() if k in VCC_KEYS}
-    return {k: v for k, v in data.items() if k not in VCC_KEYS}
+    if kind == "direct":  # no default product: it must be named (enum lock)
+        return {k: v for k, v in data.items() if k in DIRECT_KEYS}
+    data.setdefault("product", "gpt")
+    return {k: v for k, v in data.items() if k in CDK_KEYS}
 
 
 def _valid_params(kind: str, params: dict[str, Any]) -> bool:
     spec = OfferSpec(kind=kind, params=params)  # type: ignore[arg-type]
-    return (vcc_spec(spec) if kind == "vcc" else cdk_issue_body(spec)) is not None
+    if kind == "vcc":
+        return vcc_spec(spec) is not None
+    if kind == "direct":
+        return direct_spec(spec) is not None
+    return cdk_issue_body(spec) is not None
+
+
+def _same_vendor_product(
+    kind: str, params: dict[str, Any], others: list[SupplierOffer], skip: uuid.UUID | None = None
+) -> None:
+    """Checkout asks the buyer for ONE kind of account session per target, so every direct source
+    of a target buys the same vendor product."""
+    if kind != "direct":
+        return
+    for o in others:
+        if (
+            o.id != skip
+            and o.kind == "direct"
+            and (o.params or {}).get("product") != params.get("product")
+        ):
+            raise Validation(
+                "Every direct source of a product must buy the same vendor product",
+                code="mixed_products",
+            )
 
 
 def _view(o: SupplierOffer, s: SupplierAccount) -> dict[str, Any]:
@@ -243,18 +277,12 @@ async def add_source(
     await enforce(res.redis, "procurement:sources", str(admin.id), 60, 3600)
     tid = admin.tenant_id
     target = await _target(db, tid, body.product_id, body.variant_id)
-    kind = (
-        "vcc"
-        if (
-            target.delivery_mode
-            if isinstance(target, Product)
-            else await db.scalar(
-                select(Product.delivery_mode).where(Product.id == target.product_id)
-            )
-        )
-        == "upstream_vcc"
-        else "cdk"
+    mode = (
+        target.delivery_mode
+        if isinstance(target, Product)
+        else await db.scalar(select(Product.delivery_mode).where(Product.id == target.product_id))
     )
+    kind = {"upstream_vcc": "vcc", "upstream_direct": "direct"}.get(mode or "", "cdk")
     supplier = await db.scalar(
         select(SupplierAccount).where(
             SupplierAccount.id == body.supplier_id, SupplierAccount.tenant_id == tid
@@ -266,6 +294,7 @@ async def add_source(
     if not _valid_params(kind, params):
         raise Validation("These source parameters cannot be sent to a supplier", code="bad_params")
     existing = await _offers(db, tid, body.product_id, body.variant_id)
+    _same_vendor_product(kind, params, [o for o, _ in existing])
     if len(existing) >= MAX_OFFERS_PER_TARGET:
         raise Validation("Too many sources for this target", code="too_many_sources")
     if any(o.supplier_id == supplier.id and o.params == params for o, _ in existing):
@@ -413,6 +442,18 @@ async def update_source(
                 "These source parameters cannot be sent to a supplier", code="bad_params"
             )
         if params != offer.params:
+            if offer.kind == "direct":
+                _same_vendor_product(
+                    "direct",
+                    params,
+                    [
+                        o
+                        for o, _ in await _offers(
+                            db, admin.tenant_id, offer.product_id, offer.variant_id
+                        )
+                    ],
+                    skip=offer.id,
+                )
             offer.params = params
             offer.last_check_ok, offer.last_check_at = None, None  # an untested request
             offer.cost_known = False  # the supplier's cost belonged to the old plan

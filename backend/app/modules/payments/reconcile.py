@@ -534,11 +534,13 @@ async def alert_procurement_jobs(
         (
             await db.execute(
                 select(ProcurementJob.id, ProcurementJob.order_id, ProcurementJob.state,
-                       ProcurementJob.error_code)
+                       ProcurementJob.error_code, ProcurementJob.kind)
                 .where(
                     ProcurementJob.tenant_id == tid,
                     or_(
                         ProcurementJob.state == "needs_manual",
+                        # a direct order refunded after the subscription completed (staff decide)
+                        ProcurementJob.error_code == "refunded_after_success",
                         ProcurementJob.alerted_at.is_not(None)
                         & ProcurementJob.state.in_(("queued", "submitting", "accepted_pending")),
                     ),
@@ -550,7 +552,19 @@ async def alert_procurement_jobs(
         ).all()
     )  # fmt: skip
     await db.rollback()
-    for jid, oid, state, code in rows:
+    for jid, oid, state, code, kind in rows:
+        if kind == "direct" and code in ("void_failed", "refunded_after_success"):
+            # the subscription is on the buyer's account and cannot be undone through the API:
+            # a staff decision (recover from the supplier, or accept the loss), once per job
+            notify_tg.notify_bg(
+                res,
+                tid,
+                "payment_review",
+                [notify_tg.T("proc.direct_done", job=str(jid)[:8], order=str(oid)[:36])],
+                link=notify_tg.admin_link(res, "orders"),
+                once=(f"procurement_job:{jid}:direct_done", 30 * 86400),
+            )
+            continue
         if code == "void_failed":
             # a refunded / closed order whose supplier card or code may still be live: its own
             # alert (not "waits for a code"), once per job
