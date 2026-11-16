@@ -682,7 +682,9 @@ def _replay_problem(
     """A replay under the job's key is only safe for the SAME request and while the vendor still
     remembers the key (M5): the pinned ``request_hash`` is enforced in every mode, and a replay
     older than ``replay_max_age_s`` is refused."""
-    if job.request_hash and job.request_hash != request_hash(offer.kind, offer.params):
+    if not job.request_hash:
+        return "request_hash_missing"  # nothing pins what was sent: not replayed blindly (M5)
+    if job.request_hash != request_hash(offer.kind, offer.params):
         return "offer_changed"
     if job.first_sent_at is not None and now - job.first_sent_at > timedelta(
         seconds=ctx.settings.replay_max_age_s
@@ -825,7 +827,9 @@ async def _lease(ctx: ProcurementContext, job_id: uuid.UUID, tenant_id: uuid.UUI
                 await _failover(ctx, db, job, order, "offer_unusable")
                 await db.commit()
                 return None
-            if job.request_hash and job.request_hash != request_hash(offer.kind, offer.params):
+            if not job.request_hash:
+                job.request_hash = request_hash(offer.kind, offer.params)  # never sent: pin now
+            elif job.request_hash != request_hash(offer.kind, offer.params):
                 await _needs_manual(db, job, "offer_changed")
                 await db.commit()
                 return None

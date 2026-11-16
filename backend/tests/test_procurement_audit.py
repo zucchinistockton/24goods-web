@@ -1102,3 +1102,27 @@ async def test_n7_a_retryable_submit_is_capped_after_a_passed_precheck(env, up):
     job = await _job(up, order)
     assert job.state == "needs_manual" and job.error_code == "retry_exhausted"
     assert not job.maybe_sent and len([c for c in mock.calls if c[0] == "submit"]) <= 11
+
+
+async def test_m5_missing_request_hash(env, up):
+    mock = LosingMock("mock_a", lose=1)
+    await up.supplier(mock)
+    _b, sent = await up.paid_order()
+    await up.run()  # sent, the answer was lost: reconcile pending
+    assert (await _job(up, sent)).maybe_sent
+    await _sql(env, "UPDATE procurement_jobs SET request_hash = NULL")
+    await up.make_due()
+    await up.run()
+    job = await _job(up, sent)
+    assert job.state == "needs_manual" and job.error_code == "request_hash_missing"
+    assert job.maybe_sent and [op for op, _ in mock.calls] == ["submit"]  # never replayed
+    # a never-sent job gets its hash at the first lease
+    _b2, fresh = await up.paid_order()
+    await _create_jobs_only(up)
+    await _sql(
+        env, "UPDATE procurement_jobs SET request_hash = NULL WHERE order_id = :o",
+        o=uuid.UUID(fresh["id"]),
+    )  # fmt: skip
+    await up.run()
+    job = await _job(up, fresh)
+    assert job.state == "fulfilled" and job.request_hash
