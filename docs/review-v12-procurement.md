@@ -934,7 +934,10 @@ for the host `sandbox.zovocard.com` only (`direct.omit_preflight_token`); produc
 `GET /gpt-direct/orders/{id}` answers `data.order.{status: "pending", stage: "processing", client_request_id,
 account_email, card_number (masked), quoted_amount_minor, final_amount_minor, charged_amount_minor, currency,
 payment_state, ...}` and the list rows carry `client_request_id` (the reconcile search relies on it). The sandbox
-preflight returns `quotes: null` and defaults to US / USD.
+preflight returns `quotes: null` and defaults to US / USD. The sandbox also reports a different synthetic account
+in the preflight (`…@example.test`) and in the order (`…@sandbox.local`), so the "completed order is for the
+preflighted account" check is skipped for that host only (`direct.real_sandbox`). A sandbox order completed in about
+35 s with `status: completed`, `final_amount_minor: 2000`, `currency: USD`, `service_fee_status: none`.
 
 ### 18.6 Left open
 

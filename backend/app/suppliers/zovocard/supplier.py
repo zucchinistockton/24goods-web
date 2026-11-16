@@ -1006,7 +1006,13 @@ class ZovoCardSupplier:
             and crid == rid
             and isinstance(plan, str)
             and plan == spec.plan
-            and not (account_mask and mask and account_mask != mask)
+            # the vendor's real sandbox invents one synthetic account for the preflight
+            # (…@example.test) and another for the order (…@sandbox.local): verified 2026-11-16.
+            # Everywhere else the completed order must be for the account the preflight saw.
+            and (
+                dr.real_sandbox(self.client.config.base_url, self.env)
+                or not (account_mask and mask and account_mask != mask)
+            )
         ):
             # a COMPLETED order is only delivered when it provably is OUR order for this plan
             # and this account: the request id and plan must be present and equal
