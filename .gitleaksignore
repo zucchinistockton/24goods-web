@@ -7,3 +7,4 @@ cc21b6ce6e5e93b93dc62389ea97de55f1b3a9c0:backend/app/modules/auth/service.py:gen
 8ab90aeaa42904a3cb28b40f20de24f354374c32:frontend/apps/admin/src/layouts/AdminLayout.vue:generic-api-key:66
 8ab90aeaa42904a3cb28b40f20de24f354374c32:frontend/apps/admin/src/router.ts:generic-api-key:31
 b43c602a86a2fde5b95f82925a4edca12b14b1f9:backend/tests/test_v11_w3.py:generic-api-key:390
+07803cb0161d66161bd4998cbb80ce78986e8a3f:backend/tests/test_redeem.py:stripe-access-token:522

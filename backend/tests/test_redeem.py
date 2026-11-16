@@ -519,7 +519,7 @@ async def test_vendor_response_is_whitelisted(env):
                     "plan_flow": "checkout",
                     "funding_cap_minor": 0,
                     "owner_email": "owner@example.com",
-                    "api_key": "sk_live_SHOULDNOTLEAK",
+                    "api_key": "vendor-field-that-must-be-dropped",
                 },
             },
         )
