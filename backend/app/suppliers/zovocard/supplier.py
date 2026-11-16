@@ -311,7 +311,11 @@ class ZovoCardSupplier:
         resp = await self.client.get("/products")
         return parse_card_products(resp.data)
 
-    async def availability(self, offer: OfferSpec) -> Availability:
+    async def availability_fresh(self, offer: OfferSpec) -> Availability:
+        """The engine's pre-check before a send: never answered from the 60 s plan cache (N3)."""
+        return await self.availability(offer, fresh=True)
+
+    async def availability(self, offer: OfferSpec, *, fresh: bool = False) -> Availability:
         now = datetime.now(timezone.utc)
         if offer.kind not in ("cdk", "direct"):
             return Availability(False, "kind_not_supported_m1", checked_at=now)
@@ -323,7 +327,7 @@ class ZovoCardSupplier:
             # stricter reading of the docs (A.5 "CDK supports GPT plans only")
             return Availability(False, "cdk_gpt_only", checked_at=now)
         try:
-            catalog = await self.plans(product)
+            catalog = await self.plans(product, fresh=fresh)
         except SupplierError as exc:
             return Availability(False, exc.reason, checked_at=now)
         if not is_purchasable(catalog, key):

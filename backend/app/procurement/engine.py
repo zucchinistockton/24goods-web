@@ -84,6 +84,7 @@ MAX_RETRIES = 10
 MAX_RECONCILE = 40
 STUCK_AFTER = timedelta(minutes=30)
 # availability() reasons that mean "this plan cannot be bought" (anything else = lookup failed)
+PLAN_GONE = "plan_not_offered"  # a failed write + a fresh catalog that does not offer the plan
 PLAN_REFUSALS = frozenset(
     {"not_purchasable", "invalid_offer", "cdk_gpt_only", "kind_not_supported_m1"}
 )
@@ -974,19 +975,32 @@ def engine_supplier(ctx: ProcurementContext, ref: SupplierRef) -> Supplier:
     return sup
 
 
+async def _availability_result(sup: Supplier, offer: OfferSpec) -> Result:
+    """Read-only availability against a FRESH catalog (adapters without a cache just ask)."""
+    fn = getattr(sup, "availability_fresh", None) or sup.availability
+    av = await fn(offer)
+    if av.available is True:
+        return Result(Outcome.OK)
+    reason = clean_detail(av.reason or "unavailable")
+    # only the catalog's own "no" is definite; a failed lookup says nothing about the plan
+    definite = reason in PLAN_REFUSALS
+    return Result(Outcome.UNAVAILABLE if definite else Outcome.RETRYABLE, error_code=reason)
+
+
 async def _call(ctx: ProcurementContext, lease: Lease) -> Result:
     try:
         sup = engine_supplier(ctx, lease.ref)
         if lease.mode == "precheck":
-            av = await sup.availability(lease.spec.offer)
-            if av.available is True:
-                return Result(Outcome.OK)
-            reason = clean_detail(av.reason or "unavailable")
-            # only the catalog's own "no" is definite; a failed lookup says nothing about the plan
-            definite = reason in PLAN_REFUSALS
-            return Result(Outcome.UNAVAILABLE if definite else Outcome.RETRYABLE, error_code=reason)
+            return await _availability_result(sup, lease.spec.offer)
         if lease.mode == "submit":
-            return await sup.submit(lease.spec)
+            res = await sup.submit(lease.spec)
+            if res.outcome is Outcome.AMBIGUOUS and res.error_code == "request_failed":
+                # one fresh look at the catalog: a plan it definitely does not offer cannot have
+                # been bought, so the failed write is treated as not executed (N3)
+                chk = await _availability_result(sup, lease.spec.offer)
+                if chk.outcome is Outcome.UNAVAILABLE:
+                    return Result(Outcome.UNAVAILABLE, error_code=PLAN_GONE)
+            return res
         if lease.mode in ("void", "dvoid"):
             return await sup.void(lease.spec)
         return await sup.query(lease.spec)  # query / verify / recover: same-key replay
@@ -1268,7 +1282,14 @@ async def _apply(ctx: ProcurementContext, lease: Lease, res: Result) -> None:
             await _apply_precheck(ctx, db, job, order, res, now)
             await db.commit()
             return
-        if o is Outcome.OK:
+        if lease.mode == "submit" and o is Outcome.UNAVAILABLE and res.error_code == PLAN_GONE:
+            # the write failed ambiguously, but the fresh catalog does not offer the plan: it
+            # did not execute -> never-sent again, offer marked unchecked, next source (N3)
+            _unsent(job)
+            job.step = "submit"
+            await _set_check(db, job, False)
+            await _failover(ctx, db, job, order, "plan_unavailable")
+        elif o is Outcome.OK:
             await _fulfil(ctx, db, job, order, res)
         elif o is Outcome.ACCEPTED_PENDING:
             if job.state != "accepted_pending":

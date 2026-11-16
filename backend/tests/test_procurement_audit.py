@@ -1197,3 +1197,61 @@ async def test_n8_parked_job_fails_over_to_a_healthy_source_and_alerts_when_stuc
         await up.run()
     job = await _job(up, order)
     assert job.state == "fulfilled" and a.calls == [] and len(b.charged) == 1
+
+
+async def test_n3_precheck_reads_a_fresh_catalog_not_the_cache(monkeypatch):
+    from app.devtools import mock_zovocard
+    from app.suppliers.base import OfferSpec
+    from tests.test_suppliers_v12 import _supplier
+
+    s = _supplier()
+    offer = OfferSpec("cdk", {"product": "gpt", "plan": "plus"})
+    assert (await s.availability(offer)).available  # fills the 60 s cache
+    real = mock_zovocard.plans_fixture
+
+    def paused(product, scenarios=False):
+        data = real(product, scenarios)
+        for row in data["registry"]:
+            if row["key"] == "plus":
+                row["purchasable"] = False
+        return data
+
+    monkeypatch.setattr(mock_zovocard, "plans_fixture", paused)
+    assert (await s.availability(offer)).available  # the cache still says yes
+    fresh = await s.availability_fresh(offer)
+    assert not fresh.available and fresh.reason == "not_purchasable"
+    assert not (await s.availability(offer)).available  # and the cache was refreshed
+
+
+class _PausesOnSubmit(MockSupplier):
+    """The write fails ambiguously (``request_failed``) and the plan is paused meanwhile."""
+
+    async def submit(self, job):
+        self.calls.append(("submit", job.idempotency_key))
+        self.purchasable = set()
+        return Result(Outcome.AMBIGUOUS, error_code="request_failed")
+
+
+async def test_n3_failed_write_with_a_paused_plan_fails_over_as_not_executed(env, up):
+    a = _PausesOnSubmit("mock_a")
+    b = MockSupplier("mock_b")
+    _sid, offer_a = await up.supplier(a, code="mock_a", priority=10)
+    await up.supplier(b, code="mock_b", priority=20)
+    _buyer, order = await up.paid_order()
+    for _ in range(4):
+        await up.run()
+    job = await _job(up, order)
+    assert job.state == "fulfilled" and job.tried_offer_ids == [offer_a]
+    assert [op for op, _ in a.calls] == ["submit"] and len(b.charged) == 1
+    assert await _offer_check(env, offer_a) is False
+
+
+async def test_n3_failed_write_with_a_paused_plan_and_no_source_is_not_maybe_charged(env, up):
+    a = _PausesOnSubmit("mock_a")
+    _sid, offer = await up.supplier(a)
+    _buyer, order = await up.paid_order()
+    for _ in range(3):
+        await up.run()
+    job = await _job(up, order)
+    assert job.state == "needs_manual" and job.error_code == "no_source:plan_unavailable"
+    assert not job.maybe_sent and await _offer_check(env, offer) is False
