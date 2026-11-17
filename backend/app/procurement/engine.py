@@ -48,6 +48,7 @@ from app.core.db import set_tenant, tenant_session
 from app.core.errors import Conflict
 from app.models import (
     CardStock,
+    HalfPriceCheck,
     Order,
     Outbox,
     ProcurementCredential,
@@ -307,6 +308,20 @@ async def _transition(
 
 def _emit(db: AsyncSession, tenant_id: uuid.UUID, topic: str, key: str, payload: dict) -> None:
     db.add(Outbox(tenant_id=tenant_id, topic=topic, key=key[:128], payload=payload))
+
+
+async def _half_hold(db: AsyncSession, job: ProcurementJob) -> str | None:
+    """A ``manual`` half-price check blocks the first send until staff approve it."""
+    status = await db.scalar(
+        select(HalfPriceCheck.status).where(
+            HalfPriceCheck.tenant_id == job.tenant_id, HalfPriceCheck.order_id == job.order_id
+        )
+    )
+    if status == "manual_pending":
+        return "half_price_check_manual"
+    if status == "manual_refused":
+        return "half_price_check_refused"
+    return None
 
 
 async def _needs_manual(
@@ -1204,6 +1219,12 @@ async def _lease(ctx: ProcurementContext, job_id: uuid.UUID, tenant_id: uuid.UUI
                 await _needs_manual(db, job, "offer_changed")
                 await db.commit()
                 return None
+            if problem := await _half_hold(db, job):
+                # the half-price check of this order awaits (or was refused by) staff: the supplier
+                # is NOT called (issue #27); approve in the console, then retry the job
+                await _needs_manual(db, job, problem)
+                await db.commit()
+                return None
             if gate := _balance_gate(ctx, offer, now):
                 # a low (breaker) or unknown (stale reading) balance: wait, never fail over or
                 # give up; the job resumes by itself when the balance is known and sufficient
@@ -1407,6 +1428,12 @@ async def sweep_credentials(ctx: ProcurementContext, *, force: bool = False) -> 
         return 0
     ctx.cred_swept_at = now
     total = 0
+    try:  # half-price check sessions (migration 0032): wipe any that outlived their read
+        from app.procurement.halfcheck import wipe_stale
+
+        total += await wipe_stale(ctx)
+    except Exception as exc:
+        log.error("half-check sweep failed error=%s", type(exc).__name__)
     async with tenant_session(ctx.maker, None) as db:
         res = await db.execute(
             text(

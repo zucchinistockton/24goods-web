@@ -20,7 +20,7 @@ from starlette.routing import Route
 
 from app.core.errors import error_body
 from app.core.ratelimit import hit
-from app.procurement import engine, service
+from app.procurement import engine, halfcheck, service
 from app.procurement.context import ProcurementContext
 
 log = logging.getLogger("app.procurement.internal")
@@ -121,6 +121,29 @@ def create_procurement_app(ctx: ProcurementContext) -> Starlette:
             return _err(502, "supplier_unavailable", "The supplier could not be read")
         return JSONResponse({"regions": out}, headers=NO_STORE)
 
+    async def half_check(request: Request) -> JSONResponse:
+        """``POST /internal/half-check {"tenant_id", "check_id"}``: read the buyer's eligibility
+        with the sealed session (opened here only) and record the outcome."""
+        if not _token_ok(request):
+            return _err(401, "unauthorized", "Bad internal token")
+        body = await request.body()
+        if len(body) > MAX_BODY:
+            return _err(422, "validation", "body too large")
+        try:
+            data = json.loads(body)
+            tenant_id = uuid.UUID(str(data["tenant_id"]))
+            check_id = uuid.UUID(str(data["check_id"]))
+        except (ValueError, KeyError, TypeError):
+            return _err(422, "validation", "tenant_id and check_id (UUID) are required")
+        allowed, reset = await hit(ctx.redis, "proc:half-check", str(tenant_id), 120, 600)
+        if not allowed:
+            return _err(429, "rate_limited", "Too many checks", {"Retry-After": str(reset)})
+        try:
+            out = await halfcheck.run_check(ctx, tenant_id, check_id)
+        except LookupError:
+            return _err(404, "not_found", "Check not found")
+        return JSONResponse({"status": out.status, "reason": out.reason}, headers=NO_STORE)
+
     async def direct_order(request: Request) -> JSONResponse:
         """Read-only state of a direct job's supplier order (the console's hand-fulfil guard)."""
         if not _token_ok(request):
@@ -147,6 +170,7 @@ def create_procurement_app(ctx: ProcurementContext) -> Starlette:
         routes=[
             Route("/internal/direct-order", direct_order, methods=["POST"]),
             Route("/internal/regions", regions, methods=["POST"]),
+            Route("/internal/half-check", half_check, methods=["POST"]),
             Route("/healthz", healthz),
             Route("/internal/probe", probe, methods=["POST"]),
             Route("/internal/check-offer", check_offer, methods=["POST"]),

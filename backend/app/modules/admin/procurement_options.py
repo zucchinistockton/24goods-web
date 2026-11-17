@@ -24,7 +24,16 @@ from app.core.deps import client_ip, get_db, get_res
 from app.core.errors import NotFound, Unavailable, Validation
 from app.core.ratelimit import enforce
 from app.core.resources import Resources
-from app.models import Product, ProductVariant, SupplierAccount, SupplierOffer, Tenant, User
+from app.models import (
+    HalfPriceCheck,
+    Order,
+    Product,
+    ProductVariant,
+    SupplierAccount,
+    SupplierOffer,
+    Tenant,
+    User,
+)
 from app.modules.admin.suppliers import platform_admin
 from app.modules.catalog import regions as rg
 
@@ -307,3 +316,66 @@ async def generate_variants(
             created.append({"plan": plan, "region": region, "variant_id": str(v.id)})
     await db.commit()
     return {"created": created, "kept": kept, "skipped": skipped}
+
+
+# --------------------------------------------------------------------------- manual checks
+class DecisionIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    approve: bool
+
+
+@router.get("/half-checks")
+async def list_half_checks(
+    admin: User = Depends(platform_admin),
+    db: AsyncSession = Depends(get_db),
+    status: Literal[
+        "manual_pending", "manual_approved", "manual_refused", "all"
+    ] = "manual_pending",
+) -> dict:
+    """Manual half-price checks (newest first) with the order they hold, if any."""
+    from app.modules.orders.halfcheck import OPEN
+
+    q = (
+        select(*OPEN, Order.order_no, Order.status.label("order_status"))
+        .outerjoin(Order, Order.id == HalfPriceCheck.order_id)
+        .where(HalfPriceCheck.tenant_id == admin.tenant_id, HalfPriceCheck.method == "manual")
+        .order_by(HalfPriceCheck.created_at.desc())
+        .limit(200)
+    )
+    if status != "all":
+        q = q.where(HalfPriceCheck.status == status)
+    rows = (await db.execute(q)).all()
+    return {
+        "items": [
+            {
+                "id": str(r.id),
+                "status": r.status,
+                "plan": r.plan,
+                "product_id": str(r.product_id),
+                "variant_id": str(r.variant_id) if r.variant_id else None,
+                "order_id": str(r.order_id) if r.order_id else None,
+                "order_no": r.order_no,
+                "order_status": r.order_status,
+                "created_at": r.created_at.isoformat(),
+                "decided_at": r.decided_at.isoformat() if r.decided_at else None,
+            }
+            for r in rows
+        ]
+    }
+
+
+@router.post("/half-checks/{check_id}/decision")
+async def decide_half_check(
+    check_id: uuid.UUID,
+    body: DecisionIn,
+    request: Request,
+    admin: User = Depends(platform_admin),
+    db: AsyncSession = Depends(get_db),
+    res: Resources = Depends(get_res),
+) -> dict:
+    """Approve or refuse a ``manual`` check. Approve, then retry the held procurement job; refuse,
+    then refund the order through the normal refund action."""
+    from app.modules.orders import halfcheck
+
+    await enforce(res.redis, "procurement:halfdecide", str(admin.id), 60, 3600)
+    return await halfcheck.decide(db, admin, check_id, body.approve, client_ip(request))

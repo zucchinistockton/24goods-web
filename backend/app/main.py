@@ -60,6 +60,7 @@ from app.modules.me.router import router as me_router
 from app.modules.operations import jobs as operations_jobs
 from app.modules.operations.router import router as operations_router
 from app.modules.orders.checkout_router import router as checkout_router
+from app.modules.orders.half_router import router as half_checks_router
 from app.modules.orders.router import router as orders_router
 from app.modules.orders.service import expire_pending
 from app.modules.payments.epay_page import router as epay_page_router
@@ -192,6 +193,7 @@ def api_router() -> APIRouter:
         chat_router,
         chat_actions_router,
         orders_router,
+        half_checks_router,
         checkout_router,
         payments_router,
         uploads_router,

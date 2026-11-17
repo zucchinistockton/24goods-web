@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.suppliers.zovocard.direct import is_half_plan
+
 # owner decision 2026-11-17: the five ChatGPT regions of the vendor; Grok / Claude are USD only
 DEFAULT_ALLOWLIST: tuple[str, ...] = ("PH", "EG", "CL", "JP", "US")
 
@@ -29,9 +31,7 @@ HALF_METHODS = ("vendor_preflight", "chatgpt_direct", "manual")
 SETTINGS_KEY = "procurement_options"
 
 
-def is_half_plan(plan: object) -> bool:
-    """``plus_half`` and the Grok ``*_half`` keys (half price needs an eligible account)."""
-    return isinstance(plan, str) and (plan == "plus_half" or plan.endswith("_half"))
+__all__ = ["is_half_plan"]  # re-exported: one definition, shared with the adapter
 
 
 def region_currency(region: str | None) -> str | None:

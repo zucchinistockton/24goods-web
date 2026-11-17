@@ -102,6 +102,11 @@ def direct_spec(offer: OfferSpec) -> DirectSpec | None:
     return DirectSpec(product, plan, card, country, currency)
 
 
+def is_half_plan(plan: object) -> bool:
+    """``plus_half`` and the Grok ``*_half`` keys (half price needs an eligible account)."""
+    return isinstance(plan, str) and (plan == "plus_half" or plan.endswith("_half"))
+
+
 def client_request_id(job_id: str) -> str:
     """The merchant-side order number: deterministic per job, ``[A-Za-z0-9]``, well under 80."""
     return f"pj{job_id}"[:80]
@@ -169,6 +174,8 @@ class Preflight:
     can_purchase_at: datetime | None = None
     has_active: bool = False
     recovery_required: bool = False
+    # vendor ``promotions`` (informational: names only, never decisive on their own) [I]
+    promotions: tuple[str, ...] = ()
 
 
 def parse_preflight(data: Any, parse_time: Any) -> Preflight | None:
@@ -206,7 +213,45 @@ def parse_preflight(data: Any, parse_time: Any) -> Preflight | None:
         can_purchase_at=parse_time(data.get("can_purchase_at")),
         has_active=data.get("subscription_has_active") is True,
         recovery_required=data.get("subscription_recovery_required") is True,
+        promotions=_promotions(data.get("promotions")),
     )
+
+
+def _promotions(raw: Any) -> tuple[str, ...]:
+    out: list[str] = []
+    for item in raw if isinstance(raw, list) else []:
+        name = item if isinstance(item, str) else None
+        if isinstance(item, Mapping):
+            name = next(
+                (item[k] for k in ("key", "id", "plan", "name") if isinstance(item.get(k), str)),
+                None,
+            )
+        if name:
+            out.append(clean_reason(name))
+    return tuple(out[:8])
+
+
+def half_eligibility(
+    pf: Preflight, plan: str, now: datetime, *, quotes_optional: bool = False
+) -> tuple[bool, str]:
+    """Is the account eligible for a half-price plan, from the vendor's preflight (the same fields
+    the engine's own gate reads, so the check and the execution agree): not blocked, not waiting
+    for ``can_purchase_at``, no active / recovering subscription, no ``quote_error``, and a quote
+    for the half-price key itself (the vendor quotes it only to an eligible account) [I].
+    ``quotes_optional``: the vendor's REAL sandbox never quotes (``quotes: null``) [V]."""
+    if pf.blocking_reason:
+        return False, "preflight_blocked"
+    if pf.can_purchase_at is not None and pf.can_purchase_at > now:
+        return False, "purchase_not_yet"
+    if pf.recovery_required:
+        return False, "subscription_recovery_required"
+    if pf.has_active:
+        return False, "subscription_active"
+    if pf.quote_error:
+        return False, "quote_error"
+    if plan not in pf.quotes and not (quotes_optional and not pf.quotes):
+        return False, "plan_not_quoted"
+    return True, ""
 
 
 def funding_card_problem(

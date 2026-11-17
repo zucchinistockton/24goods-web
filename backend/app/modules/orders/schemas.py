@@ -22,6 +22,8 @@ class BuyNowIn(BaseModel):
     # A live credential: sealed at once with the procurement public key, never stored in plaintext,
     # never logged, never echoed back. 64 KiB of text at most (the check below is by bytes).
     session: str | None = Field(None, max_length=70000, repr=False)
+    # half-price plans (plus_half, Grok *_half): the passed eligibility check of this buyer
+    half_check_id: uuid.UUID | None = None
 
     @field_validator("src")
     @classmethod
@@ -98,3 +100,11 @@ class CheckoutIn(BaseModel):
     def _source(cls, v: str | None) -> str | None:
         v = (v or "").strip().lower()
         return v if _SOURCE.match(v) else None
+
+
+class HalfCheckIn(BaseModel):
+    product_id: uuid.UUID
+    variant_id: uuid.UUID | None = None
+    # the buyer's account session, used ONLY for the eligibility read (sealed at once, never
+    # stored in plaintext, never logged, never echoed); not needed for the ``manual`` method
+    session: str | None = Field(None, max_length=70000, repr=False)

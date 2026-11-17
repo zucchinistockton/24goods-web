@@ -20,6 +20,7 @@ from app.models.ledger import LedgerEntry
 from app.models.orders import Checkout, Order, OrderEvent, Payment
 from app.models.payment_config import LegacyPayUrl, PaymentAttempt, PaymentGateway, PaymentTest
 from app.models.procurement import (
+    HalfPriceCheck,
     ProcurementCredential,
     ProcurementJob,
     SupplierAccount,
@@ -49,6 +50,7 @@ __all__ = [
     "CsReplyTemplate",
     "CustomDomain",
     "Delivery",
+    "HalfPriceCheck",
     "LedgerEntry",
     "LegacyPayUrl",
     "Message",
