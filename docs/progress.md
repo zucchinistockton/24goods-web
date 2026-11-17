@@ -890,7 +890,7 @@ Tracking: [#27 payments](https://github.com/arifulcrypto/24goods-web/issues/27),
 ### Active owner-authorized implementation: issues #25–#30
 
 - Feature branch `feat/issues-25-30-hardening`; PR must remain unmerged and no production deploy.
-- #30 progress display (branch `feat/progress`): step model, supplier timeline and buyer/redemption progress, review-v12 §22, ADR-043 (migration 0034).
+- #30 progress display (branch `feat/progress`): step model, supplier timeline and buyer/redemption progress, review-v12 §22, ADR-043 (migration 0034; no grant). Realtime: procurement publishes ids only on `rt:procprogress`, the API relays `order_progress`; **existing deployments must add `&rt:procprogress` and `+publish` to the `procurement` user in `users.acl` and reload Redis** (exact line in ADR-043).
 - #30: owner-supplied Xiaodou v1.0.0 reference package reviewed/imported under
   `docs/vendor/xiaodou`; English index and integrity manifest; live merchant credentials excluded.
   Supplied credentials select the MD5 EPay compatibility contract, not the separate native RSA API.

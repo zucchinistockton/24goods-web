@@ -195,7 +195,7 @@ def test_webhook_progress_fields_are_kept_and_the_message_sanitised():
         },
         "s",
     )  # fmt: skip
-    assert ev.payload["public_message"] == "Go to now" and ev.payload["timeline_event_id"] == 5
+    assert ev.payload["public_message"] == "Go to now" and ev.payload["timeline_event_id"] == "5"
     assert "card_number" not in ev.payload and "code_prefix" not in ev.payload
     v = dp.vendor_from_webhook(ev.payload)
     assert v["events"][0]["tid"] == "5" and v["status"] == "running"
@@ -290,10 +290,11 @@ async def test_timeline_buyer_view_secrets_and_publish(env, dup, monkeypatch):  
     vendor.direct_order_over = {"payment_state": "pending", "funding_state": "card_ready"}
     published: list[dict] = []
 
-    async def spy(redis, tenant_id, buyer_id, data):
-        published.append(data)
+    async def spy(redis, tenant_id, order_id):
+        published.append({"tenant_id": str(tenant_id), "order_id": str(order_id)})
+        return True
 
-    monkeypatch.setattr(engine, "publish_order_progress", spy)
+    monkeypatch.setattr(engine, "notify_progress_changed", spy)
     await _zovo(dup, vendor, CLAUDE)
     buyer, order = await dup.paid_direct(claude_session(marker))
     await _drive(env, dup, order, buyer)
@@ -337,16 +338,18 @@ async def test_timeline_buyer_view_secrets_and_publish(env, dup, monkeypatch):  
     # secret sweep: the stored document and both responses never hold the session
     assert marker not in json.dumps(doc) and marker not in json.dumps(detail)
 
-    # the realtime publish happens on a step change only (every published step differs)
-    steps = [p["step"] for p in published]
-    assert steps and steps == list(dict.fromkeys(steps)) and steps[-1] == "completed"
-    assert set(published[-1]) == {"order_id", "step", "percent", "outcome", "reason"}
+    # the notification carries ids only and goes out on a step change only
+    assert published and all(set(p) == {"tenant_id", "order_id"} for p in published)
+    assert (await _job(dup, order)).progress["pub"] == "completed"
     n = len(published)
+    before = (await _job(dup, order)).updated_at
     await engine._publish_progress(dup.ctx, job.tenant_id, job.id)  # nothing changed
     assert len(published) == n
+    assert (await _job(dup, order)).updated_at == before  # no write on an idle pass
     await _sql(env, "UPDATE procurement_jobs SET state = 'failed' WHERE id = :j", j=job.id)
     await engine._publish_progress(dup.ctx, job.tenant_id, job.id)  # the step changed
-    assert [p["step"] for p in published][n:] == ["failed"]
+    assert len(published) == n + 1
+    assert (await _job(dup, order)).progress["pub"] == "failed"
 
 
 async def test_webhook_records_a_timeline_entry(env, dup):  # noqa: F811

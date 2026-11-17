@@ -1561,12 +1561,24 @@ a few dozen in practice).
 **22.3 Buyer.** `GET /orders/{ref}/direct` gains `progress` (steps with `done | current | todo | failed | attention` and a time,
 percent, outcome, reason key, completion time). Times: paid = `orders.paid_at`, half check = its decision time, waiting = first
 wait, sent = first send, vendor steps = `progress.reached`. No vendor code, message, status text or internal error code is in it.
-The order page shows a bar, the percentage, the steps and a plain sentence (en + zh-CN). **Realtime:** after every job pass
-the engine publishes `order_progress` on the BUYER's channel only when the step differs from `progress.pub`
-(`engine._publish_progress`); the page refetches the direct info once on it. No new timer. **Deviation from the brief:**
-`publish_order` needs full order views, which the procurement role cannot read, so a new small event (`order_progress`:
-`order_id`, step, percent, outcome, reason) is used; migration 0034 grants `app_procurement` `SELECT (buyer_id)` on `orders` to
-address it. A missed publish only delays the new step until the next fetch (the existing sync/poll fallback).
+The order page shows a bar, the percentage, the steps and a plain sentence (en + zh-CN). **Realtime (least privilege):** after a job pass whose step differs from `progress.pub`, the
+procurement process publishes ONLY `{"tenant_id","order_id"}` on the single channel `rt:procprogress`
+(`procurement/notify.py`; no buyer id, no step data, no import of API code). `progress.pub` is set only after Redis accepted the
+message, so a failed publish is retried on the next pass; a pass where nothing changed writes nothing and takes no row lock. The
+API hub (`modules/realtime/hub.py`) relays it through `modules/realtime/progress.py`: it parses defensively (malformed messages
+are ignored), reads the order under THAT tenant (another tenant's order is not found), resolves the buyer itself, recomputes the
+progress from the database and publishes the coarse `order_progress` event (`order_id`, step, percent, outcome, reason) on the
+buyer's channel; the page refetches the direct info once on it. No new timer and **no new DB grant** (0034 grants nothing on
+`orders`). The procurement Redis ACL gets exactly `+publish` and `&rt:procprogress`, so a compromised vendor-facing process
+cannot forge an event on any user or staff channel. **Existing deployments** must patch `secrets/users.acl` (Redis does not
+re-read it by itself) and reload; see ADR-043 for the exact line.
+
+**22.3a Hardening.** Vendor text is truncated to 4x the cap before any pattern and every pattern is linear (URL-, mail- and
+domain-like tokens are dropped whole; 64 KB adversarial inputs finish in well under a millisecond). Recording is best effort
+(`engine._record_progress`: a corrupt `progress` document is logged by exception type and kept, the state transition commits).
+The buyer's step never moves backwards: `progress.v` only takes an equal or higher rank (a late webhook or a vendor `failed` on an
+active job is ignored for the buyer), while `progress.raw` and the staff timeline keep every change. `vendor_view` reads the
+NEWEST 50 vendor events (by event time, else numeric id, else list tail). Webhook progress fields are `clean_code`d and capped.
 
 **22.4 Redemption page.** The proxy's `result` and `redeem` answers carry the same `progress` document (only fixed keys). The SPA
 (`deploy/redeem/`) shows the bar, the steps and the reason sentence on the result view, updated by the existing polling (4 s
