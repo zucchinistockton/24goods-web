@@ -27,6 +27,8 @@
       p_queued: 'Queued', p_funding: 'Preparing payment', p_processing: 'Being applied to your account',
       p_payment_submitted: 'Payment submitted', p_completed: 'Completed', p_failed: 'Not completed',
       p_refunded: 'Refunded', p_attention: 'Needs attention', p_unknown: 'In progress',
+      s_done: 'Done', s_current: 'In progress', s_todo: 'Not started', s_failed: 'Failed', s_attention: 'Needs attention',
+      progAnnounce: 'Progress {p}%: {s}',
       r_declined: 'The payment was declined, so the plan could not be applied. Contact support with the reference below.',
       r_cancelled: 'The redemption was cancelled before it was applied.', r_expired: 'The redemption expired before it was applied.',
       r_not_completed: 'The plan could not be applied to your account.', r_refunded: 'This redemption was refunded.',
@@ -67,6 +69,8 @@
       p_queued: '排队中', p_funding: '准备付款', p_processing: '正在开通到你的账号',
       p_payment_submitted: '已提交付款', p_completed: '已完成', p_failed: '未完成',
       p_refunded: '已退款', p_attention: '需要处理', p_unknown: '处理中',
+      s_done: '已完成', s_current: '进行中', s_todo: '未开始', s_failed: '失败', s_attention: '需要处理',
+      progAnnounce: '进度 {p}%：{s}',
       r_declined: '付款被拒绝，套餐未能开通。请携带下方参考编号联系客服。',
       r_cancelled: '兑换在开通前已被取消。', r_expired: '兑换在开通前已过期。',
       r_not_completed: '套餐未能开通到你的账号。', r_refunded: '该兑换已退款。',
@@ -132,6 +136,8 @@
   }
   function reset() {
     st.token = st.preflight = st.credential = st.requestId = st.result = st.progress = null
+    st.progressSig = undefined
+    $('pannounce').textContent = ''
     renderProgress(null)
     st.plan = ''
     $('code').value = ''
@@ -216,6 +222,11 @@
     if (!isFinite(ms) || ms <= 0) return ''
     try { return new Date(ms).toLocaleString(lang === 'zh' ? 'zh-CN' : 'en', { dateStyle: 'medium', timeStyle: 'short' }) } catch (e) { return '' }
   }
+  var GLYPH = { done: '\u2713', current: '\u25C9', failed: '!', attention: '!', todo: '\u25CB' }
+  function isoStamp(at) {
+    var ms = typeof at === 'number' ? (at < 1e12 ? at * 1000 : at) : typeof at === 'string' ? Date.parse(at) : NaN
+    try { return isFinite(ms) && ms > 0 ? new Date(ms).toISOString() : '' } catch (e) { return '' }
+  }
   // the same coarse step model as the buyer's order page; everything shown comes from fixed keys
   function renderProgress(p) {
     var box = $('progress')
@@ -228,6 +239,16 @@
     $('pct').textContent = pct + '%'
     $('fill').style.width = pct + '%'
     $('bar').setAttribute('aria-valuenow', String(pct))
+    // the step that matters now: current, else failed / attention, else the last step reached
+    var focus = null
+    p.steps.forEach(function (s) { if (!focus && (s.state === 'current' || s.state === 'failed' || s.state === 'attention')) focus = s })
+    var key = focus ? focus.key : String(p.step || '')
+    var stepName = t('p_' + (KNOWN.indexOf(key) >= 0 ? key : 'unknown'))
+    var text = t('progAnnounce').replace('{p}', String(pct)).replace('{s}', stepName)
+    $('bar').setAttribute('aria-valuetext', pct + '% · ' + stepName)
+    // announce politely only when the step changes, never on a poll that changes nothing
+    var sig = key + '|' + pct + '|' + (p.outcome || '')
+    if (sig !== st.progressSig) { st.progressSig = sig; $('pannounce').textContent = text }
     var note = $('pnote')
     var rk = (p.outcome === 'failed' || p.outcome === 'attention') ? (REASONS.indexOf(p.reason) >= 0 ? 'r_' + p.reason : p.outcome === 'failed' ? 'r_not_completed' : 'r_review') : ''
     note.hidden = !rk
@@ -240,9 +261,13 @@
       if (s.state === 'current') li.setAttribute('aria-current', 'step')
       var d = document.createElement('span'); d.className = 'd'; d.setAttribute('aria-hidden', 'true')
       var n = document.createElement('span'); n.className = 'n'; n.textContent = t('p_' + (KNOWN.indexOf(s.key) >= 0 ? s.key : 'unknown'))
+      var sk = STATES.indexOf(s.state) >= 0 ? s.state : 'todo'
+      d.textContent = GLYPH[sk]
+      var sw = document.createElement('span'); sw.className = 'sr'; sw.textContent = ': ' + t('s_' + sk)
+      n.appendChild(sw)
       li.appendChild(d); li.appendChild(n)
       var when = stamp(s.at)
-      if (when) { var tm = document.createElement('span'); tm.className = 't'; tm.textContent = when; li.appendChild(tm) }
+      if (when) { var tm = document.createElement('time'); tm.className = 't'; tm.textContent = when; var iso = isoStamp(s.at); if (iso) tm.setAttribute('datetime', iso); li.appendChild(tm) }
       list.appendChild(li)
     })
   }

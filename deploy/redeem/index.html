@@ -62,9 +62,10 @@
     <p class="state" id="state"><span class="dot" aria-hidden="true"></span><span id="state-text"></span></p>
     <p class="lead" id="state-lead" aria-live="polite"></p>
     <div id="progress" class="progress" hidden>
-      <div class="phead"><span data-t="progTitle">Progress</span><span id="pct" class="pct">0%</span></div>
-      <div class="bar" id="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="fill" id="fill"></div></div>
-      <p class="pnote" id="pnote" hidden></p>
+      <div class="phead"><span id="ptitle" data-t="progTitle">Progress</span><span id="pct" class="pct">0%</span></div>
+      <div class="bar" id="bar" role="progressbar" aria-labelledby="ptitle" aria-valuetext="0%" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="fill" id="fill"></div></div>
+      <p class="sr" id="pannounce" role="status" aria-live="polite"></p>
+      <p class="pnote" id="pnote" role="status" hidden></p>
       <ol class="psteps" id="psteps"></ol>
     </div>
     <dl class="facts"><div id="row-order" hidden><dt data-t="order">Reference</dt><dd id="order"></dd></div></dl>
