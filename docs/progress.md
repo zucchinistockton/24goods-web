@@ -76,11 +76,35 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
   after an after-sales refund the job went to `voided` and the supplier reports the card `DELETED` with
   balance 0. Not verified: the recharge-pending 400, a real `card_3ds_otp` event, real fees (the sandbox
   charges none), the buyer and console screens in a browser (typechecked by CI only).
-- **Next, in order:** (1) M3 part 2 (`upstream_direct`: procurement keypair, preflight refresh, async
-  orders) — not started; (2) look at the M3 screens in a browser; (3) put the demo's procurement back on the
-  simulator after 2026-11-18 10:57 (see the redeem.kesiv.com note above); (4) sandbox webhook: still no
-  vendor delivery observed since 01:39 UTC on 2026-11-16; (5) v12 to `main` waits for the M1 exit gate
-  (independent security review, AGENTS.md §1.11).
+- **M3 part 2 (`upstream_direct`, the supplier subscribes the buyer's own account): merged** (PR #18 `c64a052`,
+  then #19 and #20 from the sandbox test; migrations `0029`, `0030`; spec §18). The buyer's account session is
+  sealed at checkout with a SEPARATE procurement keypair (`credvault.py` seals in the API; `credopen.py` opens,
+  procurement only; table `procurement_credentials`, FORCE RLS, `app_api` cannot read the blob), opened only for
+  the supplier call, deleted when the order ends (engine sweep at the start of every pass, 5 h cap) with a
+  database backstop (`app_api` may delete rows older than 6 h; checkout pauses with 503 `direct_unavailable` if
+  that ever fires). Preflight account-state checks, quote bound, funding-card checks (ours, ACTIVE, uses left, one
+  order in flight per card, never a card sold to a buyer), async order with polling, slow poll of held orders,
+  ledger by kind, console (mode, source form, job view, admin-only hand fulfil, refund acknowledgement) and buyer
+  UI (account-session sheet at purchase, order status, re-supply). Payment-auditor: first pass failed it (H1
+  funding card could be a buyer's card; H2 failover after a possible send); fixed with M1–M8; re-audit pass with
+  notes; N1–N6 fixed (not audited again). Security-reviewer: pass with notes, all fixed.
+  **Verified end to end on the demo against the real ZovoCard sandbox (2026-11-16/17):** funding card opened in
+  the sandbox (`PP5259RC`, id 257662, 50 USD), direct product `gpt/plus` sold on the demo with the owner's test
+  session → supplier order 50675 completed → order `delivered`, buyer sees `s***@…` + `gpt/plus`, delivery text
+  `gpt/plus----<masked account>----<supplier order>`, cost 20 USD recorded, stored session deleted, no credential
+  in any log. Two sandbox quirks found and handled for the host `sandbox.zovocard.com` ONLY (production
+  unchanged): orders must be sent WITHOUT the preflight token (#19), and the sandbox reports different synthetic
+  accounts in preflight and order (#20). One extra sandbox order (50674) was placed directly by the orchestrator
+  while diagnosing; sandbox money only. Not verified: a real quote (the sandbox returns `quotes: null`),
+  idempotency-key retention, production behaviour, the new screens in a browser.
+- **Demo setup added for M3 part 2:** `deploy/secrets/cred_{public,private}_keys.json` generated on the demo
+  (kid `c20261116-72…`), `APP_CRED_*` lines in `api.env` / `procurement.env` (backups `env.bak-20261116T2*`).
+  The sandbox test product is set to draft.
+- **Next, in order:** (1) **after 2026-11-18 10:57** put the demo's procurement back on the simulator (see the
+  redeem.kesiv.com note above); (2) look at the M3 screens (cards, direct) in a browser; (3) v12 to `main` and
+  production wait for the M1 exit gate (independent security review, AGENTS.md §1.11) — production will also
+  need the credential keypair (§18.5) and the procurement process; (4) sandbox webhook: still no vendor delivery
+  observed since 01:39 UTC on 2026-11-16.
 - **Re-audit verdict (2026-11-15, head `2895860`): pass with notes — no Critical/High, no path to a double
   purchase or double delivery.** Original findings: H1, M1, M2, M4, M5, L1, L2, L4, L7 closed; H2, M3, L5
   partly; L3 and L6 deferred (`TODO(v12-M3)`). New findings and the decided fixes (paths under
