@@ -232,3 +232,88 @@ export function createProcurementApi(c: ApiClient) {
     },
   }
 }
+
+// ------------------------------------------------------------------ pricing (issue #28)
+export interface PricingSettings {
+  card_open_fee: string
+  topup_fee_rate: string
+  topup_fee_fixed: string
+  failed_fee: string
+  failed_free_count: number
+  auth_reversal_rate: string
+  chargeback_tier1_rate: string
+  chargeback_tier1_min_tx: number
+  chargeback_tier1_surcharge: string
+  chargeback_tier2_rate: string
+  chargeback_tier2_deposit: string
+  expected_failure_rate: string
+  target_margin: string
+  round_step_minor: number
+  service_fee_direct: Record<'gpt' | 'grok' | 'claude', string>
+  uses_per_card: Record<'standard' | 'pro20x', number>
+  fx: Record<string, { per_usd: string; updated_at: string; updated_by: string }>
+}
+export interface PricingSettingsView {
+  settings: PricingSettings
+  informational: string[]
+  targets: Record<string, string>
+  channel: { id: string; fee_rate: string }
+  currency: 'USD'
+}
+export type PricingSettingsPatch = Partial<Omit<PricingSettings, 'fx' | 'service_fee_direct' | 'uses_per_card'>> & {
+  service_fee_direct?: Partial<PricingSettings['service_fee_direct']>
+  uses_per_card?: Partial<PricingSettings['uses_per_card']>
+  fx?: { currency: string; per_usd: string }
+}
+export interface UnitRow {
+  key: string
+  product_id: string
+  variant_id: string | null
+  offer_id: string | null
+  region: string | null
+  title: string
+  variant_name: string | null
+  status: string
+  source: { kind: string; supplier: string | null; enabled: boolean | null; priority: number | null }
+  price: { minor: number; amount: string; currency: string; usd: string | null }
+  cost_usd: Record<'supplier_price' | 'service_fee' | 'topup_fee' | 'card_share' | 'failure_cost' | 'channel_fee' | 'total', string | null>
+  gross_usd: string | null
+  net_usd: string | null
+  gross_margin_pct: string | null
+  net_margin_pct: string | null
+  target_margin_pct: string
+  recommended: { amount: string; minor: number; currency: string; usd: string; diff_minor: number; diff: string } | null
+  incomplete: string[]
+  cost_incomplete: boolean
+}
+export interface UnitList extends Paginated<UnitRow> {
+  fx: PricingSettings['fx']
+}
+export interface ActualRow extends MarginRow {
+  revenue_usd: string | null
+  cost_usd: string | null
+  channel_fee_usd: string | null
+  gross_usd: string | null
+  net_usd: string | null
+  gross_margin_pct: string | null
+  net_margin_pct: string | null
+  cost_incomplete: boolean
+}
+
+export function createPricingApi(c: ApiClient) {
+  const base = '/admin/procurement/pricing'
+  return {
+    settings: () => c.get<PricingSettingsView>(`${base}/settings`),
+    saveSettings: (b: PricingSettingsPatch) => c.put<PricingSettingsView>(`${base}/settings`, b),
+    setTarget: (product_id: string, variant_id: string | null, margin: string | null) =>
+      c.put<{ key: string; margin: string | null }>(`${base}/target`, { product_id, variant_id, margin }),
+    units: (q: { page?: number; page_size?: number }) => c.get<UnitList>(`${base}/units`, clean(q)),
+    apply: (r: UnitRow) =>
+      c.post<{ applied: boolean }>(`${base}/apply`, { product_id: r.product_id, variant_id: r.variant_id, offer_id: r.offer_id, current_minor: r.price.minor }),
+    actual: (r: CostRange & { page?: number; page_size?: number }) => c.get<Paginated<ActualRow>>(`${base}/actual`, clean(r)),
+    actualCsvUrl: (r: CostRange) => {
+      const s = new URLSearchParams(clean(r) as Record<string, string>).toString()
+      return c.url(`${base}/actual.csv`) + (s ? `?${s}` : '')
+    },
+  }
+}
