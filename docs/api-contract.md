@@ -647,8 +647,8 @@ Details live in the ADRs named in brackets.
 Buyer:
 - Product payload: `variant_options` (bool), `half_price` (bool); each variant `options {plan, region}`, `region_currency`, `half_price`.
 - `GET /half-checks/required?product_id&variant_id` -> `{required, method, plan}`.
-- `POST /half-checks {product_id, variant_id?, session?}` -> `{id, status, reason, method, plan, account, quote, expires_at, usable}`; `status` is `passed | ineligible | unavailable | session_invalid | manual_pending`. Errors: 409 `half_check_not_required`, 422 `session_required` / `session_*`, 429, 503 `half_check_unavailable`. The session is never stored in plaintext, logged or echoed.
-- `POST /orders` takes `half_check_id` for half-price plans: 422 `half_check_required` (none), 422 `half_check_invalid` (not this buyer's / product's, used, expired, unusable). `POST /orders/{ref}/pay`: 409 `half_check_required` / `half_check_refused`.
+- `POST /half-checks {product_id, variant_id?, session?}` -> `{id, status, reason, method, plan, account, quote, expires_at, usable}`; `status` is `passed | ineligible | unavailable | session_invalid | manual_pending`; `reason` is coarse (`not_eligible | check_unavailable | session_expired | session_rejected | rate_limited | no_source`) and `account` / `quote` are set only for a usable check. Errors: 403 `half_check_register` (instant guest account), 409 `half_check_not_required` / `half_check_manual_limit`, 422 `session_required` / `session_*`, 429, 503 `half_check_unavailable`. The session is never stored in plaintext, logged or echoed.
+- `POST /orders` takes `half_check_id` (+ `half_check_confirm: true` for a `manual` check) for half-price plans, one unit only: 422 `half_check_required` (none), `half_check_qty`, `half_check_account_mismatch`, `half_check_confirm_required`, 422 `half_check_invalid` (not this buyer's / product's, used, expired, unusable). `POST /orders/{ref}/pay`: 409 `half_check_required` / `half_check_refused`.
 
 Console (platform admin):
 - `GET|PUT /admin/procurement/options {region_allowlist?, half_price_check?}` (`vendor_preflight | chatgpt_direct | manual`).

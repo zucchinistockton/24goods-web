@@ -1187,6 +1187,38 @@ again / try again later) and only then the order. Console: Products -> variants 
 (`VariantGenerator`), Procurement -> Regions (allowlist, method with a hint per method, manual checks), translated job
 reasons for the three new `error_code`s.
 
+### 20.8 Fixes of the 2026-11-17 payment audit and security review
+
+* **Sources are pinned to what was sold (HIGH).** `engine.candidates()` (and so `_failover`, round-robin and
+  the admin reassign) keeps only sources whose `plan` / `payment_country` match the variant's `options` and, for an
+  order with a check, the check's plan and country; round-robin rotates the matches only. No match left ->
+  `needs_manual` (`no_source:...`). The procurement role got `SELECT (options)` on `product_variants` (0031).
+  `procurement_sources` rejects create / patch / enable with `source_options_mismatch`.
+* **Check binding.** `buy_now` requires the order session's masked account to equal the check's
+  (`half_check_account_mismatch`); the mask is the one derived from the sealed session (the vendor's mask no
+  longer overwrites it). It is `first letter + domain`, so it is a guard against pasting the wrong account, not a
+  proof of identity. One check = one unit (`half_check_qty`). **CDK:** a code carries no account, so for
+  `upstream_cdk` the vendor enforces eligibility at redemption only; the check bounds the sale, not the redeemer.
+  `claim` also refuses a check whose plan / country differ from the source now sold.
+* **Generated variants** start `price_set = false` (archived); activation needs a price sent explicitly and
+  `>=` the highest cost estimate of the variant's sources (FX from Costs; no rate = `fx_rate_missing`).
+  `cost_estimates {region: amount}` sets per-region estimates.
+* **Region withdrawn after payment:** `region_not_offered` is a definite catalog refusal; the held job shows
+  `no_source:region_not_offered` to staff. A refused half price tells the buyer (`half_price_refused` message).
+* **Manual method:** the buyer confirms (`half_check_confirm`) that staff decide after payment; at most 3 open
+  manual checks per buyer; a paid held order raises one `procurement.half_hold` warning and the Regions list
+  flags it `overdue` after 60 min.
+* **Check endpoint hardening:** registered (non-instant) accounts only (`half_check_register`); per-IP daily cap;
+  buyers get coarse reasons only, and account / quote only for a usable check; the `chatgpt_direct` budget
+  (60/h) is per tenant and spent only by reads that reach ChatGPT; hitting it raises one `half_check.limit_hit`
+  warning ("switch to manual"); `GET /half-checks/required` needs an active product.
+* **DB (0032, amended, not deployed):** `app_api` may update `order_id` only, and only of a usable check; the staff
+  decision runs through `half_price_checks_decide()` (SECURITY DEFINER, tenant from the session pin,
+  `manual_pending` only).
+* **Blob exposure window:** a sealed session lives at most until the read finishes; worst case (procurement down
+  after the insert) the API deletes its own `pending` row on failure, the sweeper nulls it after 15 min
+  (`MAX_AGE`) and deletes unused rows after 2 days.
+
 ### 20.7 Left open
 
 * The e2e smoke scenario was not extended (CI runs it); the typecheck of the new Vue components ran only in CI.
