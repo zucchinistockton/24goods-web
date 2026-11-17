@@ -119,6 +119,12 @@ def omit_preflight_token(base_url: str, env: str) -> bool:
     """The vendor's REAL sandbox refuses an order that carries a preflight token (HTTP 400
     ``GPT_DIRECT_ORDER_REJECTED``, "preflight token invalid") and accepts the same order without
     one (verified 2026-11-16). Production keeps the token: it pins the quote."""
+    return real_sandbox(base_url, env)
+
+
+def real_sandbox(base_url: str, env: str) -> bool:
+    """The vendor's own sandbox host (not our simulator, not production). It has quirks that
+    production does not: see :func:`omit_preflight_token` and the synthetic accounts below."""
     host = (urlsplit(base_url).hostname or "").lower()
     return env == "sandbox" and host == "sandbox.zovocard.com"
 

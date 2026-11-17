@@ -991,3 +991,12 @@ def test_only_the_vendors_real_sandbox_gets_orders_without_a_preflight_token():
     assert not dr.omit_preflight_token("https://zovocard.com/openapi/v1", "production")
     assert not dr.omit_preflight_token("https://sandbox.zovocard.com/openapi/v1", "production")
     assert not dr.omit_preflight_token("http://mockzovo:8005/openapi/v1", "sandbox")
+
+
+def test_real_sandbox_is_only_the_vendors_sandbox_host():
+    from app.suppliers.zovocard import direct as dr
+
+    assert dr.real_sandbox("https://sandbox.zovocard.com/openapi/v1", "sandbox")
+    assert not dr.real_sandbox("https://zovocard.com/openapi/v1", "production")
+    assert not dr.real_sandbox("http://mockzovo:8005/openapi/v1", "sandbox")
+    assert not dr.real_sandbox("https://sandbox.zovocard.com.evil.example/openapi/v1", "sandbox")
