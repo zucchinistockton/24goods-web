@@ -1480,7 +1480,7 @@ for both writes (409 `supplier_disabled`, also with an explicit `supplier_id`); 
 (warning; ids, scope, vendor's count when stated [I]). The vendor's own answer shape beyond that is not used.
 
 **Production guard.** Both writes are refused for a supplier with env `production`, or with env `sandbox` whose base URL is a public
-https host other than the vendor's own sandbox (`sandbox.zovocard.com`; a plain-http simulator is exempt, dev only), unless `APP_PROCUREMENT_ALLOW_PRODUCTION_WRITES`
+https host other than the vendor's own sandbox (`sandbox.zovocard.com`; plain http is exempt only for our simulator: a single-label host such as `mockzovo` or a loopback / private IP literal; any other http host, e.g. the real vendor over http, counts as production), unless `APP_PROCUREMENT_ALLOW_PRODUCTION_WRITES`
 is on: 409 `production_writes_disabled`, checked in the procurement service first (clean answer, no audit row, nothing sent) and
 again by the client as a backstop. Reads stay open.
 

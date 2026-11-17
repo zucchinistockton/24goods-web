@@ -437,6 +437,15 @@ def test_a_sandbox_row_pointing_at_a_public_non_sandbox_host_counts_as_productio
     assert cfg("https://sandbox.zovocard.com/openapi/v1", "production").production_target
     assert not cfg("https://sandbox.zovocard.com/openapi/v1").production_target
     assert not cfg("http://m/openapi/v1").production_target  # our simulator, dev only
+    # re-audit: plain http is exempt only for OUR simulator (single-label or loopback/private IP)
+    assert not cfg("http://mockzovo:8005/openapi/v1").production_target
+    assert not cfg("http://127.0.0.1:9000/openapi/v1").production_target
+    assert not cfg("http://10.89.11.7/openapi/v1").production_target
+    assert cfg("http://zovocard.com/openapi/v1").production_target  # the real vendor over http
+    assert cfg("http://api.zovocard.com/openapi/v1").production_target
+    assert cfg("http://sandbox.zovocard.com/openapi/v1").production_target  # sandbox needs https
+    assert cfg("http://169.254.169.254/openapi/v1").production_target  # link-local: not ours
+    assert cfg("http://8.8.8.8/openapi/v1").production_target  # public IP literal
 
 
 async def test_the_client_backstop_blocks_a_mislabelled_sandbox_write():
