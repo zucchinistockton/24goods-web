@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import uuid
+
 from tests.test_procurement_direct import DUp, _vendor
 from tests.test_procurement_vcc import _zovo
 from tests.test_variants import add_variant
@@ -133,5 +135,95 @@ async def test_region_the_vendor_stops_offering_is_unavailable_never_forced(env)
             assert (await supplier.availability(ph, fresh=True)).available is True
         finally:
             mz.MOCK_GPT_REGIONS = old
+    finally:
+        await up.close()
+
+
+# --------------------------------------------------------------------------- generator
+GEN = f"{API}/admin/procurement/generate-variants"
+
+
+async def _gen_setup(env, mode="upstream_cdk"):
+    up = DUp(env)
+    up.mode, up.kind = mode, ("cdk" if mode == "upstream_cdk" else "direct")
+    await up.start()
+    await _zovo(up, _vendor(), GPT_PLUS if mode == "upstream_direct" else {"plan": "plus"})
+    sid = await env.scalar("SELECT id FROM suppliers LIMIT 1")
+    # the base source of the product itself is irrelevant for the variants
+    return up, sid
+
+
+async def test_generator_creates_plan_x_region_variants_idempotently(env):
+    up, sid = await _gen_setup(env)
+    try:
+        admin, _ = await env.login("admin")
+        body = {
+            "product_id": str(up.product.id),
+            "supplier_id": str(sid),
+            "plans": ["plus", "plus_half"],
+            "regions": ["PH", "JP", "EG", "FR", "ZZ"],  # FR not allowed, ZZ not allowed
+        }
+        await admin.put(OPT, json={"region_allowlist": ["PH", "JP", "EG", "CL", "US", "FR"]})
+        # FR is allowed by the owner but the vendor does not offer it
+        r = await admin.post(GEN, json=body)
+        assert r.status_code == 200, r.text
+        out = r.json()
+        assert len(out["created"]) == 6 and out["kept"] == []
+        assert {(s["region"], s["reason"]) for s in out["skipped"]} == {
+            ("FR", "not_offered"), ("ZZ", "not_allowed")
+        }  # fmt: skip
+        vs = (await admin.get(f"{API}/admin/products/{up.product.id}/variants")).json()["items"]
+        assert len(vs) == 6
+        assert all(v["status"] == "archived" and v["price"] == "50.00" for v in vs)
+        assert {(v["options"]["plan"], v["options"]["region"]) for v in vs} == {
+            (p, r) for p in ("plus", "plus_half") for r in ("PH", "JP", "EG")
+        }
+        offers = await env.scalar(
+            "SELECT count(*) FROM supplier_offers WHERE variant_id IS NOT NULL AND enabled = false "
+            "AND params->>'payment_country' IS NOT NULL AND kind = 'cdk'"
+        )
+        assert offers == 6  # one disabled source each, nothing switched on by itself
+        # idempotent: a second run keeps everything and creates nothing
+        r = await admin.post(GEN, json=body)
+        assert r.json()["created"] == [] and len(r.json()["kept"]) == 6
+        assert await env.scalar("SELECT count(*) FROM product_variants") == 6
+        # a new region only adds the missing combinations
+        r = await admin.post(GEN, json={**body, "regions": ["PH", "CL"]})
+        assert len(r.json()["created"]) == 2 and len(r.json()["kept"]) == 2
+        assert (
+            await env.scalar("SELECT count(*) FROM audit_log WHERE action='variant.generated'") == 8
+        )
+    finally:
+        await up.close()
+
+
+async def test_generator_direct_needs_a_card_and_is_platform_admin_and_tenant_scoped(env):
+    up, sid = await _gen_setup(env, "upstream_direct")
+    try:
+        admin, _ = await env.login("admin")
+        body = {
+            "product_id": str(up.product.id), "supplier_id": str(sid),
+            "vendor_product": "gpt", "plans": ["plus"], "regions": ["PH"],
+        }  # fmt: skip
+        r = await admin.post(GEN, json=body)
+        assert r.status_code == 422 and r.json()["error"]["code"] == "card_required"
+        r = await admin.post(GEN, json={**body, "card_id": 4242})
+        assert r.status_code == 200 and len(r.json()["created"]) == 1
+        params = await env.scalar("SELECT params FROM supplier_offers WHERE variant_id IS NOT NULL")
+        assert params == {
+            "plan": "plus", "product": "gpt", "card_id": 4242,
+            "payment_country": "PH", "payment_currency": "PHP",
+        }  # fmt: skip
+        # nobody but platform admins; no foreign product / supplier
+        buyer, _ = await env.login("buyer")
+        assert (await buyer.post(GEN, json={**body, "card_id": 4242})).status_code in (401, 403)
+        foreign_p = await env.product(mode="upstream_direct", tenant_id=env.other_tenant_id)
+        r = await admin.post(GEN, json={**body, "card_id": 4242, "product_id": str(foreign_p.id)})
+        assert r.status_code == 404
+        r = await admin.post(GEN, json={**body, "card_id": 4242, "supplier_id": str(uuid.uuid4())})
+        assert r.status_code == 404
+        manual = await env.product(mode="manual")
+        r = await admin.post(GEN, json={**body, "card_id": 4242, "product_id": str(manual.id)})
+        assert r.status_code == 422 and r.json()["error"]["code"] == "bad_mode"
     finally:
         await up.close()
