@@ -100,6 +100,13 @@ export const API_ERROR_CODES = [
   'direct_buy_now_only',
   'direct_not_quotable',
   'direct_not_on_storefront',
+  // issue #27 half-price check, plan x region variants
+  'half_check_required',
+  'half_check_invalid',
+  'half_check_not_required',
+  'half_check_unavailable',
+  'half_check_refused',
+  'variant_options_taken',
 ] as const
 export const CLIENT_ERROR_CODES = ['network', 'server_error', 'timeout', 'unknown'] as const
 export type ContractErrorCode = (typeof API_ERROR_CODES)[number]

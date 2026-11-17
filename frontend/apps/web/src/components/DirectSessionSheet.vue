@@ -10,7 +10,8 @@ import { useI18n } from 'vue-i18n'
 import type { DirectProduct } from '@24goods/shared'
 import { api } from '../api'
 
-const props = defineProps<{ show: boolean; productId: string | null; known?: DirectProduct | null }>()
+/** `check`: the session is read only to check half-price eligibility (not applied to an order) */
+const props = defineProps<{ show: boolean; productId: string | null; known?: DirectProduct | null; purpose?: 'order' | 'check' }>()
 const emit = defineEmits<{ 'update:show': [v: boolean]; confirm: [session: string] }>()
 const { t } = useI18n()
 const text = ref('')
@@ -43,8 +44,8 @@ function confirm() {
 <template>
   <van-popup :show="show" position="bottom" round closeable safe-area-inset-bottom teleport="body" class="buy-sheet" @update:show="emit('update:show', $event)">
     <form class="sheet" @submit.prevent="confirm">
-      <h2>{{ t('direct.title') }}</h2>
-      <p class="lead">{{ t('direct.lead') }}</p>
+      <h2>{{ purpose === 'check' ? t('halfcheck.sessionTitle') : t('direct.title') }}</h2>
+      <p class="lead">{{ purpose === 'check' ? t('halfcheck.sessionLead') : t('direct.lead') }}</p>
       <ol class="how">
         <li>{{ t('direct.how1') }}</li>
         <li v-if="kind === 'gpt'">
@@ -74,7 +75,7 @@ function confirm() {
         data-bwignore="true"
         data-form-type="other"
       />
-      <p class="note">{{ t('direct.note') }}</p>
+      <p class="note">{{ purpose === 'check' ? t('halfcheck.sessionNote') : t('direct.note') }}</p>
       <van-button block round type="primary" size="large" native-type="submit" :disabled="!ready">{{ t('direct.continue') }}</van-button>
     </form>
   </van-popup>

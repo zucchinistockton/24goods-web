@@ -22,12 +22,14 @@ import BuyerInputSheet from '../components/BuyerInputSheet.vue'
 import ManualPromise from '../components/ManualPromise.vue'
 import MiniStrip from '../components/MiniStrip.vue'
 import VariantChips from '../components/VariantChips.vue'
+import VariantPicker from '../components/VariantPicker.vue'
 import { cleanSrc, rememberSrc } from '../lib/attribution'
 import { openSupport as support } from '../lib/support'
 import { useCartStore } from '../stores/cart'
 import { afterSalesLabel } from '../lib/afterSales'
 import { isSoldOut } from '../lib/stock'
 import { defaultVariantId, findVariant, withVariant } from '../lib/variants'
+import { usesOptions } from '../lib/variantOptions'
 import { useSiteStore } from '../stores/site'
 import { showImagePreview, showSuccessToast, showToast, toastError } from '../ui'
 
@@ -192,8 +194,11 @@ function back() {
         </div>
         <h1 class="title">{{ product.title }}</h1>
         <div v-if="rawProduct?.variants?.length" class="variant-pick">
-          <div class="muted small">{{ t('product.variantLabel') }}</div>
-          <VariantChips v-model="variantId" :variants="rawProduct.variants" />
+          <VariantPicker v-if="usesOptions(rawProduct.variants)" v-model="variantId" :variants="rawProduct.variants" :currency="rawProduct.currency" />
+          <template v-else>
+            <div class="muted small">{{ t('product.variantLabel') }}</div>
+            <VariantChips v-model="variantId" :variants="rawProduct.variants" />
+          </template>
         </div>
         <div class="facts">
           <span v-if="isAuto" class="badge-instant">{{ t(`deliveryMode.${product.delivery_mode}`) }}</span>
