@@ -168,6 +168,26 @@ async def purge_audit(maker: async_sessionmaker[AsyncSession]) -> int:
     return total
 
 
+async def decline_risk_check(maker: async_sessionmaker[AsyncSession]) -> int:
+    """Hourly: a staff warning audit row (at most one a day per threshold crossing) when the
+    decline rate of our direct orders nears or passes the cost model's chargeback thresholds."""
+    from app.core import costmodel as cm
+    from app.procurement import risk
+
+    total = 0
+    for tid in await _tenant_ids(maker):
+        async with tenant_session(maker, tid) as db:
+            row = (
+                await db.execute(select(Tenant.kind, Tenant.settings).where(Tenant.id == tid))
+            ).one_or_none()
+            if row is None or row[0] != "platform":
+                continue
+            th = risk.thresholds_of(cm.from_tenant(dict(row[1] or {})))
+            total += await risk.warn_crossings(db, tid, th)
+            await db.commit()
+    return total
+
+
 BUYER_INPUT_RETENTION_DAYS = 30
 _FINAL_STATES = ("completed", "cancelled", "expired", "refunded")
 

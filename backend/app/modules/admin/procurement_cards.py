@@ -21,7 +21,7 @@ from typing import Any, Literal
 
 import httpx
 from fastapi import APIRouter, Depends, Query, Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -226,13 +226,13 @@ async def risk_monitor(
 class RuleIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     supplier_id: uuid.UUID | None = None
-    count_failures: bool | None = None
-    light_max_uses: int | None = Field(None, ge=0, le=1000)
-    pro20_max_uses: int | None = Field(None, ge=0, le=1000)
+    count_failures: StrictBool | None = None
+    light_max_uses: StrictInt | None = Field(None, ge=0, le=1000)
+    pro20_max_uses: StrictInt | None = Field(None, ge=0, le=1000)
     select_mode: Literal["default", "lowest_usage", "newest"] | None = None
-    auto_switch_on_fail: bool | None = None
-    max_auto_switches: int | None = Field(None, ge=0, le=10)
-    strict_select: bool | None = None
+    auto_switch_on_fail: StrictBool | None = None
+    max_auto_switches: StrictInt | None = Field(None, ge=0, le=10)
+    strict_select: StrictBool | None = None
 
 
 def _editable(rule: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -314,7 +314,7 @@ async def put_rule(
 class ResetIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     supplier_id: uuid.UUID | None = None
-    card_ids: list[int] = Field(min_length=1, max_length=50)
+    card_ids: list[StrictInt] = Field(min_length=1, max_length=50)
     confirm: Literal[True]  # the console asks first; the API refuses a request without it
 
 

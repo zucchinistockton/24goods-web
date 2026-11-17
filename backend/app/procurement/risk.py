@@ -137,3 +137,61 @@ async def counts(
     )
     per_card = {str(r[0]): (int(r[1]), int(r[2]), int(r[3])) for r in rows}
     return (int(total[0]), int(total[1]), int(total[2])), per_card
+
+
+WARN_ACTION = "procurement.decline_rate_warning"
+WARN_EVERY = timedelta(days=1)
+
+
+async def warn_crossings(
+    db: AsyncSession, tenant_id: uuid.UUID, th: Thresholds, *, now: datetime | None = None
+) -> int:
+    """Write a staff warning audit row for every threshold the decline rate is near or over, at
+    most one per (threshold, window, subject) per day (the subject is the whole account or one
+    funding card). Returns the number written. Runs in the API's hourly job (it reads the audit
+    log, which the procurement role cannot)."""
+    from app.core.audit import audit
+    from app.models import AuditLog
+
+    now = now or datetime.now(timezone.utc)
+    written = 0
+    for days in WINDOWS:
+        total, per_card = await counts(db, tenant_id, days, now=now)
+        subjects: list[tuple[str, tuple[int, int, int]]] = [("all", total)]
+        subjects += [(f"card:{cid}", v) for cid, v in sorted(per_card.items())]
+        for subject, (sent, declined, _flight) in subjects:
+            r = rate(declined, sent)
+            for tier, limit in (("tier1", th.tier1), ("tier2", th.tier2)):
+                st = state_of(r, sent, limit)
+                if st == "ok":
+                    continue
+                target = f"threshold:{tier}:{days}d:{subject}"[:128]
+                seen = await db.scalar(
+                    select(func.count(AuditLog.id)).where(
+                        AuditLog.tenant_id == tenant_id,
+                        AuditLog.action == WARN_ACTION,
+                        AuditLog.target == target,
+                        AuditLog.created_at >= now - WARN_EVERY,
+                    )
+                )
+                if seen:
+                    continue
+                await audit(
+                    db,
+                    tenant_id=tenant_id,
+                    action=WARN_ACTION,
+                    target=target,
+                    severity="warning",
+                    detail={
+                        "threshold": tier,
+                        "limit": str(limit),
+                        "state": st,
+                        "window_days": days,
+                        "subject": subject,
+                        "sent": sent,
+                        "declined": declined,
+                        "rate": None if r is None else str(r),
+                    },
+                )
+                written += 1
+    return written

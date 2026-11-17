@@ -50,6 +50,8 @@ queued -> running -> completed over successive reads, the 1st still saying queue
 ``POST /gpt-direct/orders/{id}/cancel`` (200 only while ``queued``, else ``409`` without
 error_code). The session is NEVER stored: only a digest.
 
+Card pool (#29 part 2): ``GET /cards`` (list with the full PAN, like the real one),
+``usage_failed`` = failed count per funding card.
 Card modes (issue #29): ``GET /gpt-direct/card-pool/schedule`` (``data.pick`` + ``data.candidates``
 with ``skip_reason``; knobs ``card_pool``, ``schedule_skip``, ``schedule_none`` = "no card
 available"), ``GET`` / ``PUT /gpt-direct/card-rules``, ``POST /gpt-direct/cards/reset-usage``;
@@ -324,6 +326,7 @@ class MockZovo:
     direct_cards_sent: list[int] = field(default_factory=list)  # ``card_id`` of every order POST
     card_rules: dict[str, dict[str, Any]] = field(default_factory=dict)
     usage_resets: list[dict[str, Any]] = field(default_factory=list)
+    usage_failed: dict[int, int] = field(default_factory=dict)  # funding card -> failed count
     direct_product_seen: list[str] = field(default_factory=list)  # product exactly as sent
 
     def __post_init__(self) -> None:
@@ -751,6 +754,7 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
                 if isinstance(cid, int):
                     mock.usage_remaining.pop(cid, None)
                     mock.usage_busy.discard(cid)
+                    mock.usage_failed.pop(cid, None)
             return JSONResponse(_env(0, {"reset": len(ids) if isinstance(ids, list) else 0}))
         if path == "/gpt-direct/card-rules" and request.method == "PUT":
             prod = body.get("product")
@@ -837,6 +841,19 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
                 queue.popleft()
                 return JSONResponse({}, status_code=504)
             return resp
+        if path == "/cards":  # [V] list: {total, list}; carries the full PAN like the real one
+            try:
+                page = max(1, int(request.query_params.get("page", "1")))
+                size = min(mock.list_cap, max(1, int(request.query_params.get("page_size", "20"))))
+            except ValueError:
+                return JSONResponse({"code": 400, "msg": "bad paging"}, status_code=400)
+            live = [c for _, c in sorted(mock.cards.items()) if c["status"] != "DELETED"]
+            rows = [
+                {"id": c["id"], "card_number": c["card_number"], "product_code": c["product_code"],
+                 "available_amount": c["available_amount"], "status": c["status"]}
+                for c in live[(page - 1) * size : page * size]
+            ]  # fmt: skip
+            return JSONResponse(_env(0, {"total": len(live), "list": rows}))
         m_card = re.fullmatch(r"/cards/([0-9]{1,12})(/recharges)?", path)
         if m_card:
             card = mock.cards.get(int(m_card.group(1)))
@@ -875,10 +892,12 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
             return JSONResponse(
                 _env(0, {"card_id": cid, "card_status": mock.cards[cid]["status"],
                          "product": request.query_params.get("product", "gpt"),
-                         "light": {"used": 5 - left, "remaining": left, "cap": 5},
-                         "pro20": {"used": 0, "remaining": 3, "cap": 3},
+                         "light": {"used": 5 - left, "remaining": left, "cap": 5,
+                                   "failed": mock.usage_failed.get(cid, 0)},
+                         "pro20": {"used": 0, "remaining": 3, "cap": 3, "failed": 0},
                          "count_failures": True, "cooling": False,
-                         "decline_count": 0, "busy": cid in mock.usage_busy})
+                         "decline_count": mock.usage_failed.get(cid, 0),
+                         "busy": cid in mock.usage_busy})
             )  # fmt: skip
         if path == "/gpt-direct/card-pool/schedule":
             mock.schedule_calls += 1
@@ -888,7 +907,9 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
             rules = {
                 p: mock.card_rules.get(
                     p, {"product": p, "count_failures": True, "light_max_uses": 5,
-                        "pro20_max_uses": 3, "select_mode": "default", "is_default": True}
+                        "pro20_max_uses": 3, "select_mode": "default", "is_default": True,
+                     "auto_switch_on_fail": True, "max_auto_switches": 2,
+                     "strict_select": False, "select_priority": []}
                 )
                 for p in ("gpt", "claude", "grok")
             }  # fmt: skip

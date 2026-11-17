@@ -160,6 +160,7 @@ async def _run_jobs(res: Resources, *, hourly: bool) -> None:
         await _job("buyer input purge", jobs.purge_buyer_input(res.maker), res)
         await _job("operations event purge", operations_jobs.purge_events(res), res)
         await _job("audit purge", jobs.purge_audit(res.maker), res)
+        await _job("decline risk check", jobs.decline_risk_check(res.maker), res)
         await _job("reseller domains recheck", domains.recheck_active(res), res)
 
 
