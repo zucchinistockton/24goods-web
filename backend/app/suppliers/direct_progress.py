@@ -55,7 +55,7 @@ _FAIL_OTHER = frozenset({"failed", "rejected", "expired"})
 _FAILED = _FAIL_PAYMENT | _FAIL_CANCEL | _FAIL_OTHER
 
 _RANK = {s: i for i, s in enumerate(VENDOR_STEPS)}
-_CTRL = re.compile(r"[\x00-\x1f\x7f-\x9f​-‏ -‮⁦-⁩﻿]")
+_CTRL = re.compile("[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff]")
 _URL = re.compile(
     r"(?i)\b(?:https?|ftp|wss?)://\S*|\bwww\.\S*|\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|net|org|io|cn|me|co|app|xyz|top)\b\S*"
 )

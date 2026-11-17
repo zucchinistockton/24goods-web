@@ -149,11 +149,11 @@ def test_buyer_view_is_coarse_and_marks_the_current_step():
 
 # ------------------------------------------------------------------ sanitising
 def test_public_message_is_sanitised():
-    raw = "Paid\x00 ok\r\n‮ visit https://evil.example/x?t=abc and www.evil.test, mail a@b.co"
+    raw = "Paid\x00 ok\r\n\u202e visit https://evil.example/x?t=abc and www.evil.test, mail a@b.co"
     out = dp.clean_message(raw + " card 5378 7212 3456 7890 token " + "A" * 40)
     assert out is not None
     assert "http" not in out and "evil" not in out and "@" not in out and "\x00" not in out
-    assert "\n" not in out and "‮" not in out
+    assert "\n" not in out and "\u202e" not in out
     assert "5378" not in out and "AAAA" not in out and "****" in out
     assert len(dp.clean_message("x " * 500) or "") <= dp.MSG_CAP
     assert dp.clean_message(None) is None and dp.clean_message(123) is None
