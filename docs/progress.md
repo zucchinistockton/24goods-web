@@ -100,8 +100,16 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 - **Demo setup added for M3 part 2:** `deploy/secrets/cred_{public,private}_keys.json` generated on the demo
   (kid `c20261116-72…`), `APP_CRED_*` lines in `api.env` / `procurement.env` (backups `env.bak-20261116T2*`).
   The sandbox test product is set to draft.
-- **Next, in order:** (1) **after 2026-11-18 10:57** put the demo's procurement back on the simulator (see the
-  redeem.kesiv.com note above); (2) look at the M3 screens (cards, direct) in a browser; (3) v12 to `main` and
+- **Browser check (2026-11-17, headless Chrome, 390 px, light + dark):** buyer direct product → buy sheet ("one per
+  order") → "Connect your account" sheet → delivered direct order with the account panel; console direct job
+  detail. Fixed from it (#22): step numbers in the account sheet, no "Your codes / Reveal codes" box on a direct
+  order. The console CSP error seen there is Cloudflare's injected bot-detection script being blocked (also on
+  production; harmless). Both sandbox test products on the demo are set to draft.
+- **Production deploy of `main` (`7951c4c` = #14 two-factor hint fix + docs) was refused by the session
+  permission system on 2026-11-17**; production stays on `eed9972`. Today's backup is pulled
+  (`/root/kesiv-backups/nightly-20261117T033001Z`). Hand procedure unchanged (tag `rollback-eed9972` first).
+- **Next, in order:** (1) **after 2026-11-18 10:57** run `/opt/24goods-demo/deploy/sandbox-off.sh` on the demo host
+  (puts procurement back on the simulator, backs up `env/`; not in git); (2) look at the M3 screens (cards, direct) in a browser; (3) v12 to `main` and
   production wait for the M1 exit gate (independent security review, AGENTS.md §1.11) — production will also
   need the credential keypair (§18.5) and the procurement process; (4) sandbox webhook: still no vendor delivery
   observed since 01:39 UTC on 2026-11-16.
