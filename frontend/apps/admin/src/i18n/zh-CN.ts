@@ -882,6 +882,8 @@ const zhCN: AdminMessages = {
     done: '已完成',
     tab: { jobs: '任务', sources: '货源', cost: '成本', pricing: '定价', regions: '地区' },
     reason: {
+      region_not_offered: '供应商已不再提供该地区：买家已为已下架的地区付款，请退款或稍后重试',
+      'no_source:region_not_offered': '供应商已不再提供该地区：买家已为已下架的地区付款，请退款或稍后重试',
       half_price_check_manual: '半价检测等待员工处理：在“地区”中批准后重试',
       half_price_check_refused: '员工拒绝了半价资格：请为订单退款',
       half_price_ineligible: '供应商在扣款前拒绝了该账号的半价：请为订单退款',
@@ -1134,6 +1136,7 @@ const zhCN: AdminMessages = {
     approved: '已批准，请重试被挂起的任务。',
     refused: '已拒绝，请为订单退款。',
     refuseConfirm: '拒绝该买家的半价资格？随后必须为订单退款。',
+    overdue: '已等待 {n} 分钟：已付款订单被挂起',
     afterApprove: '订单执行时供应商仍会校验半价：不符合资格的账号会在扣款前失败，这里同样按拒绝处理。',
     generate: '生成套餐 × 地区规格',
     gen: {

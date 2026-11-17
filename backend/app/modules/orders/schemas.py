@@ -24,6 +24,8 @@ class BuyNowIn(BaseModel):
     session: str | None = Field(None, max_length=70000, repr=False)
     # half-price plans (plus_half, Grok *_half): the passed eligibility check of this buyer
     half_check_id: uuid.UUID | None = None
+    # a ``manual`` check is decided by staff AFTER payment: the buyer confirms that first
+    half_check_confirm: bool = False
 
     @field_validator("src")
     @classmethod

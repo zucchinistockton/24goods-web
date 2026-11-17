@@ -12,6 +12,7 @@ from app.core.deps import client_ip, current_user, get_db, get_res
 from app.core.ratelimit import enforce
 from app.core.resources import Resources
 from app.models import User
+from app.modules.catalog.service import get_active_product
 from app.modules.orders import halfcheck
 from app.modules.orders.schemas import HalfCheckIn
 
@@ -28,6 +29,7 @@ async def required(
 ) -> dict:
     """Does this product / variant need the check, and by which method (the buyer is told whether
     to paste a session)."""
+    await get_active_product(db, product_id)  # 404 for an inactive / unknown product
     target = await halfcheck.requirement(db, user.tenant_id, product_id, variant_id)
     if target is None:
         return {"required": False, "method": None, "plan": None}
@@ -46,8 +48,10 @@ async def create(
     db: AsyncSession = Depends(get_db),
     res: Resources = Depends(get_res),
 ) -> JSONResponse:
+    await get_active_product(db, body.product_id)
     await enforce(res.redis, "halfcheck:user", str(user.id), 6, 600)
     await enforce(res.redis, "halfcheck:ip", client_ip(request) or "-", 30, 600)
+    await enforce(res.redis, "halfcheck:ip-day", client_ip(request) or "-", 60, 86400)
     out = await halfcheck.create_check(
         db,
         res,

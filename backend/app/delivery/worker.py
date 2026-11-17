@@ -338,13 +338,17 @@ async def handle_procure_failed(db: AsyncSession, payload: dict) -> JobResult:
         db,
         tenant_id=order.tenant_id,
         conversation_id=order.conversation_id,
-        event="manual_review",
+        # the buyer is told plainly that half price was not granted (a refund follows)
+        event="half_price_refused" if detail in HALF_REFUSALS else "manual_review",
         order_id=str(order.id),
     )
     result = JobResult(order)
     result.messages = [msg] if msg else []
     result.cards = await order_card_messages(db, order.conversation_id, order.id)
     return result
+
+
+HALF_REFUSALS = ("half_price_ineligible", "half_price_check_refused")
 
 
 async def handle_replace(db: AsyncSession, payload: dict) -> JobResult:

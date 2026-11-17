@@ -256,12 +256,15 @@ export function createBuyerApi(c: ApiClient) {
         session?: string | null,
         /** half-price plans: the passed eligibility check of this buyer (issue #27) */
         half_check_id?: string | null,
+        /** a `manual` check is decided by staff after payment: the buyer confirmed that */
+        half_check_confirm?: boolean,
       ) =>
         c.post<Order>('/orders', {
           product_id,
           qty,
           ...(session ? { session } : {}),
           ...(half_check_id ? { half_check_id } : {}),
+          ...(half_check_id && half_check_confirm ? { half_check_confirm: true } : {}),
           ...(variant_id ? { variant_id } : {}),
           ...(promo_code ? { promo_code } : {}),
           ...(src ? { src } : {}),

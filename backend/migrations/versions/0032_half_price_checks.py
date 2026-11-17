@@ -10,11 +10,13 @@ Grants (column level; the API can never read ``blob`` / ``kid`` back):
 
 ================  =========================================================================
 ``app_api``       INSERT; SELECT of every column except ``blob`` / ``kid``; UPDATE of
-                  ``order_id`` (consume the check when the order is created) and
-                  ``status`` / ``reason`` / ``decided_at`` (staff decision of a manual check).
-                  A trigger limits what ``app_api`` may change: ``order_id`` NULL -> value only,
-                  ``status`` ``manual_pending`` -> ``manual_approved`` / ``manual_refused`` only,
-                  nothing else, so the API role cannot turn a refused check into a passed one.
+                  ``order_id`` ONLY (consume the check when the order is created). A trigger
+                  limits it: NULL -> value, and only for a USABLE check (``passed`` /
+                  ``manual_pending`` / ``manual_approved``). The staff decision of a manual check
+                  goes through ``half_check_decide()`` (SECURITY DEFINER; ``manual_pending`` ->
+                  approved / refused only, same tenant as the session pin), so the API role
+                  cannot write ``status`` / ``reason`` / ``decided_at`` and cannot turn a refused
+                  check into a passed one.
                   DELETE only of a ``pending`` row (the check call to procurement failed).
 ``app_procurement`` SELECT, UPDATE (``blob``, ``status``, ``reason``, ``detail``,
                   ``email_masked``, ``decided_at``), DELETE; the sweeper (unpinned session) wipes
@@ -85,7 +87,7 @@ UP = [
     f"REVOKE ALL ON {T} FROM PUBLIC",
     f"GRANT INSERT ON {T} TO app_api",
     f"GRANT SELECT ({OPEN_COLS}) ON {T} TO app_api",
-    f"GRANT UPDATE (order_id, status, reason, decided_at) ON {T} TO app_api",
+    f"GRANT UPDATE (order_id) ON {T} TO app_api",
     f"GRANT DELETE ON {T} TO app_api",
     f"GRANT SELECT, DELETE ON {T} TO app_procurement",
     f"GRANT UPDATE (blob, status, reason, detail, email_masked, decided_at) ON {T} "
@@ -93,24 +95,47 @@ UP = [
     f"""CREATE FUNCTION {T}_guard() RETURNS trigger LANGUAGE plpgsql AS $$
     BEGIN
         IF current_user = 'app_api' THEN
-            IF NEW.order_id IS DISTINCT FROM OLD.order_id AND OLD.order_id IS NOT NULL THEN
-                RAISE EXCEPTION 'a half-price check is consumed once';
-            END IF;
-            IF NEW.status IS DISTINCT FROM OLD.status AND NOT (
-                OLD.status = 'manual_pending'
-                AND NEW.status IN ('manual_approved', 'manual_refused')
+            IF NEW.order_id IS DISTINCT FROM OLD.order_id AND (
+                OLD.order_id IS NOT NULL
+                OR OLD.status NOT IN ('passed', 'manual_pending', 'manual_approved')
             ) THEN
+                RAISE EXCEPTION 'a half-price check is consumed once, and only when usable';
+            END IF;
+            IF NEW.status IS DISTINCT FROM OLD.status
+               OR NEW.reason IS DISTINCT FROM OLD.reason
+               OR NEW.decided_at IS DISTINCT FROM OLD.decided_at THEN
                 RAISE EXCEPTION 'the API cannot change the outcome of a half-price check';
             END IF;
         END IF;
         RETURN NEW;
     END $$""",
+    f"""CREATE FUNCTION {T}_decide(p_id uuid, p_approve boolean) RETURNS text
+    LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
+    DECLARE
+        pinned uuid := NULLIF(current_setting('app.tenant_id', true), '')::uuid;
+        new_status text := CASE WHEN p_approve THEN 'manual_approved' ELSE 'manual_refused' END;
+        n integer;
+    BEGIN
+        IF pinned IS NULL THEN
+            RAISE EXCEPTION 'half-price decision: no tenant';
+        END IF;
+        UPDATE {T} SET status = new_status, decided_at = now()
+        WHERE id = p_id AND tenant_id = pinned AND status = 'manual_pending';
+        GET DIAGNOSTICS n = ROW_COUNT;
+        IF n = 0 THEN
+            RETURN NULL;
+        END IF;
+        RETURN new_status;
+    END $$""",  # noqa: S608 (constant table name, no user input)
+    f"REVOKE ALL ON FUNCTION {T}_decide(uuid, boolean) FROM PUBLIC",
+    f"GRANT EXECUTE ON FUNCTION {T}_decide(uuid, boolean) TO app_api",
     f"CREATE TRIGGER {T}_guard BEFORE UPDATE ON {T} FOR EACH ROW EXECUTE FUNCTION {T}_guard()",
 ]
 
 DOWN = [
     f"DROP TABLE IF EXISTS {T}",
     f"DROP FUNCTION IF EXISTS {T}_guard()",
+    f"DROP FUNCTION IF EXISTS {T}_decide(uuid, boolean)",
 ]
 
 

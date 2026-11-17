@@ -31,7 +31,7 @@ import { usePow, isPowAbort } from '../composables/usePow'
 import { useTurnstile } from '../composables/useTurnstile'
 import CredentialsSheet from './CredentialsSheet.vue'
 import PowStatus from './PowStatus.vue'
-import { toastError } from '../ui'
+import { showToast, toastError } from '../ui'
 import { isSoldOut, maxOrderQty } from '../lib/stock'
 import { siteAccessCleared } from '../lib/securityChallenge'
 
@@ -57,6 +57,7 @@ const sessionValue = ref<string | null>(null)
 const showSession = ref(false)
 /** issue #27: the passed half-price eligibility check an order of a half-price plan is created with */
 const halfId = ref<string | null>(null)
+const halfConfirmed = ref(false)
 const showHalf = ref(false)
 const halfMethod = ref<HalfCheckMethod | null>(null)
 
@@ -119,9 +120,15 @@ watch(
       inputValue.value = null
       sessionValue.value = null
       halfId.value = null
+      halfConfirmed.value = false
       promo.value = null
       void site.loadChannels()
       void resolveConfig()
+    } else {
+      // the sheet closed (ordered or dismissed): the account session and the check are not kept
+      sessionValue.value = null
+      halfId.value = null
+      halfConfirmed.value = false
     }
   },
 )
@@ -133,6 +140,7 @@ watch(variantSel, (now, before) => {
   if (before !== null && now !== before) {
     promo.value = null // previewed on the previous variant's price
     halfId.value = null // a check belongs to one plan and region
+    halfConfirmed.value = false
   }
 })
 
@@ -158,7 +166,9 @@ async function placeOrder() {
     const session = sessionValue.value
     sessionValue.value = null // one use: a failed order asks for it again
     const half = halfId.value
-    const order = await api.orders.create(x.id, qty.value, props.src ?? recalledSrc(), inputValue.value, promo.value?.code, variant.value?.id, session, half)
+    const order = await api.orders.create(x.id, qty.value, props.src ?? recalledSrc(), inputValue.value, promo.value?.code, variant.value?.id, session, half, halfConfirmed.value)
+    halfId.value = null // consumed: it can never be used twice
+    halfConfirmed.value = false
     stashAccessCode(order.id, order.access_code)
     emit('update:show', false)
     await router.push(`/orders/${encodeURIComponent(order.id)}`)
@@ -177,8 +187,10 @@ function begin(guest: boolean) {
     showInput.value = true
     return
   }
-  if (needsHalf.value && guest) {
-    void continueAsGuest() // the check needs the account: it runs once the account exists
+  if (needsHalf.value && (guest || auth.user?.is_instant)) {
+    // the check needs a registered account (a guest account would make it an account oracle)
+    showToast(t('halfcheck.registerFirst'))
+    void (guest ? signIn() : router.push('/settings'))
     return
   }
   if (needsHalf.value && halfId.value === null) {
@@ -211,8 +223,9 @@ async function startHalf() {
     submitting.value = false
   }
 }
-function halfPassed(id: string, session: string | null) {
+function halfPassed(id: string, session: string | null, confirmed: boolean) {
   halfId.value = id
+  halfConfirmed.value = confirmed
   showHalf.value = false
   // a direct order is applied with the very session that was just checked: not asked twice
   if (isDirect.value && session) sessionValue.value = session

@@ -4,6 +4,7 @@ an audit row with before/after (invariant 3); every query filters by tenant (inv
 from __future__ import annotations
 
 import uuid
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import select, text
@@ -38,7 +39,52 @@ def _summary(v: ProductVariant) -> dict[str, Any]:
         "after_sales_months": v.after_sales_months,
         "subscription": v.subscription,
         "options": v.options,
+        "price_set": v.price_set,
     }
+
+
+async def _price_guard(
+    db: AsyncSession, p: Product, v: ProductVariant, price: int, *, explicit_price: bool
+) -> None:
+    """A variant is only ever ACTIVE with a price staff set on purpose that covers its cost
+    (payment audit 2026-11-17, finding 5): a generated variant starts unpriced; its price must be
+    sent in the same request that activates it (or before), and be >= the highest cost estimate
+    of its sources (converted with the staff-entered FX rate; no rate = refused)."""
+    from app.core import costmodel as cm
+    from app.models import SupplierOffer
+    from app.modules.content.site import tenant_settings
+
+    if not v.price_set and not explicit_price:
+        raise Validation(
+            "Set a price for this variant before activating it", code="variant_unpriced"
+        )
+    offers = list(
+        await db.scalars(
+            select(SupplierOffer).where(
+                SupplierOffer.tenant_id == v.tenant_id,
+                SupplierOffer.product_id == v.product_id,
+                SupplierOffer.variant_id == v.id,
+                SupplierOffer.cost_estimate.is_not(None),
+            )
+        )
+    )
+    if not offers:
+        return
+    st = cm.from_tenant(await tenant_settings(db, v.tenant_id))
+    price_usd = cm.usd_from_minor(price, cm.rate_for(st, p.currency))
+    costs = []
+    for o in offers:
+        per = cm.rate_for(st, o.currency)
+        if per is None or per <= 0 or o.cost_estimate is None:
+            costs.append(None)
+        else:
+            costs.append(Decimal(o.cost_estimate) / per)
+    if price_usd is None or any(c is None for c in costs):
+        raise Validation("Set the FX rate in Costs first, so the price can be checked",
+                         code="fx_rate_missing")  # fmt: skip
+    if price_usd < max(c for c in costs if c is not None):
+        raise Validation("The price is below the cost estimate of this variant",
+                         code="price_below_cost")  # fmt: skip
 
 
 async def _options_taken(
@@ -215,6 +261,11 @@ async def patch(
     if "subscription" in data:
         sb = body.subscription
         v.subscription = sb.model_dump() if sb is not None else None
+    explicit_price = data.get("price") is not None
+    if v.status == "active" and (explicit_price or before["status"] != "active" or not v.price_set):
+        await _price_guard(db, p, v, price, explicit_price=explicit_price)
+    if explicit_price:
+        v.price_set = True
     v.price_minor, v.floor_price_minor = price, floor
     after = _summary(v)
     await audit(

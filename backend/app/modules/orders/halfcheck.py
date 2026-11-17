@@ -23,11 +23,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import delete, func, insert, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import audit
-from app.core.errors import Conflict, InvalidState, NotFound, Unavailable, Validation
+from app.core.errors import Conflict, Forbidden, InvalidState, NotFound, Unavailable, Validation
 from app.core.resources import Resources
 from app.models import (
     HalfPriceCheck,
@@ -44,6 +44,8 @@ from app.suppliers.direct_credential import CredentialError, validate_credential
 log = logging.getLogger("app.orders.halfcheck")
 
 CHECK_TTL = timedelta(minutes=30)  # a passed check is valid for creating an order this long
+MAX_OPEN_MANUAL = 3  # unconsumed ``manual_pending`` checks one buyer may hold at once
+MANUAL_SLA = timedelta(minutes=60)  # staff should decide a held manual check within this
 USABLE = ("passed", "manual_pending", "manual_approved")
 OPEN = tuple(
     getattr(HalfPriceCheck, c)
@@ -111,18 +113,45 @@ async def required_flags(
     return {v: await requirement(db, tenant_id, product_id, v) is not None for v in variant_ids}
 
 
+# What a buyer is told about a refusal: coarse only. The vendor's reason (is the account free, does
+# it hold a subscription, which promotion) would make this endpoint an oracle on any account whose
+# session an attacker holds; the full reason stays in the row for staff.
+COARSE_REASONS = {
+    "session_expired": "session_expired",
+    "session_rejected": "session_rejected",
+    "rate_limited": "rate_limited",
+    "no_source": "no_source",
+}
+BUYER_REASON = {
+    "ineligible": "not_eligible",
+    "unavailable": "check_unavailable",
+    "session_invalid": "session_rejected",
+}
+
+
+def coarse_reason(status: str, reason: str | None) -> str | None:
+    if status in USABLE or status == "pending":
+        return None
+    if reason in COARSE_REASONS:
+        return COARSE_REASONS[reason]
+    return BUYER_REASON.get(status)
+
+
 def view(row: Any) -> dict[str, Any]:
+    """The buyer's view. Account and quote only for a check the buyer can use (their own account,
+    which they must confirm); a refusal carries neither."""
     d = row.detail or {}
+    usable = row.status in USABLE
     return {
         "id": str(row.id),
         "status": row.status,
-        "reason": row.reason,
+        "reason": coarse_reason(row.status, row.reason),
         "method": row.method,
         "plan": row.plan,
-        "account": row.email_masked,
-        "quote": d.get("quote"),
+        "account": row.email_masked if usable else None,
+        "quote": d.get("quote") if usable else None,
         "expires_at": (row.created_at + CHECK_TTL).isoformat(),
-        "usable": row.status in USABLE and row.order_id is None,
+        "usable": usable and row.order_id is None,
     }
 
 
@@ -142,10 +171,27 @@ async def create_check(
     session: str | None,
 ) -> dict[str, Any]:
     tid, uid = user.tenant_id, user.id
+    if user.is_instant:
+        # an instant guest account is free to mint: the check would be an account-validity oracle
+        raise Forbidden("Register an account to check eligibility", code="half_check_register")
     target = await requirement(db, tid, product_id, variant_id)
     if target is None:
         raise Conflict("This item needs no eligibility check", code="half_check_not_required")
     method = await _method(db, tid)
+    if method == "manual":
+        open_manual = await db.scalar(
+            select(func.count())
+            .select_from(HalfPriceCheck)
+            .where(
+                HalfPriceCheck.tenant_id == tid,
+                HalfPriceCheck.user_id == uid,
+                HalfPriceCheck.status == "manual_pending",
+                HalfPriceCheck.order_id.is_(None),
+                HalfPriceCheck.created_at > datetime.now(timezone.utc) - CHECK_TTL,
+            )
+        )
+        if int(open_manual or 0) >= MAX_OPEN_MANUAL:
+            raise Conflict("Too many open checks", code="half_check_manual_limit")
     check_id = uuid.uuid4()
     values: dict[str, Any] = {
         "id": check_id,
@@ -244,11 +290,23 @@ async def claim(
     *,
     product_id: uuid.UUID,
     variant_id: uuid.UUID | None,
+    qty: int,
+    target: TargetPlan,
+    account_masked: str | None,
+    confirm_manual: bool = False,
 ) -> uuid.UUID:
     """The usable check an order is created with: the buyer's own, for this product and variant,
-    unconsumed and fresh. Locked, so two orders cannot use one check."""
+    unconsumed and fresh, for the plan / country the source sells NOW, for ONE unit, and for the
+    account the order session belongs to. Locked, so two orders cannot use one check.
+
+    CDK note: a code carries no account, so for ``upstream_cdk`` the vendor's own enforcement at
+    redemption is the only eligibility binding; the check bounds the SALE (one check = one code)
+    but cannot prove who redeems it."""
     if check_id is None:
         raise Validation("This plan needs an eligibility check first", code="half_check_required")
+    if qty != 1:
+        # one check covers one unit: it must not cover ten codes / ten top-ups
+        raise Validation("A half-price plan is sold one unit per order", code="half_check_qty")
     row = (
         await db.execute(
             select(*OPEN)
@@ -265,15 +323,27 @@ async def claim(
         or row.order_id is not None
         or row.status not in USABLE
         or now - row.created_at > CHECK_TTL
+        or row.plan != target.plan
+        or row.country != target.country  # the source changed after the check
     ):
         raise Validation("The eligibility check is not valid", code="half_check_invalid")
+    if row.email_masked is not None and account_masked != row.email_masked:
+        # the session of the order is not the account that was checked
+        raise Validation(
+            "The order account is not the account that was checked",
+            code="half_check_account_mismatch",
+        )
+    if row.status == "manual_pending" and not confirm_manual:
+        raise Validation(
+            "Confirm that staff decide after you pay", code="half_check_confirm_required"
+        )
     return check_id
 
 
 async def attach(
     db: AsyncSession, tenant_id: uuid.UUID, check_id: uuid.UUID, order_id: Any
 ) -> None:
-    await db.execute(
+    res = await db.execute(
         update(HalfPriceCheck.__table__)
         .where(
             HalfPriceCheck.__table__.c.id == check_id,
@@ -282,6 +352,8 @@ async def attach(
         )
         .values(order_id=order_id)
     )
+    if res.rowcount != 1:  # type: ignore[attr-defined]
+        raise Validation("The eligibility check is not valid", code="half_check_invalid")
 
 
 async def order_gate(db: AsyncSession, order: Order) -> None:
@@ -325,14 +397,13 @@ async def decide(
     if row.status != "manual_pending":
         raise InvalidState("This check is not waiting for staff", code="check_not_pending")
     new = "manual_approved" if approve else "manual_refused"
-    await db.execute(
-        update(HalfPriceCheck.__table__)
-        .where(
-            HalfPriceCheck.__table__.c.id == check_id,
-            HalfPriceCheck.__table__.c.tenant_id == admin.tenant_id,
-        )
-        .values(status=new, decided_at=datetime.now(timezone.utc))
+    # the API role cannot write status / decided_at: the SECURITY DEFINER function does (it moves
+    # ``manual_pending`` only, inside the pinned tenant)
+    done = await db.scalar(
+        text("SELECT half_price_checks_decide(:i, :a)"), {"i": check_id, "a": approve}
     )
+    if done != new:
+        raise InvalidState("This check is not waiting for staff", code="check_not_pending")
     await audit(
         db,
         tenant_id=admin.tenant_id,

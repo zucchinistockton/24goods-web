@@ -26,6 +26,7 @@ from app.core.ratelimit import enforce
 from app.core.resources import Resources
 from app.models import Product, ProductVariant, SupplierAccount, SupplierOffer, User
 from app.modules.admin.suppliers import _dec, _iso, platform_admin
+from app.modules.catalog.regions import options_of, source_matches_options
 from app.procurement.funding import funding_card_clash
 from app.suppliers.base import OfferSpec
 from app.suppliers.zovocard.direct import direct_spec
@@ -158,6 +159,32 @@ async def _direct_checks(
         raise Validation(
             "A sandbox supplier cannot take real buyers' sessions in production",
             code="sandbox_in_prod",
+        )
+
+
+async def _options_guard(
+    db: AsyncSession,
+    tenant_id: uuid.UUID,
+    variant_id: uuid.UUID | None,
+    kind: str,
+    params: dict[str, Any],
+) -> None:
+    """A source of a plan x region variant buys exactly that plan in that region: otherwise a
+    half-price sale could be fulfilled with a full-price plan, or in another region (payment
+    audit 2026-11-17, finding 2)."""
+    if variant_id is None or kind == "vcc":
+        return
+    opts = options_of(
+        await db.scalar(
+            select(ProductVariant.options).where(
+                ProductVariant.id == variant_id, ProductVariant.tenant_id == tenant_id
+            )
+        )
+    )
+    if not source_matches_options(params, opts):
+        raise Validation(
+            "The source's plan / payment country must match the variant's plan and region",
+            code="source_options_mismatch",
         )
 
 
@@ -320,6 +347,7 @@ async def add_source(
     params = _params(body.params, kind)
     if not _valid_params(kind, params):
         raise Validation("These source parameters cannot be sent to a supplier", code="bad_params")
+    await _options_guard(db, tid, body.variant_id, kind, params)
     existing = await _offers(db, tid, body.product_id, body.variant_id)
     _same_vendor_product(kind, params, [o for o, _ in existing])
     await _direct_checks(db, res, kind, params, supplier, enabling=body.enabled)
@@ -470,6 +498,7 @@ async def update_source(
                 "These source parameters cannot be sent to a supplier", code="bad_params"
             )
         if params != offer.params:
+            await _options_guard(db, admin.tenant_id, offer.variant_id, offer.kind, params)
             if offer.kind == "direct":
                 await _direct_checks(
                     db, res, "direct", params, supplier, enabling=bool(offer.enabled)
@@ -499,6 +528,9 @@ async def update_source(
     if body.enabled is not None:
         offer.enabled = body.enabled
         if body.enabled:
+            await _options_guard(
+                db, admin.tenant_id, offer.variant_id, offer.kind, dict(offer.params or {})
+            )
             await _direct_checks(
                 db, res, offer.kind, dict(offer.params or {}), supplier, enabling=True
             )

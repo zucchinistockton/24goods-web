@@ -23,6 +23,8 @@ depends_on = None
 
 def upgrade() -> None:
     op.execute("ALTER TABLE product_variants ADD COLUMN options jsonb")
+    # a generated variant starts with a placeholder price: false until staff set one explicitly
+    op.execute("ALTER TABLE product_variants ADD COLUMN price_set boolean NOT NULL DEFAULT true")
     op.execute(
         "ALTER TABLE product_variants ADD CONSTRAINT product_variants_options_shape CHECK "
         "(options IS NULL OR (jsonb_typeof(options) = 'object' "
@@ -41,3 +43,4 @@ def downgrade() -> None:
         "ALTER TABLE product_variants DROP CONSTRAINT IF EXISTS product_variants_options_shape"
     )
     op.execute("ALTER TABLE product_variants DROP COLUMN IF EXISTS options")
+    op.execute("ALTER TABLE product_variants DROP COLUMN IF EXISTS price_set")

@@ -107,6 +107,15 @@ export const API_ERROR_CODES = [
   'half_check_unavailable',
   'half_check_refused',
   'variant_options_taken',
+  'half_check_register',
+  'half_check_manual_limit',
+  'half_check_account_mismatch',
+  'half_check_qty',
+  'half_check_confirm_required',
+  'variant_unpriced',
+  'price_below_cost',
+  'fx_rate_missing',
+  'source_options_mismatch',
 ] as const
 export const CLIENT_ERROR_CODES = ['network', 'server_error', 'timeout', 'unknown'] as const
 export type ContractErrorCode = (typeof API_ERROR_CODES)[number]

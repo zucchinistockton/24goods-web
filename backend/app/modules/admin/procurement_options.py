@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Literal
 
@@ -159,6 +160,8 @@ class GenerateIn(BaseModel):
     regions: list[str] = Field(min_length=1, max_length=10)
     card_id: int | None = Field(None, ge=1, le=10**12)  # upstream_direct: the funding card
     cost_estimate: str | None = Field(None, pattern=r"^[0-9]{1,9}(\.[0-9]{1,6})?$")
+    # per-region cost (a PH plan does not cost what a US plan costs); falls back to cost_estimate
+    cost_estimates: dict[str, str] | None = Field(None, max_length=10)
 
 
 def _plan_name(plan: str, region: str) -> dict[str, str]:
@@ -175,11 +178,11 @@ async def generate_variants(
     res: Resources = Depends(get_res),
 ) -> dict:
     """Create one variant per missing (plan, region) with ONE source each. Idempotent: existing
-    combinations are kept untouched. Prices are NOT set (the product's price is only a
-    placeholder, variant archived, source disabled): staff set the price, check the source and
-    activate both. Regions must be in the
-    owner allowlist AND currently offered by the vendor; a region that is not is reported in
-    ``skipped`` and nothing is forced."""
+    combinations are kept untouched. Prices are NOT set (``price_set`` is false, the product's
+    price is only a placeholder, variant archived, source disabled): the variant cannot be
+    activated until staff set a price explicitly that covers the per-region cost estimate; then
+    check the source. Regions must be in the owner allowlist AND currently offered by the vendor;
+    a region that is not is reported in ``skipped`` and nothing is forced."""
     import re
 
     from app.modules.admin.procurement_sources import _direct_checks, _valid_params
@@ -213,6 +216,9 @@ async def generate_variants(
         region_re.fullmatch(r) for r in regions
     ):
         raise Validation("Invalid plan or region", code="bad_params")
+    for r, c in (body.cost_estimates or {}).items():
+        if not region_re.fullmatch(r) or not re.fullmatch(r"^[0-9]{1,9}(\.[0-9]{1,6})?$", c):
+            raise Validation("Invalid cost estimate", code="bad_params")
     allow = set(rg.settings_of(await _settings(db, tid))["region_allowlist"])
     supplier_id, supplier_env = supplier.id, supplier.env
     await db.rollback()
@@ -272,11 +278,14 @@ async def generate_variants(
                 floor_price_minor=0,
                 sort=n,
                 status="archived",  # staff set the price, then activate
+                price_set=False,  # activation is refused until a price is set explicitly
                 options={"plan": plan, "region": region},
                 sold=0,
             )
             db.add(v)
             await db.flush()
+            raw_cost = (body.cost_estimates or {}).get(region) or body.cost_estimate
+            cost = Decimal(raw_cost) if raw_cost else None
             offer = SupplierOffer(
                 id=uuid.uuid4(),
                 tenant_id=tid,
@@ -285,7 +294,7 @@ async def generate_variants(
                 variant_id=v.id,
                 kind=kind,
                 params=params,
-                cost_estimate=Decimal(body.cost_estimate) if body.cost_estimate else None,
+                cost_estimate=cost,
                 currency=supplier.currency,
                 priority=100,
                 enabled=False,
@@ -303,6 +312,7 @@ async def generate_variants(
                     "options": v.options,
                     "status": v.status,
                     "price_minor": product.price_minor,
+                    "price_set": False,
                 },
                 ip=client_ip(request),
                 detail={
@@ -333,7 +343,7 @@ async def list_half_checks(
     ] = "manual_pending",
 ) -> dict:
     """Manual half-price checks (newest first) with the order they hold, if any."""
-    from app.modules.orders.halfcheck import OPEN
+    from app.modules.orders.halfcheck import MANUAL_SLA, OPEN
 
     q = (
         select(*OPEN, Order.order_no, Order.status.label("order_status"))
@@ -345,6 +355,7 @@ async def list_half_checks(
     if status != "all":
         q = q.where(HalfPriceCheck.status == status)
     rows = (await db.execute(q)).all()
+    now = datetime.now(timezone.utc)
     return {
         "items": [
             {
@@ -358,6 +369,13 @@ async def list_half_checks(
                 "order_status": r.order_status,
                 "created_at": r.created_at.isoformat(),
                 "decided_at": r.decided_at.isoformat() if r.decided_at else None,
+                # a manual check waits for staff: how long, and past the SLA (a PAID order held)
+                "waiting_minutes": int((now - r.created_at).total_seconds() // 60)
+                if r.status == "manual_pending"
+                else None,
+                "overdue": r.status == "manual_pending"
+                and r.order_id is not None
+                and now - r.created_at > MANUAL_SLA,
             }
             for r in rows
         ]

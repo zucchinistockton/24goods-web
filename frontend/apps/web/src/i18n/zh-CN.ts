@@ -248,6 +248,8 @@ const zhCN: WebMessages = {
     retry: '重试',
     close: '关闭',
     account: '账号：{a}',
+    registerFirst: '半价套餐需要注册账号。请先登录，或绑定邮箱以保护您的账号。',
+    confirmManual: '我了解：付款后由团队确认我的资格，如未通过将全额退款。',
     status: {
       passed: '您的账号符合该套餐的资格。',
       manual_pending: '付款后由我们的团队确认您的资格；若未通过，将全额退款。',
@@ -256,6 +258,8 @@ const zhCN: WebMessages = {
       session_invalid: '账号会话被拒绝或已过期，请粘贴新的会话。',
     },
     reason: {
+      not_eligible: '该账号不符合半价套餐的条件。',
+      check_unavailable: '暂时无法完成检测，请稍后再试。',
       subscription_active: '此账号已有生效中的订阅。',
       preflight_blocked: '此账号目前无法升级。',
       purchase_not_yet: '此账号暂时无法购买套餐，请稍后再试。',

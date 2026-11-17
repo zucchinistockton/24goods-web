@@ -38,7 +38,7 @@ log = logging.getLogger("app.procurement.halfcheck")
 
 MAX_AGE = timedelta(minutes=15)  # a sealed session older than this is wiped, never used
 PER_BUYER = (3, 600)  # chatgpt_direct reads per buyer per 10 minutes
-GLOBAL = (60, 3600)  # chatgpt_direct reads per hour, all buyers (shared egress IP)
+GLOBAL = (60, 3600)  # chatgpt_direct reads per hour PER TENANT (the egress IP is shared)
 
 
 @dataclass(frozen=True)
@@ -84,7 +84,7 @@ async def _source(
             if row.variant_id is not None
             else SupplierOffer.variant_id.is_(None)
         )
-        r = (
+        rows = (
             await db.execute(
                 select(SupplierOffer.params, SupplierAccount)
                 .join(SupplierAccount, SupplierAccount.id == SupplierOffer.supplier_id)
@@ -98,9 +98,18 @@ async def _source(
                     SupplierAccount.adapter == "zovocard",
                 )
                 .order_by(SupplierOffer.priority, SupplierOffer.created_at)
-                .limit(1)
             )
-        ).first()
+        ).all()
+        # the source must still sell the plan / country the check was made for
+        r = next(
+            (
+                x
+                for x in rows
+                if (x.params or {}).get("plan") == row.plan
+                and (x.params or {}).get("payment_country") == row.country
+            ),
+            None,
+        )
         kind = await db.scalar(select(Tenant.kind).where(Tenant.id == tenant_id))
     if r is None or kind != service.PLATFORM:
         return None
@@ -168,24 +177,48 @@ async def _via_chatgpt(
     ok, _ = await hit(ctx.redis, "proc:halfcheck-user", f"{tenant_id}:{row.user_id}", *PER_BUYER)
     if not ok:
         return Outcome("unavailable", "rate_limited")
-    ok, _ = await hit(ctx.redis, "proc:halfcheck-global", "all", *GLOBAL)
-    if not ok:
-        return Outcome("unavailable", "rate_limited")
     try:
         token, account_id = chatgpt_check.session_fields(credential)
+    except ValueError:  # the sealed document was not JSON: cannot happen after validation
+        return Outcome("unavailable", "unreadable_session")
+    # the per-tenant budget is spent only by a read that really goes to ChatGPT (a session that
+    # fails locally costs nothing), and one tenant cannot exhaust another's
+    ok, _ = await hit(ctx.redis, "proc:halfcheck-global", str(tenant_id), *GLOBAL)
+    if not ok:
+        await _signal_limit(ctx, tenant_id)
+        return Outcome("unavailable", "rate_limited")
+    try:
         parsed = await chatgpt_check.read_eligibility(ctx.chatgpt_http, token, account_id)
     except chatgpt_check.CheckUnavailable as exc:
         if exc.reason == "session_expired":
             return Outcome("session_invalid", "session_expired")
         return Outcome("unavailable", exc.reason)
-    except ValueError:  # the sealed document was not JSON: cannot happen after validation
-        return Outcome("unavailable", "unreadable_session")
     eligible, why = chatgpt_check.half_eligible(parsed)
     detail = {
         "plan_type": parsed["plan_type"],
         "campaigns": [c["key"] for c in parsed["campaigns"]],
     }
     return Outcome("passed" if eligible else "ineligible", why, detail)
+
+
+async def _signal_limit(ctx: ProcurementContext, tenant_id: uuid.UUID) -> None:
+    """Staff signal (at most one per hour): the ChatGPT read budget is spent, so buyers are being
+    refused; switch the check method to ``manual`` / ``vendor_preflight`` in Regions."""
+    first, _ = await hit(ctx.redis, "proc:halfcheck-signal", str(tenant_id), 1, 3600)
+    if not first:
+        return
+    from app.core.audit import audit
+
+    async with tenant_session(ctx.maker, tenant_id) as db:
+        await audit(
+            db,
+            tenant_id=tenant_id,
+            action="half_check.limit_hit",
+            target="tenant:procurement_options",
+            detail={"method": "chatgpt_direct", "per_hour": GLOBAL[0], "hint": "switch_to_manual"},
+            severity="warning",
+        )
+        await db.commit()
 
 
 async def run_check(ctx: ProcurementContext, tenant_id: uuid.UUID, check_id: uuid.UUID) -> Outcome:

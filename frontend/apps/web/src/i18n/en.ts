@@ -248,6 +248,8 @@ export default {
     retry: 'Try again',
     close: 'Close',
     account: 'Account: {a}',
+    registerFirst: 'Half-price plans need a registered account. Sign in or secure your account with an e-mail first.',
+    confirmManual: 'I understand that the team confirms my eligibility after I pay, and I am refunded in full if it is declined.',
     status: {
       passed: 'Your account is eligible for this plan.',
       manual_pending: 'Our team will confirm your eligibility after you pay. If it is declined you are refunded in full.',
@@ -256,6 +258,8 @@ export default {
       session_invalid: 'The account session was refused or has expired. Paste a fresh one.',
     },
     reason: {
+      not_eligible: 'This account is not eligible for the half-price plan.',
+      check_unavailable: 'The check could not be completed right now. Please try again later.',
       subscription_active: 'This account already has an active subscription.',
       preflight_blocked: 'This account cannot be upgraded right now.',
       purchase_not_yet: 'This account cannot buy a plan yet. Please try again later.',

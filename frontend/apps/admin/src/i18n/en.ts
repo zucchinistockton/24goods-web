@@ -883,6 +883,8 @@ export default {
     done: 'Done',
     tab: { jobs: 'Jobs', sources: 'Sources', cost: 'Costs', pricing: 'Pricing', regions: 'Regions' },
     reason: {
+      region_not_offered: 'Region no longer offered by the vendor: the buyer paid for a region that was withdrawn; refund the order or retry later',
+      'no_source:region_not_offered': 'Region no longer offered by the vendor: the buyer paid for a region that was withdrawn; refund the order or retry later',
       half_price_check_manual: 'Half-price check waits for staff: approve it under Regions, then retry',
       half_price_check_refused: 'Staff refused the half-price eligibility: refund the order',
       half_price_ineligible: 'The vendor refused half price for this account before any charge: refund the order',
@@ -1135,6 +1137,7 @@ export default {
     approved: 'Approved. Retry the held job.',
     refused: 'Refused. Refund the order.',
     refuseConfirm: 'Refuse this buyer’s half-price eligibility? The order must then be refunded.',
+    overdue: 'Waiting {n} min: a paid order is held',
     afterApprove: 'The vendor still enforces half price when the order runs: an ineligible account fails before any charge and is refused here too.',
     generate: 'Generate plan × region variants',
     gen: {

@@ -6,7 +6,7 @@
  * nothing and staff confirm after payment. The session lives in this component's memory only
  * while the flow is open and is handed to the parent only when the order itself needs it.
  */
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { DirectProduct, HalfCheck, HalfCheckMethod } from '@24goods/shared'
 import { api } from '../api'
@@ -24,12 +24,14 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{
   'update:show': [v: boolean]
-  passed: [id: string, session: string | null]
+  passed: [id: string, session: string | null, confirmed: boolean]
 }>()
 const { t, te } = useI18n()
 
 const step = ref<'session' | 'busy' | 'result'>('session')
 const result = ref<HalfCheck | null>(null)
+/** a `manual` check is decided by staff after payment: the buyer ticks that they understand */
+const understood = ref(false)
 let kept: string | null = null
 
 const askSession = computed(() => props.show && step.value === 'session')
@@ -47,6 +49,7 @@ watch(
   () => props.show,
   (v) => {
     result.value = null
+    understood.value = false
     kept = null
     if (!v) return
     if (props.method === 'manual') {
@@ -86,14 +89,19 @@ function repaste() {
 function proceed() {
   const r = result.value
   if (!r || !ok.value) return
+  if (r.status === 'manual_pending' && !understood.value) return
   const s = kept
   kept = null
-  emit('passed', r.id, s)
+  emit('passed', r.id, s, r.status === 'manual_pending')
 }
 function close() {
   kept = null
+  result.value = null
   emit('update:show', false)
 }
+onBeforeUnmount(() => {
+  kept = null // the pasted session never outlives the component
+})
 </script>
 
 <template>
@@ -117,7 +125,8 @@ function close() {
         </h2>
         <p class="msg">{{ ok ? t(`halfcheck.status.${result.status}`) : reasonText }}</p>
         <p v-if="result.account" class="muted small">{{ t('halfcheck.account', { a: result.account }) }}</p>
-        <van-button v-if="ok" block round type="primary" size="large" @click="proceed">{{ t('halfcheck.continue') }}</van-button>
+        <van-checkbox v-if="result.status === 'manual_pending'" v-model="understood" class="understood">{{ t('halfcheck.confirmManual') }}</van-checkbox>
+        <van-button v-if="ok" block round type="primary" size="large" :disabled="result.status === 'manual_pending' && !understood" @click="proceed">{{ t('halfcheck.continue') }}</van-button>
         <template v-else>
           <van-button v-if="result.status === 'session_invalid'" block round type="primary" size="large" @click="repaste">
             {{ t('halfcheck.repaste') }}
@@ -155,5 +164,9 @@ function close() {
 }
 .close {
   margin-top: 8px;
+}
+.understood {
+  margin: 0 0 16px;
+  text-align: left;
 }
 </style>

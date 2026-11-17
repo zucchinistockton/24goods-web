@@ -359,6 +359,9 @@ export interface ManualCheck {
   order_status: string | null
   created_at: string
   decided_at: string | null
+  /** minutes a `manual_pending` check has waited; `overdue` = a PAID order is held past the SLA */
+  waiting_minutes: number | null
+  overdue: boolean
 }
 export interface GenerateInput {
   product_id: string
@@ -368,6 +371,8 @@ export interface GenerateInput {
   regions: string[]
   card_id?: number
   cost_estimate?: string
+  /** per-region cost (region -> decimal string); falls back to `cost_estimate` */
+  cost_estimates?: Record<string, string>
 }
 export interface GenerateResult {
   created: { plan: string; region: string; variant_id: string }[]

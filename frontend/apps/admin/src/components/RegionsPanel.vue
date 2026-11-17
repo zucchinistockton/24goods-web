@@ -99,7 +99,8 @@ async function decide(c: ManualCheck, approve: boolean) {
       </el-table-column>
       <el-table-column :label="t('regions.plan')" min-width="120"><template #default="{ row }"><span class="mono">{{ row.plan }}</span></template></el-table-column>
       <el-table-column :label="t('regions.status')" width="150">
-        <template #default="{ row }"><el-tag size="small" :type="row.status === 'manual_pending' ? 'warning' : row.status === 'manual_approved' ? 'success' : 'info'">{{ t(`regions.st.${row.status}`) }}</el-tag></template>
+        <template #default="{ row }"><el-tag size="small" :type="row.status === 'manual_pending' ? 'warning' : row.status === 'manual_approved' ? 'success' : 'info'">{{ t(`regions.st.${row.status}`) }}</el-tag>
+          <el-tag v-if="asCheck(row).overdue" size="small" type="danger" class="overdue">{{ t('regions.overdue', { n: asCheck(row).waiting_minutes ?? 0 }) }}</el-tag></template>
       </el-table-column>
       <el-table-column width="220">
         <template #default="{ row }">
@@ -117,6 +118,9 @@ async function decide(c: ManualCheck, approve: boolean) {
 <style scoped>
 .gap {
   margin-top: 16px;
+}
+.overdue {
+  margin-left: 4px;
 }
 .methods {
   display: flex;

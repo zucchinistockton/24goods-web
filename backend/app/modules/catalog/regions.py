@@ -48,6 +48,24 @@ def options_of(raw: Any) -> dict[str, str] | None:
     return None
 
 
+def source_matches_options(params: dict[str, Any] | None, options: dict[str, str] | None) -> bool:
+    """Does a source (offer params) buy exactly what the variant's ``options`` sell?
+
+    A source pinned to another plan or another payment country would sell a full-price plan for a
+    half-price sale (payment audit 2026-11-17, finding 1-2). ``options is None`` (a plain variant)
+    pins nothing. A source without ``payment_country`` matches only a US region or a non-GPT
+    vendor product (Grok / Claude are USD only)."""
+    if options is None:
+        return True
+    p = params or {}
+    if p.get("plan") != options["plan"]:
+        return False
+    country = p.get("payment_country")
+    if country is not None:
+        return country == options["region"]
+    return p.get("product", "gpt") != "gpt" or options["region"] == "US"
+
+
 def settings_of(ts: dict[str, Any] | None) -> dict[str, Any]:
     """Owner settings (``tenants.settings['procurement_options']``), always complete and typed."""
     raw = (ts or {}).get(SETTINGS_KEY)

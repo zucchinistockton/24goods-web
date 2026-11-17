@@ -305,6 +305,7 @@ async def create_order(
     direct: direct_svc.DirectSeal | None = None,
     cred_sealer: CredentialSealer | None = None,
     half_check_id: uuid.UUID | None = None,
+    half_check_confirm: bool = False,
 ) -> tuple[Order, Message | None]:
     """Create a pending order. ``amount_minor`` is the SUBTOTAL (storefront markup included):
     the promo discount is subtracted and the channel fee added here, server-side
@@ -330,15 +331,20 @@ async def create_order(
     ):
         # half-price plans (plus_half, *_half) are never orderable without a passed check of this
         # buyer (check-then-order); every other path (cart, quote) passes none and is refused
-        if await halfcheck.requirement(
+        half_target = await halfcheck.requirement(
             db, buyer.tenant_id, product_id, variant.id if variant else None
-        ):
+        )
+        if half_target is not None:
             half_claimed = await halfcheck.claim(
                 db,
                 buyer,
                 half_check_id,
                 product_id=product_id,
                 variant_id=variant.id if variant else None,
+                qty=qty,
+                target=half_target,
+                account_masked=direct.email_masked if direct is not None else None,
+                confirm_manual=half_check_confirm,
             )
     stock_reserved = 0
     if product_id is not None and delivery_mode == "manual" and kind == "goods":
@@ -468,6 +474,7 @@ async def buy_now(
     cred_sealer: CredentialSealer | None = None,
     redis: Any = None,
     half_check_id: uuid.UUID | None = None,
+    half_check_confirm: bool = False,
 ) -> tuple[Order, Message | None]:
     product = await get_active_product(db, product_id)
     if product.delivery_mode == "upstream_direct" and storefront is not None:
@@ -552,6 +559,7 @@ async def buy_now(
         direct=direct,
         cred_sealer=cred_sealer,
         half_check_id=half_check_id,
+        half_check_confirm=half_check_confirm,
     )
     if ev is not None:
         await promo_svc.reserve(db, ev, buyer, order_id=order.id, ip=ip)
