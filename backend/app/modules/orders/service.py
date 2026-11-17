@@ -643,6 +643,9 @@ async def pay_url(
         raise InvalidState("Order is not awaiting payment")
     if order.expires_at is not None and order.expires_at <= utcnow():
         raise InvalidState("Order has expired")
+    # an unpaid virtual-card order from before the stop (owner decision 2026-11-17) cannot be paid:
+    # the card would be bought and the buyer could never see it
+    ensure_sellable(res.settings, order.delivery_mode)
     usdt = is_usdt(channel)
     if usdt and not res.bepusdt.configured:
         raise Unavailable("Payment channel not configured")

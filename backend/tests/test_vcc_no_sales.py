@@ -138,3 +138,54 @@ async def test_delivery_refuses_to_reveal_a_card_order_even_with_a_valid_token(e
     assert r.status_code == 409
     view = await buyer.get(f"/api/v1/orders/{oid}")
     assert view.json()["can_reveal"] is False
+
+
+async def test_an_unpaid_card_order_from_before_the_stop_cannot_be_paid(env):
+    """Security review 2026-11-17: an order created while selling was on must not be payable after
+    the stop, or a card would be bought that the buyer can never see."""
+    import uuid
+
+    buyer, user = await env.login("buyer")
+    p = await env.product(mode="upstream_vcc")
+    oid = uuid.uuid4()
+    async with env.owner_session() as db:
+        await db.execute(
+            text(
+                "INSERT INTO orders (id, tenant_id, order_no, buyer_id, product_id, title, qty, "
+                "amount_minor, subtotal_minor, currency, status, delivery_mode) VALUES "
+                "(:i, :t, :n, :b, :p, 'x', 1, 2500, 2500, 'CNY', 'pending_payment', 'upstream_vcc')"
+            ),
+            {"i": oid, "t": env.tenant_id, "n": "G" + uuid.uuid4().hex[:12],
+             "b": user.id, "p": p.id},
+        )  # fmt: skip
+        await db.commit()
+    r = await buyer.post(f"/api/v1/orders/{oid}/pay", json={"channel": "zpay_alipay"})
+    assert _err(r) == CODE
+    assert await env.scalar("SELECT count(*) FROM payment_attempts") == 0
+
+
+async def test_guest_lookup_reveal_refuses_a_card_order(env):
+    """The guest path (order number + access code) goes through the same refusal."""
+    _buyer, user = await env.login("buyer")
+    p = await env.product(mode="upstream_vcc")
+    import uuid
+
+    oid = uuid.uuid4()
+    async with env.owner_session() as db:
+        await db.execute(
+            text(
+                "INSERT INTO orders (id, tenant_id, order_no, buyer_id, product_id, title, qty, "
+                "amount_minor, subtotal_minor, currency, status, delivery_mode) VALUES "
+                "(:i, :t, :n, :b, :p, 'x', 1, 100, 100, 'CNY', 'delivered', 'upstream_vcc')"
+            ),
+            {"i": oid, "t": env.tenant_id, "n": "G" + uuid.uuid4().hex[:12],
+             "b": user.id, "p": p.id},
+        )  # fmt: skip
+        await db.commit()
+    from app.modules.orders import service
+
+    with pytest.raises(Exception) as exc:
+        async with env.api_session() as db:
+            order = await db.get(service.Order, oid)
+            await service.reveal_for(env.res, order, user.id)
+    assert "Nothing to reveal" in str(exc.value) or getattr(exc.value, "status", None) == 409

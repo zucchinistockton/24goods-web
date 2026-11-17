@@ -590,6 +590,8 @@ async def pay_checkout(
         raise InvalidState("Checkout is not awaiting payment")
     if co.expires_at is not None and co.expires_at <= utcnow():
         raise InvalidState("Checkout has expired")
+    for o in orders:  # no virtual card is paid for any more (owner decision 2026-11-17)
+        ensure_sellable(res.settings, o.delivery_mode)
     usdt = is_usdt(channel)
     if usdt and not res.bepusdt.configured:
         raise Unavailable("Payment channel not configured")
