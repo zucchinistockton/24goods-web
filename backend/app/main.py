@@ -259,7 +259,8 @@ def create_app(res: Resources | None = None, *, background: bool = True) -> Fast
             app.state.res = build_resources(settings)
         r: Resources = app.state.res
         tasks: list[asyncio.Task[None]] = []
-        if owned and settings.is_prod:
+        if settings.is_prod:
+            # every entry point: serve.py passes its own resources (``owned`` is False there)
             await _assert_api_role(r)
         trim()  # drop import/startup garbage from RSS
         if background:

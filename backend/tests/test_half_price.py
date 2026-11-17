@@ -1053,6 +1053,24 @@ async def test_account_binding_is_keyed_and_compared_in_procurement_before_any_s
     assert (await _job(hp, ok)).state in ("accepted_pending", "fulfilled")
 
 
+async def test_a_forged_account_id_next_to_another_accounts_token_never_executes(env, hp):
+    """Round 3: the binding reads the token's claims; the editable ``account.id`` is ignored."""
+    vendor = await _setup(env, hp)
+    buyer, _ = await env.login("buyer")
+    chk = (await _check(buyer, hp, _session_for(new_marker(), "acct-mine"))).json()
+    assert chk["status"] == "passed"
+    forged = json.loads(_session_for(new_marker(), "acct-other"))
+    forged["account"]["id"] = "acct-mine"  # the checked account's id, beside acct-other's token
+    r = await _order(buyer, hp, json.dumps(forged), chk["id"])
+    # the session validator already refuses a JSON account id that differs from the token's claim
+    assert r.status_code == 422 and r.json()["error"]["code"] == "session_account_mismatch"
+    assert vendor.direct_executions == 0
+    # and the binding itself reads the claim, so the forged field could not match either
+    from app.procurement.halfcheck import identity_of
+
+    assert identity_of("gpt", json.dumps(forged)) == "acct:acct-other"
+
+
 async def test_a_check_without_a_binding_never_executes(env, hp):
     vendor = await _setup(env, hp)
     buyer, _ = await env.login("buyer")

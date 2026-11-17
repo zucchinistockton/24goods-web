@@ -1266,6 +1266,17 @@ reasons for the three new `error_code`s.
   per variant. `GET /half-checks/required` is rate limited (60/min per user, 120/min per IP).
 * `region_offered` fails closed when the vendor's region list is empty and the source pins a country.
 
+* **Round 3 (re-audit of round 2).** (a) The account identity is read ONLY from the `accessToken` claims
+  (`https://api.openai.com/auth` `chatgpt_account_id`, else `user_id`, else the profile e-mail), never from the
+  buyer-editable `account.id` / `user.email` fields: a forged claim breaks the token signature, so the vendor
+  refuses the token before any charge; no claims → no identity → fail closed. The session validator already
+  refuses a JSON account id that differs from the token's claim (`session_account_mismatch`). (b) The production
+  role assertion (`current_user = app_api`) runs on every entry point, including `python -m app.serve`, which
+  passes its own resources. (c) **Accepted residual risk:** a `manual` check carries no account binding (no
+  session is collected); for a direct source the gate is the vendor's preflight on the account that actually
+  pays, which refuses every ineligible reason before any charge. Staff approval is advisory there. Revisit
+  before real money if manual checks are used for direct sources.
+
 ### 20.7 Left open
 
 * The e2e smoke scenario was not extended (CI runs it); the typecheck of the new Vue components ran only in CI.

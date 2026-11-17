@@ -34,6 +34,7 @@ from app.procurement import chatgpt_check, service
 from app.procurement.context import ProcurementContext
 from app.suppliers.base import SupplierError
 from app.suppliers.direct_credential import CredentialError, validate_credential
+from app.suppliers.gpt_session import GptSessionError, jwt_claims
 from app.suppliers.registry import SupplierConfigError
 
 log = logging.getLogger("app.procurement.halfcheck")
@@ -54,9 +55,12 @@ class Outcome:
 
 
 def identity_of(product: str, credential: str) -> str | None:
-    """The canonical identity of the account a session belongs to: the ChatGPT account id, else
-    the lower-cased FULL e-mail; ``None`` when none can be derived (Claude / Grok sessions carry
-    no account). Never logged."""
+    """The canonical identity of the account a session belongs to, taken ONLY from the claims of
+    the session's ``accessToken``: the ChatGPT account id, else the user id, else the lower-cased
+    profile e-mail. The sibling JSON fields (``account.id``, ``user.email``) are buyer-editable and
+    are ignored: forging a claim breaks the token's signature, so the vendor refuses that token
+    before any charge. ``None`` when none can be derived (Claude / Grok sessions, a token that is
+    not a JWT): the caller fails closed. Never logged."""
     if product != "gpt":
         return None
     try:
@@ -64,14 +68,22 @@ def identity_of(product: str, credential: str) -> str | None:
         data, _ = json.JSONDecoder().raw_decode(credential[max(start, 0) :])
     except ValueError:
         return None
-    if not isinstance(data, dict):
+    token = data.get("accessToken") if isinstance(data, dict) else None
+    if not isinstance(token, str):
         return None
-    acct = data.get("account")
-    aid = acct.get("id") if isinstance(acct, dict) else None
+    try:
+        claims = jwt_claims(token)
+    except GptSessionError:
+        return None
+    auth = claims.get("https://api.openai.com/auth")
+    profile = claims.get("https://api.openai.com/profile")
+    aid = auth.get("chatgpt_account_id") if isinstance(auth, dict) else None
     if isinstance(aid, str) and aid:
         return f"acct:{aid}"
-    user = data.get("user")
-    email = user.get("email") if isinstance(user, dict) else None
+    uid = auth.get("user_id") if isinstance(auth, dict) else None
+    if isinstance(uid, str) and uid:
+        return f"user:{uid}"
+    email = profile.get("email") if isinstance(profile, dict) else None
     if isinstance(email, str) and "@" in email:
         return f"mail:{email.strip().lower()}"
     return None
