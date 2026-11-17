@@ -17,9 +17,11 @@ Every query filters by the caller's tenant. Amounts are ``Decimal`` strings next
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
+import json
 import uuid
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -35,7 +37,16 @@ from app.core.errors import Conflict, NotFound, Validation
 from app.core.money import percent_of, to_decimal
 from app.core.ratelimit import enforce
 from app.core.resources import Resources
-from app.models import Order, Product, ProductVariant, SupplierOffer, Tenant, User
+from app.models import (
+    AfterSales,
+    Order,
+    Payment,
+    Product,
+    ProductVariant,
+    SupplierOffer,
+    Tenant,
+    User,
+)
 from app.modules.admin import procurement_cost as cost_report
 from app.modules.admin import variants as variant_svc
 from app.modules.admin.products import patch as product_patch
@@ -52,6 +63,7 @@ class FxIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     currency: str = Field(pattern=r"^[A-Z]{3}$")
     per_usd: str = Field(pattern=r"^[0-9]{1,6}(\.[0-9]{1,6})?$")
+    confirm: bool = False  # needed for a move of more than ``fx_max_change``
 
 
 class SettingsIn(BaseModel):
@@ -75,6 +87,9 @@ class SettingsIn(BaseModel):
     round_step_minor: int | None = None
     service_fee_direct: dict[str, str] | None = None
     uses_per_card: dict[str, int] | None = None
+    fx_bands: dict[str, dict[str, str]] | None = None
+    fx_max_age_days: int | None = None
+    fx_max_change: str | None = Field(None, max_length=16)
     fx: FxIn | None = None
 
 
@@ -91,6 +106,9 @@ class ApplyIn(BaseModel):
     variant_id: uuid.UUID | None = None
     offer_id: uuid.UUID | None = None
     current_minor: int = Field(ge=0, le=10**12)  # the price the staff member saw
+    recommended_minor: int = Field(ge=1, le=10**12)  # the recommendation the staff member saw
+    fingerprint: str = Field(pattern=r"^[0-9a-f]{16}$")  # hash of the inputs that produced it
+    confirm_large_drop: bool = False
 
 
 def _channel(res: Resources, ts: dict[str, Any]) -> tuple[str, Decimal]:
@@ -142,16 +160,18 @@ async def put_settings(
     try:
         cm.validate_patch(patch)
     except cm.CostSettingsError as exc:
-        raise Validation(str(exc), code="bad_cost_settings") from None
+        raise Validation(str(exc), code=exc.code) from None
     tenant = await _tenant_row(db, admin.tenant_id)
     cur_ts = dict(tenant.settings or {})
     before = cm.from_tenant(cur_ts)
     new = cm.merged(before, patch)
     if body.fx is not None:
         try:
-            new = cm.set_rate(new, body.fx.currency, body.fx.per_usd, str(admin.id))
+            new = cm.set_rate(
+                new, body.fx.currency, body.fx.per_usd, str(admin.id), confirm=body.fx.confirm
+            )
         except cm.CostSettingsError as exc:
-            raise Validation(str(exc), code="bad_cost_settings") from None
+            raise Validation(str(exc), code=exc.code) from None
     if new == before:
         ch, rate = _channel(res, cur_ts)
         return _view(new, ch, rate)
@@ -249,14 +269,14 @@ def _source(offer: SupplierOffer | None, st: dict[str, Any], cost_minor: int | N
     and the reason its supplier price is unknown, if it is."""
     if offer is None:
         per = cm.rate_for(st, currency)
-        usd = cm.usd_from_minor(cost_minor, per) if cost_minor is not None else None
+        usd = cm.usd_from_minor(cost_minor, per) if cost_minor else None  # 0 / missing: unknown
         return cm.Source("manual", usd), (None if usd is not None else "supplier_price")
     p = offer.params or {}
     direct = p.get("product") if offer.kind == "direct" else None
     code = str(p.get("product_code") or "").lower()
     tier = "pro20x" if offer.kind == "vcc" and ("pro" in code or "20x" in code) else "standard"
     usd = None
-    if offer.cost_estimate is not None:
+    if offer.cost_estimate is not None and offer.cost_estimate > 0:
         per = cm.rate_for(st, offer.currency)
         usd = Decimal(offer.cost_estimate) / per if per else None
     src = cm.Source(offer.kind, usd, direct if direct in cm.DIRECT_PRODUCTS else None, tier)
@@ -290,8 +310,26 @@ def _row(
             "diff_minor": minor - price_minor,
             "diff": cm.q(to_decimal(minor - price_minor), cm.CENT),
         }
-    elif rec_usd is None and src.supplier_price_usd is not None:
+    elif rec_usd is None and src.supplier_price_usd is not None and src.supplier_price_usd > 0:
         est.incomplete.append("target_unreachable")
+    stale = cm.fx_stale(st, cur, datetime.now(timezone.utc))
+    # what the recommendation was computed from: any change to it invalidates a shown price
+    fingerprint = hashlib.sha256(
+        json.dumps(
+            {
+                "s": {
+                    k: ({c: e["per_usd"] for c, e in v_.items()} if k == "fx" else v_)
+                    for k, v_ in st.items()
+                    if k != "targets"
+                },
+                "m": str(margin),
+                "g": str(channel_rate),
+                "src": [src.kind, str(src.supplier_price_usd), src.direct_product, src.card_tier],
+                "rec": rec["minor"] if rec else None,
+            },
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()[:16]
     return {
         "key": ":".join(str(x) for x in (p.id, v.id if v else "", offer.id if offer else "")),
         "product_id": str(p.id),
@@ -328,6 +366,9 @@ def _row(
         "net_margin_pct": cm.pct(est.net_margin),
         "target_margin_pct": cm.pct(margin),
         "recommended": rec,
+        "fingerprint": fingerprint,
+        "fx_stale": stale,
+        "large_drop": bool(rec and rec["minor"] * 2 < price_minor),
         "incomplete": est.incomplete,
         "cost_incomplete": bool(est.incomplete),
     }
@@ -415,6 +456,7 @@ async def units(
     )
     rows = await _unit_rows(db, tid, st, rate, products)
     out = page.wrap(rows[:MAX_ROWS_PER_PAGE], int(total))
+    out["truncated"] = len(rows) > MAX_ROWS_PER_PAGE  # never a silent cut
     out["fx"] = st["fx"]
     return out
 
@@ -427,44 +469,83 @@ async def apply(
     db: AsyncSession = Depends(get_db),
     res: Resources = Depends(get_res),
 ) -> dict:
-    """Apply the recommended price of one unit through the normal audited price edit."""
+    """Apply the recommended price of one unit through the normal audited price edit.
+
+    The tenant settings row and the product / variant row are locked BEFORE the comparison, and
+    the standard patch runs in the same transaction: a concurrent price edit or settings change
+    ends in a 409, never in a silent overwrite. The request carries the price AND the
+    recommendation the staff member saw (plus a fingerprint of its inputs); the server applies
+    only a recomputed recommendation that is exactly that."""
     await enforce(res.redis, "pricing:apply", str(admin.id), 60, 3600)
     tid = admin.tenant_id
+    tenant = await _tenant_row(db, tid)  # lock 1: the settings the maths reads
+    # lock 2: the row whose price changes (populate_existing: never a stale identity-map copy)
+    lock = {"populate_existing": True}
     p = await db.scalar(
-        select(Product).where(Product.id == body.product_id, Product.tenant_id == tid)
+        select(Product)
+        .where(Product.id == body.product_id, Product.tenant_id == tid)
+        .with_for_update()
+        .execution_options(**lock)
     )
     if p is None or p.archived_at is not None:
         raise NotFound("Product not found")
     v = None
     if body.variant_id is not None:
         v = await db.scalar(
-            select(ProductVariant).where(
+            select(ProductVariant)
+            .where(
                 ProductVariant.id == body.variant_id,
                 ProductVariant.product_id == p.id,
                 ProductVariant.tenant_id == tid,
             )
+            .with_for_update()
+            .execution_options(**lock)
         )
         if v is None:
             raise NotFound("Variant not found")
-    ts = dict(await db.scalar(select(Tenant.settings).where(Tenant.id == tid)) or {})
+    ts = dict(tenant.settings or {})
     st = cm.from_tenant(ts)
     _ch, rate = _channel(res, ts)
-    rows = [
+    cands = [
         r
         for r in await _unit_rows(db, tid, st, rate, [p])
         if r["variant_id"] == (str(v.id) if v else None)
-        and (body.offer_id is None or r["offer_id"] == str(body.offer_id))
     ]
-    if not rows:
+    if body.offer_id is not None:
+        cands = [r for r in cands if r["offer_id"] == str(body.offer_id)]
+    elif len(cands) > 1:
+        raise Validation("Name the source (offer_id) to apply", code="offer_required")
+    if not cands:
         raise NotFound("Source not found")
-    row = rows[0]
+    row = cands[0]
+    if row["source"]["enabled"] is False:
+        raise Validation("This source is disabled", code="offer_disabled")
     rec = row["recommended"]
     if rec is None or row["cost_incomplete"]:
         raise Validation(
             "No recommendation for this unit (cost incomplete)", code="no_recommendation"
         )
-    if row["price"]["minor"] != body.current_minor:
-        raise Conflict("The price changed since you loaded the table", code="price_changed")
+    if row["fx_stale"]:
+        raise Conflict("The exchange rate is out of date: update it first", code="fx_stale")
+    current = row["price"]["minor"]
+    if (
+        current != body.current_minor
+        or rec["minor"] != body.recommended_minor
+        or row["fingerprint"] != body.fingerprint
+    ):
+        raise Conflict(
+            "The price or the recommendation changed: reload", code="recommendation_changed"
+        )
+    if rec["minor"] == current:
+        return {"applied": False, "noop": True, "price": {"minor": current, "currency": p.currency}}
+    floor = v.floor_price_minor if v else p.floor_price_minor
+    if rec["minor"] < floor:
+        raise Validation("The recommendation is below the floor price", code="below_floor")
+    if rec["minor"] * 2 < current and not body.confirm_large_drop:
+        raise Validation(
+            "The recommendation is more than 50 % below the current price",
+            code="confirm_large_drop",
+        )
     new_price = rec["amount"]
     await audit(
         db,
@@ -473,10 +554,15 @@ async def apply(
         actor_id=admin.id,
         actor_role=admin.role,
         target=f"variant:{v.id}" if v else f"product:{p.id}",
-        before={"price_minor": body.current_minor, "currency": p.currency},
+        before={"price_minor": current, "currency": p.currency},
         after={"price_minor": rec["minor"], "currency": p.currency},
         ip=client_ip(request),
-        detail={"offer_id": row["offer_id"], "target_margin_pct": row["target_margin_pct"]},
+        detail={
+            "offer_id": row["offer_id"],
+            "target_margin_pct": row["target_margin_pct"],
+            "fingerprint": row["fingerprint"],
+            "large_drop_confirmed": bool(body.confirm_large_drop and rec["minor"] * 2 < current),
+        },
     )
     ip = client_ip(request)
     if v is not None:
@@ -491,6 +577,10 @@ async def apply(
 
 # ---------------------------------------------------------------------------------------------
 # actual per order
+
+
+def _dec_str(d: Decimal) -> str:
+    return format(d.quantize(cm.CENT), "f")
 
 
 async def _actual_items(
@@ -509,47 +599,91 @@ async def _actual_items(
     st = cm.from_tenant(ts)
     rep = await cost_report.margin(date_from, date_to, admin, page, db)
     ids = [uuid.UUID(i["order_id"]) for i in rep["items"]]
-    chan: dict[uuid.UUID, tuple[str | None, int]] = {}
+    orders: dict[uuid.UUID, Any] = {}
+    pay_channel: dict[uuid.UUID, str] = {}
+    adjusted: set[uuid.UUID] = set()
     if ids:
-        for oid, ch, amount in (
+        for o in (
             await db.execute(
-                select(Order.id, Order.channel, Order.amount_minor).where(
-                    Order.tenant_id == tid, Order.id.in_(ids)
+                select(
+                    Order.id, Order.channel, Order.amount_minor, Order.fee_minor,
+                    Order.reseller_markup_minor,
+                ).where(Order.tenant_id == tid, Order.id.in_(ids))
+            )
+        ).all():  # fmt: skip
+            orders[o.id] = o
+        for oid, ch in (
+            await db.execute(
+                select(Payment.order_id, Payment.channel).where(
+                    Payment.tenant_id == tid, Payment.order_id.in_(ids)
                 )
             )
         ).all():
-            chan[oid] = (ch, amount)
+            pay_channel[oid] = ch
+        # any after-sales case that is not rejected may have changed what we earned or paid
+        adjusted = set(
+            await db.scalars(
+                select(AfterSales.order_id).where(
+                    AfterSales.tenant_id == tid,
+                    AfterSales.order_id.in_(ids),
+                    AfterSales.status != "rejected",
+                )
+            )
+        )
     for it in rep["items"]:
         oid = uuid.UUID(it["order_id"])
-        ch, amount = chan.get(oid, (None, 0))
+        o = orders.get(oid)
+        reasons: list[str] = []
+        if it["cost_incomplete"]:
+            reasons.append("ledger_incomplete")
+        if it["unreconciled_jobs"]:
+            reasons.append("unreconciled")
+        if oid in adjusted:
+            reasons.append("after_sales_adjusted")
+        # revenue = what the platform earned: the channel surcharge (pass-through, it exists to
+        # cover the gateway) and the reseller's markup (the reseller's income) are not revenue
+        paid = Decimal(it.pop("revenue"))
+        it.pop("margin", None)
+        net_minor = (o.amount_minor - o.fee_minor - o.reseller_markup_minor) if o else 0
+        revenue = to_decimal(net_minor)
+        it.update(paid=_dec_str(paid), revenue=_dec_str(revenue))
         per = cm.rate_for(st, it["revenue_currency"])
-        revenue = Decimal(it["revenue"])
+        if per is None:
+            reasons.append("fx_rate")
         rev_usd = revenue / per if per else None
-        gw = Decimal(0)
-        if provider(ch) == "zpay":
-            gw = to_decimal(percent_of(amount, res.settings.zpay_fee_permille))
-        gw_usd = gw / per if per else None
+        channel = (o.channel if o else None) or pay_channel.get(oid)
+        gw_usd: Decimal | None = None
+        if channel is None:
+            reasons.append("channel_unknown")  # never assume zpay
+        elif per is not None:
+            gw = Decimal(0)
+            if provider(channel) == "zpay":
+                gw = to_decimal(percent_of(net_minor, res.settings.zpay_fee_permille))
+            gw_usd = gw / per
         cost_usd: Decimal | None = Decimal(0) if it["cost"] else None
+        if cost_usd is None:
+            reasons.append("no_cost")
         for c in it["cost"]:
             r = cm.rate_for(st, c["currency"])
             if r is None or cost_usd is None:
                 cost_usd = None
+                reasons.append("fx_rate")
             else:
                 cost_usd += Decimal(c["amount"]) / r
-        incomplete = bool(it["cost_incomplete"]) or cost_usd is None or rev_usd is None
-        if it["unreconciled_jobs"]:
-            incomplete = True
-        gross = None if incomplete else rev_usd - cost_usd  # type: ignore[operator]
+        incomplete = bool(reasons)
+        gross = None if incomplete or rev_usd is None else rev_usd - cost_usd  # type: ignore[operator]
         net = None if gross is None or gw_usd is None else gross - gw_usd
         it.update(
             revenue_usd=cm.q(rev_usd),
             cost_usd=cm.q(cost_usd),
             channel_fee_usd=cm.q(gw_usd),
+            fee_estimated=gw_usd is not None,  # the gateway fee is not stored per payment
             gross_usd=cm.q(gross),
             net_usd=cm.q(net),
             gross_margin_pct=cm.pct(gross / rev_usd) if gross is not None and rev_usd else None,
             net_margin_pct=cm.pct(net / rev_usd) if net is not None and rev_usd else None,
             cost_incomplete=incomplete,
+            reasons=sorted(set(reasons)),
         )
     return rep
 
@@ -580,7 +714,8 @@ async def actual_csv(
     w = csv.writer(buf)
     w.writerow(
         ["order_no", "status", "paid_at", "revenue", "currency", "revenue_usd", "cost_usd",
-         "channel_fee_usd", "gross_usd", "net_usd", "net_margin_pct", "cost_incomplete"]
+         "channel_fee_usd", "gross_usd", "net_usd", "net_margin_pct", "cost_incomplete",
+         "reasons"]
     )  # fmt: skip
     n = 0
     for pg in range(1, CSV_MAX_ROWS // 100 + 1):
@@ -601,6 +736,7 @@ async def actual_csv(
                     it["net_usd"] or "",
                     it["net_margin_pct"] or "",
                     "yes" if it["cost_incomplete"] else "no",
+                    ";".join(it["reasons"]),
                 ]
             )
         if pg * 100 >= rep["total"]:

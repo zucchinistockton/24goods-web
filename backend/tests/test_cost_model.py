@@ -132,8 +132,10 @@ def test_estimate_cdk_and_manual_carry_no_card_fees():
 
 def test_fixed_fee_and_edge_values():
     s = st(topup_fee_fixed="0.5", expected_failure_rate="0", target_margin="0.3")
-    e = cm.estimate(s, cm.Source("direct", D("0"), "claude"), D("1"), D("0"))
-    assert e.topup_fee == D("0.5") and e.failure_cost == 0 and e.service_fee == 0
+    e = cm.estimate(s, cm.Source("direct", D("0.1"), "claude"), D("1"), D("0"))
+    assert e.topup_fee == D("0.502") and e.failure_cost == 0 and e.service_fee == 0
+    free = cm.estimate(s, cm.Source("direct", D("0"), "claude"), D("1"), D("0"))
+    assert free.incomplete == ["supplier_price"] and free.net is None
     zero = cm.estimate(s, cm.Source("cdk", D("1")), D("0"), D("0"))
     assert zero.gross == -1 and zero.gross_margin is None and zero.net_margin is None
     tiny = cm.estimate(st(), cm.Source("cdk", D("0.000001")), D("0.000002"), D("0.016"))
@@ -171,7 +173,7 @@ def test_recommendation_unreachable_and_rounding_floor():
     s = st()
     assert cm.recommend_usd(s, cm.Source("cdk", D("1")), D("0.7"), D("0.3")) is None
     assert cm.recommend_usd(s, cm.Source("cdk", D("1")), D("0.5"), D("0.6")) is None
-    assert cm.recommend_usd(s, cm.Source("cdk", D("0")), D("0"), D("0")) == 0
+    assert cm.recommend_usd(s, cm.Source("cdk", D("0")), D("0"), D("0")) is None  # zero = unknown
     assert cm.recommend_minor(D("0"), D("7.2"), 10) == 10  # never a free product
     assert cm.recommend_minor(D("1"), D("7.2"), 100) == 800  # 7.20 -> 8.00
     assert cm.recommend_minor(D("1"), D("7.2"), 1) == 720
@@ -310,7 +312,16 @@ async def test_settings_staff_only_and_tenant_isolated(env):
             ("put", "/settings", {"card_open_fee": "1"}),
             ("put", "/target", {"product_id": str(uuid.uuid4())}),
             ("get", "/units", None),
-            ("post", "/apply", {"product_id": str(uuid.uuid4()), "current_minor": 1}),
+            (
+                "post",
+                "/apply",
+                {
+                    "product_id": str(uuid.uuid4()),
+                    "current_minor": 1,
+                    "recommended_minor": 1,
+                    "fingerprint": "0" * 16,
+                },
+            ),
             ("get", "/actual", None),
             ("get", "/actual.csv", None),
         ):
@@ -439,7 +450,13 @@ async def test_units_tenant_isolation(env):
     r = await admin.put(f"{PRICING}/target", json={"product_id": str(foreign.id), "margin": "0.5"})
     assert r.status_code == 404
     r = await admin.post(
-        f"{PRICING}/apply", json={"product_id": str(foreign.id), "current_minor": 1000}
+        f"{PRICING}/apply",
+        json={
+            "product_id": str(foreign.id),
+            "current_minor": 1000,
+            "recommended_minor": 1000,
+            "fingerprint": "0" * 16,
+        },
     )
     assert r.status_code == 404
     async with env.owner_session(env.other_tenant_id) as db:
@@ -476,36 +493,96 @@ async def test_target_override_changes_the_recommendation_and_is_audited(env):
 # ---------------------------------------------------------------- apply
 
 
+def _body(row, **over) -> dict:
+    body = {
+        "product_id": row["product_id"],
+        "variant_id": row["variant_id"],
+        "offer_id": row["offer_id"],
+        "current_minor": row["price"]["minor"],
+        "recommended_minor": (row["recommended"] or {"minor": 1})["minor"],
+        "fingerprint": row["fingerprint"],
+    }
+    body.update(over)
+    return body
+
+
+async def _row(admin, title):
+    return next(r for r in (await _units(admin))["items"] if r["title"] == title)
+
+
+async def _price(env, table, i):
+    async with env.owner_session() as db:
+        return await db.scalar(text(f"SELECT price_minor FROM {table} WHERE id = :i"), {"i": i})  # noqa: S608
+
+
 async def test_apply_is_the_normal_audited_price_edit(env):
     admin, _ = await env.login("admin")
     await _rate(admin, "10")
     p = await env.product(price=5000, floor=100, title="Apply")
-    oid = await _offer(env, p, cost="2")
-    row = next(r for r in (await _units(admin))["items"] if r["title"] == "Apply")
+    await _offer(env, p, cost="2")
+    row = await _row(admin, "Apply")
     rec = row["recommended"]
-    r = await admin.post(
-        f"{PRICING}/apply",
-        json={"product_id": str(p.id), "offer_id": str(oid), "current_minor": 5000},
-    )
+    r = await admin.post(f"{PRICING}/apply", json=_body(row))
     assert r.status_code == 200, r.text
     assert r.json()["price"]["minor"] == rec["minor"]
-    async with env.owner_session() as db:
-        now = await db.scalar(text("SELECT price_minor FROM products WHERE id = :i"), {"i": p.id})
-    assert now == rec["minor"]
+    assert await _price(env, "products", p.id) == rec["minor"]
     # both the pricing audit row and the standard product edit row exist
     (a,) = await _audit(env, "pricing.recommendation_applied")
     assert a[0]["price_minor"] == 5000 and a[1]["price_minor"] == rec["minor"]
     upd = await _audit(env, "product.updated")
     assert any(u[1]["price_minor"] == rec["minor"] and u[0]["price_minor"] == 5000 for u in upd)
-    # a stale view is refused, nothing changes
-    r = await admin.post(f"{PRICING}/apply", json={"product_id": str(p.id), "current_minor": 5000})
-    assert r.status_code == 409
+    # the same stale view is refused, nothing changes
+    r = await admin.post(f"{PRICING}/apply", json=_body(row))
+    assert r.status_code == 409 and r.json()["error"]["code"] == "recommendation_changed"
     # the client never names an amount
-    r = await admin.post(
-        f"{PRICING}/apply",
-        json={"product_id": str(p.id), "current_minor": rec["minor"], "price": "0.01"},
-    )
+    fresh = await _row(admin, "Apply")
+    r = await admin.post(f"{PRICING}/apply", json={**_body(fresh), "price": "0.01"})
     assert r.status_code in (400, 422)
+
+
+async def test_apply_refused_when_the_recommendation_changed_but_the_price_did_not(env):
+    admin, _ = await env.login("admin")
+    await _rate(admin, "10")
+    p = await env.product(price=5000, floor=100, title="Moved")
+    oid = await _offer(env, p, cost="2")
+    row = await _row(admin, "Moved")
+    # the supplier cost changes after the staff member loaded the table
+    async with env.owner_session() as db:
+        await db.execute(
+            text("UPDATE supplier_offers SET cost_estimate = 3 WHERE id = :i"), {"i": oid}
+        )
+        await db.commit()
+    r = await admin.post(f"{PRICING}/apply", json=_body(row))
+    assert r.status_code == 409 and r.json()["error"]["code"] == "recommendation_changed"
+    # a wrong shown recommendation or fingerprint is refused as well
+    fresh = await _row(admin, "Moved")
+    for bad in (
+        {"recommended_minor": fresh["recommended"]["minor"] + 10},
+        {"fingerprint": "f" * 16},
+    ):
+        r = await admin.post(f"{PRICING}/apply", json=_body(fresh, **bad))
+        assert r.status_code == 409
+    assert await _price(env, "products", p.id) == 5000
+    # a settings change (target margin) also invalidates the shown number
+    await admin.put(f"{PRICING}/settings", json={"target_margin": "0.4"})
+    r = await admin.post(f"{PRICING}/apply", json=_body(fresh))
+    assert r.status_code == 409
+    assert not await _audit(env, "pricing.recommendation_applied")
+
+
+async def test_apply_noop_writes_nothing(env):
+    admin, _ = await env.login("admin")
+    await _rate(admin, "10")
+    p = await env.product(price=5000, floor=100, title="Noop")
+    await _offer(env, p, cost="2")
+    row = await _row(admin, "Noop")
+    assert (await admin.post(f"{PRICING}/apply", json=_body(row))).status_code == 200
+    again = await _row(admin, "Noop")
+    assert again["recommended"]["diff_minor"] == 0
+    r = await admin.post(f"{PRICING}/apply", json=_body(again))
+    assert r.status_code == 200 and r.json()["noop"] is True and r.json()["applied"] is False
+    assert len(await _audit(env, "pricing.recommendation_applied")) == 1
+    assert len(await _audit(env, "product.updated")) == 1
 
 
 async def test_apply_variant_and_refuses_incomplete(env):
@@ -516,26 +593,139 @@ async def test_apply_variant_and_refuses_incomplete(env):
     p = await env.product(price=5000, floor=0, title="Var apply")
     vid = await _variant(env, p)
     await _offer(env, p, cost="2", variant_id=vid)
-    r = await admin.post(
-        f"{PRICING}/apply",
-        json={"product_id": str(p.id), "variant_id": str(vid), "current_minor": 1000},
-    )
+    row = await _row(admin, "Var apply")
+    r = await admin.post(f"{PRICING}/apply", json=_body(row))
     assert r.status_code == 200, r.text
-    async with env.owner_session() as db:
-        v_price = await db.scalar(
-            text("SELECT price_minor FROM product_variants WHERE id = :i"), {"i": vid}
-        )
-        p_price = await db.scalar(
-            text("SELECT price_minor FROM products WHERE id = :i"), {"i": p.id}
-        )
-    assert v_price == r.json()["price"]["minor"] and p_price == 5000
+    v_price = await _price(env, "product_variants", vid)
+    assert v_price == r.json()["price"]["minor"] and await _price(env, "products", p.id) == 5000
     assert await _audit(env, "variant.updated")
     bare = await env.product(price=1000, floor=0, title="No cost")
-    r = await admin.post(
-        f"{PRICING}/apply", json={"product_id": str(bare.id), "current_minor": 1000}
-    )
+    row = await _row(admin, "No cost")
+    r = await admin.post(f"{PRICING}/apply", json=_body(row))
     assert r.status_code == 422 and r.json()["error"]["code"] == "no_recommendation"
     assert len(await _audit(env, "pricing.recommendation_applied")) == 1
+    assert bare
+
+
+async def test_apply_below_floor_and_large_drop(env):
+    admin, _ = await env.login("admin")
+    await _rate(admin, "10")
+    p = await env.product(price=50000, floor=40000, title="Floor")
+    await _offer(env, p, cost="2")
+    row = await _row(admin, "Floor")
+    r = await admin.post(f"{PRICING}/apply", json=_body(row))
+    assert r.status_code == 422 and r.json()["error"]["code"] == "below_floor"
+    q = await env.product(price=50000, floor=0, title="Drop")
+    await _offer(env, q, cost="2", code="drop_sup")
+    row = await _row(admin, "Drop")
+    assert row["large_drop"] is True
+    r = await admin.post(f"{PRICING}/apply", json=_body(row))
+    assert r.status_code == 422 and r.json()["error"]["code"] == "confirm_large_drop"
+    assert await _price(env, "products", q.id) == 50000
+    r = await admin.post(f"{PRICING}/apply", json=_body(row, confirm_large_drop=True))
+    assert r.status_code == 200, r.text
+    assert await _price(env, "products", q.id) == row["recommended"]["minor"]
+    (a,) = await _audit(env, "pricing.recommendation_applied")
+    assert a[2]["large_drop_confirmed"] is True
+
+
+async def test_zero_cost_source_is_incomplete_never_free(env):
+    admin, _ = await env.login("admin")
+    await _rate(admin, "10")
+    p = await env.product(price=5000, floor=0, title="Zero")
+    await _offer(env, p, cost="0")
+    row = await _row(admin, "Zero")
+    assert row["incomplete"] == ["supplier_price"] and row["recommended"] is None
+    assert row["net_usd"] is None and row["gross_usd"] is None
+    r = await admin.post(f"{PRICING}/apply", json=_body(row))
+    assert r.status_code == 422 and r.json()["error"]["code"] == "no_recommendation"
+    m = await env.product(price=5000, floor=0, title="ZeroManual")
+    async with env.owner_session() as db:
+        await db.execute(text("UPDATE products SET cost_minor = 0 WHERE id = :i"), {"i": m.id})
+        await db.commit()
+    assert (await _row(admin, "ZeroManual"))["incomplete"] == ["supplier_price"]
+
+
+async def test_disabled_offer_and_several_offers_need_a_choice(env):
+    admin, _ = await env.login("admin")
+    await _rate(admin, "10")
+    p = await env.product(price=5000, floor=0, title="Multi")
+    o1 = await _offer(env, p, cost="2", code="m1", priority=10)
+    o2 = await _offer(env, p, cost="1.5", code="m2", priority=20)
+    rows = [r for r in (await _units(admin))["items"] if r["title"] == "Multi"]
+    assert len(rows) == 2
+    body = _body(rows[0], offer_id=None)
+    r = await admin.post(f"{PRICING}/apply", json=body)
+    assert r.status_code == 422 and r.json()["error"]["code"] == "offer_required"
+    async with env.owner_session() as db:
+        await db.execute(
+            text("UPDATE supplier_offers SET enabled = false WHERE id = :i"), {"i": o2}
+        )
+        await db.commit()
+    rows = {r["offer_id"]: r for r in (await _units(admin))["items"] if r["title"] == "Multi"}
+    r = await admin.post(f"{PRICING}/apply", json=_body(rows[str(o2)]))
+    assert r.status_code == 422 and r.json()["error"]["code"] == "offer_disabled"
+    assert await _price(env, "products", p.id) == 5000
+    r = await admin.post(f"{PRICING}/apply", json=_body(rows[str(o1)]))
+    assert r.status_code == 200, r.text
+
+
+async def test_apply_staff_only_rate_limited_and_other_prices_untouched(env):
+    admin, _ = await env.login("admin")
+    await _rate(admin, "10")
+    p = await env.product(price=5000, floor=0, title="Untouched")
+    await _offer(env, p, cost="2")
+    row = await _row(admin, "Untouched")
+    for role in ("buyer", "agent"):
+        c, _u = await env.login(role)
+        assert (await c.post(f"{PRICING}/apply", json=_body(row))).status_code == 403
+    # an open order keeps the price it was created with (quotes and orders snapshot their price)
+    _buyer, u = await env.login("buyer")
+    async with env.owner_session() as db:
+        oid = await db.scalar(
+            text(
+                "INSERT INTO orders (id, tenant_id, order_no, buyer_id, product_id, title, qty, "
+                "amount_minor, subtotal_minor, currency, status, delivery_mode) VALUES "
+                "(gen_random_uuid(), :t, 'KEEP1', :b, :p, 'x', 1, 5000, 5000, 'CNY', "
+                "'pending_payment', 'manual') RETURNING id"
+            ),
+            {"t": env.tenant_id, "b": u.id, "p": p.id},
+        )
+        await db.commit()
+    assert (await admin.post(f"{PRICING}/apply", json=_body(row))).status_code == 200
+    async with env.owner_session() as db:
+        amount = await db.scalar(text("SELECT amount_minor FROM orders WHERE id = :i"), {"i": oid})
+    assert amount == 5000  # the open order keeps its price; only the catalog price moved
+    assert await _price(env, "products", p.id) != 5000
+    # the rate limit (60 / hour) refuses a runaway client
+    codes = set()
+    for _ in range(62):
+        codes.add((await admin.post(f"{PRICING}/apply", json=_body(row))).status_code)
+    assert 429 in codes
+
+
+async def test_concurrent_price_edit_wins_or_409_never_silently_overwritten(env):
+    import asyncio
+
+    admin, _ = await env.login("admin")
+    await _rate(admin, "10")
+    p = await env.product(price=5000, floor=0, title="Race")
+    await _offer(env, p, cost="2")
+    row = await _row(admin, "Race")
+    edit = admin.patch(f"/api/v1/admin/products/{p.id}", json={"price": "40.00"})
+    app_ = admin.post(f"{PRICING}/apply", json=_body(row))
+    r_edit, r_apply = await asyncio.gather(edit, app_)
+    assert r_edit.status_code == 200, r_edit.text
+    final = await _price(env, "products", p.id)
+    if r_apply.status_code == 200:
+        # apply ran first (its price was the one shown); the edit then correctly came after it
+        assert final == 4000
+    else:
+        # the edit committed first: the apply saw a changed price and refused
+        assert r_apply.status_code == 409 and final == 4000
+    # a stale apply after the edit is a 409, the edit survives
+    r = await admin.post(f"{PRICING}/apply", json=_body(row))
+    assert r.status_code == 409 and await _price(env, "products", p.id) == 4000
 
 
 # ---------------------------------------------------------------- actual margins
@@ -584,7 +774,7 @@ async def test_actual_margin_per_order_incomplete_until_the_ledger_matches(env, 
     assert r.status_code == 200 and r.headers["content-type"].startswith("text/csv")
     rows = list(csv.reader(io.StringIO(r.text)))
     assert rows[0][0] == "order_no" and rows[1][0] == item["order_no"]
-    assert rows[1][-1] == "no" and rows[1][8] == item["gross_usd"]
+    assert rows[1][11] == "no" and rows[1][8] == item["gross_usd"] and rows[1][12] == ""
     assert await _audit(env, "procurement.margin_exported")
 
 
@@ -631,3 +821,210 @@ async def test_cost_model_survives_site_settings_updates(env):
     assert r.status_code == 200, r.text
     got = (await admin.get(f"{PRICING}/settings")).json()["settings"]
     assert got["fx"]["CNY"]["per_usd"] == "7.1"
+
+
+# ---------------------------------------------------------------- actual: revenue rules
+
+
+async def _actual_one(admin):
+    today = datetime.now(timezone.utc).date()
+    window = {"date_from": f"{today.year}-01-01", "date_to": today.isoformat()}
+    return (await admin.get(f"{PRICING}/actual", params=window)).json()["items"]
+
+
+async def _paid(env, up, **order_sets):
+    admin, _ = await env.login("admin")
+    sid, _ = await up.supplier(MockSupplier("mock_a"))
+    _b, order = await up.paid_order()
+    await up.run()
+    (job,) = await up.jobs(order["id"])
+    await _ledger(env, sid, "A1", "-1", job_id=job.id)
+    await _rate(admin, "10")
+    if order_sets:
+        sets = ", ".join(f"{k} = :{k}" for k in order_sets)
+        async with env.owner_session() as db:
+            await db.execute(
+                text(f"UPDATE orders SET {sets} WHERE id = :i"),  # noqa: S608
+                {**order_sets, "i": uuid.UUID(order["id"])},
+            )
+            await db.commit()
+    return admin, order
+
+
+async def test_actual_revenue_excludes_surcharge_and_reseller_markup(env, up):
+    admin, order = await _paid(env, up)
+    (base,) = await _actual_one(admin)
+    async with env.owner_session() as db:
+        row = (
+            await db.execute(
+                text("SELECT amount_minor, fee_minor FROM orders WHERE id = :i"),
+                {"i": uuid.UUID(order["id"])},
+            )
+        ).one()
+    assert D(base["paid"]) == D(row.amount_minor) / 100
+    assert D(base["revenue"]) == D(row.amount_minor - row.fee_minor) / 100
+
+
+async def test_actual_reseller_markup_is_not_platform_revenue(env, up):
+    admin, order = await _paid(env, up)
+    (base,) = await _actual_one(admin)
+    async with env.owner_session() as db:
+        await db.execute(
+            text("UPDATE orders SET reseller_markup_minor = 1000 WHERE id = :i"),
+            {"i": uuid.UUID(order["id"])},
+        )
+        await db.commit()
+    (item,) = await _actual_one(admin)
+    assert D(item["revenue"]) == D(base["revenue"]) - 10
+    assert D(item["paid"]) == D(base["paid"])
+
+
+async def test_actual_null_channel_is_incomplete_not_zpay(env, up):
+    admin, order = await _paid(env, up)
+    async with env.owner_session() as db:
+        await db.execute(
+            text("UPDATE orders SET channel = NULL WHERE id = :i"), {"i": uuid.UUID(order["id"])}
+        )
+        await db.execute(
+            text("UPDATE payments SET channel = channel WHERE order_id = :i"),
+            {"i": uuid.UUID(order["id"])},
+        )
+        await db.commit()
+    (item,) = await _actual_one(admin)
+    # the payment row still names the channel, so the fee is known (estimated, never stored)
+    assert item["fee_estimated"] is True and item["channel_fee_usd"] is not None
+    async with env.owner_session() as db:
+        await db.execute(
+            text("DELETE FROM payments WHERE order_id = :i"), {"i": uuid.UUID(order["id"])}
+        )
+        await db.commit()
+    (item,) = await _actual_one(admin)
+    assert item["channel_fee_usd"] is None and item["net_usd"] is None
+    assert "channel_unknown" in item["reasons"] and item["cost_incomplete"] is True
+
+
+async def test_actual_after_sales_adjustment_flags_the_order(env, up):
+    admin, order = await _paid(env, up)
+    (item,) = await _actual_one(admin)
+    assert item["reasons"] == [] and item["net_usd"] is not None
+    async with env.owner_session() as db:
+        await db.execute(
+            text(
+                "INSERT INTO after_sales (id, tenant_id, order_id, buyer_id, reason, description, "
+                "status) SELECT gen_random_uuid(), tenant_id, id, buyer_id, 'other', 'x', "
+                "'replaced' FROM orders WHERE id = :i"
+            ),
+            {"i": uuid.UUID(order["id"])},
+        )
+        await db.commit()
+    (item,) = await _actual_one(admin)
+    assert "after_sales_adjusted" in item["reasons"] and item["net_usd"] is None
+    assert item["cost_incomplete"] is True
+
+
+async def test_actual_refunded_order_is_not_a_margin_row(env, up):
+    admin, order = await _paid(env, up)
+    async with env.owner_session() as db:
+        await db.execute(
+            text("UPDATE orders SET status = 'refunded' WHERE id = :i"),
+            {"i": uuid.UUID(order["id"])},
+        )
+        await db.commit()
+    assert await _actual_one(admin) == []
+
+
+async def test_actual_multi_job_order_sums_the_ledger(env, up):
+    admin = (await env.login("admin"))[0]
+    sid, _ = await up.supplier(MockSupplier("mock_a"))
+    _b, order = await up.paid_order(2)
+    await up.run()
+    jobs = await up.jobs(order["id"])
+    assert len(jobs) == 2
+    await _rate(admin, "10")
+    await _ledger(env, sid, "J1", "-1", job_id=jobs[0].id)
+    (item,) = await _actual_one(admin)
+    assert item["jobs"] == 2 and item["unreconciled_jobs"] == 1
+    assert item["cost_incomplete"] is True and "unreconciled" in item["reasons"]
+    await _ledger(env, sid, "J2", "-1.25", job_id=jobs[1].id)
+    (item,) = await _actual_one(admin)
+    assert item["cost_usd"] == "2.250000" and item["cost_incomplete"] is False
+
+
+async def test_csv_neutralises_formulas(env, up):
+    admin, order = await _paid(env, up)
+    async with env.owner_session() as db:
+        await db.execute(
+            text("UPDATE orders SET order_no = '=1+1' WHERE id = :i"), {"i": uuid.UUID(order["id"])}
+        )
+        await db.commit()
+    today = datetime.now(timezone.utc).date()
+    r = await admin.get(
+        f"{PRICING}/actual.csv",
+        params={"date_from": f"{today.year}-01-01", "date_to": today.isoformat()},
+    )
+    rows = list(csv.reader(io.StringIO(r.text)))
+    assert rows[1][0] == "'=1+1"
+
+
+# ---------------------------------------------------------------- FX rules
+
+
+async def test_fx_rate_band_change_confirmation_and_staleness(env):
+    admin, _ = await env.login("admin")
+    put = lambda body: admin.put(f"{PRICING}/settings", json={"fx": body})  # noqa: E731
+    # the inverted rate (USD per CNY) and absurd values are refused for CNY
+    for bad in ("0.139", "2.9", "15.1", "720"):
+        r = await put({"currency": "CNY", "per_usd": bad})
+        assert r.status_code == 422 and r.json()["error"]["code"] == "fx_out_of_band", bad
+    assert (await put({"currency": "CNY", "per_usd": "7"})).status_code == 200
+    # more than 20 % away from the saved rate needs confirm
+    r = await put({"currency": "CNY", "per_usd": "9"})
+    assert r.status_code == 422 and r.json()["error"]["code"] == "fx_change_confirm"
+    assert (await put({"currency": "CNY", "per_usd": "9", "confirm": True})).status_code == 200
+    assert (await put({"currency": "CNY", "per_usd": "9.5"})).status_code == 200  # < 20 %
+    # the band is a setting
+    r = await admin.put(f"{PRICING}/settings", json={"fx_bands": {"CNY": {"min": "5", "max": "9"}}})
+    assert r.status_code == 200
+    assert (await put({"currency": "CNY", "per_usd": "9.5"})).status_code == 422
+    # a stale rate marks rows and refuses apply
+    await admin.put(f"{PRICING}/settings", json={"fx_bands": {"CNY": {"min": "3", "max": "15"}}})
+    await put({"currency": "CNY", "per_usd": "10", "confirm": True})
+    p = await env.product(price=5000, floor=0, title="Stale")
+    await _offer(env, p, cost="2")
+    row = await _row(admin, "Stale")
+    assert row["fx_stale"] is False
+    async with env.owner_session() as db:
+        await db.execute(
+            text(
+                "UPDATE tenants SET settings = jsonb_set(settings, "
+                "'{cost_model,fx,CNY,updated_at}', to_jsonb(cast(:t as text))) WHERE id = :i"
+            ),
+            {"t": "2020-01-01T00:00:00+00:00", "i": env.tenant_id},
+        )
+        await db.commit()
+    stale = await _row(admin, "Stale")
+    assert stale["fx_stale"] is True
+    r = await admin.post(f"{PRICING}/apply", json=_body(stale))
+    assert r.status_code == 409 and r.json()["error"]["code"] == "fx_stale"
+    assert await _price(env, "products", p.id) == 5000
+    # re-saving the rate refreshes the stamp
+    await put({"currency": "CNY", "per_usd": "10"})
+    assert (await _row(admin, "Stale"))["fx_stale"] is False
+
+
+def test_fx_helpers():
+    s = cm.set_rate(st(), "CNY", "7.2", "u", now=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    assert cm.fx_stale(s, "CNY", datetime(2026, 1, 9, tzinfo=timezone.utc)) is True
+    assert cm.fx_stale(s, "CNY", datetime(2026, 1, 7, tzinfo=timezone.utc)) is False
+    assert cm.fx_stale(s, "USD") is False and cm.fx_stale(s, "EUR") is False
+    with pytest.raises(cm.CostSettingsError) as e:
+        cm.set_rate(st(), "CNY", "0.14", "u")
+    assert e.value.code == "fx_out_of_band"
+    assert cm.set_rate(st(), "EUR", "0.01", "u")["fx"]["EUR"]  # no band configured
+
+
+def test_delivery_worker_gets_only_the_deadline_settings():
+    from app.delivery.worker import _DEADLINE_KEYS
+
+    assert "cost_model" not in _DEADLINE_KEYS
+    assert {"after_sales_default", "auto_confirm_hours"} <= _DEADLINE_KEYS

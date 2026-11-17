@@ -48,6 +48,11 @@ from app.modules.common.views import after_sales_view, message_view
 from app.modules.orders.events import add_event, snapshot
 from app.modules.realtime.publish import publish_after_sales, publish_message, publish_order
 
+# the only tenant settings the deadline maths reads (staff-only sections never reach the worker)
+_DEADLINE_KEYS = frozenset(
+    {"after_sales_default", "after_sales_default_hours", "auto_confirm_hours"}
+)
+
 log = logging.getLogger("app.delivery.worker")
 
 TOPIC = "order.paid"
@@ -181,7 +186,11 @@ async def _deliver_cards(
             mode="auto_card",
             product_hours=t_hours,
             product_months=t_months,
-            tenant_settings=tenant.settings if tenant else None,
+            tenant_settings=(
+                {k: v for k, v in (tenant.settings or {}).items() if k in _DEADLINE_KEYS}
+                if tenant
+                else None
+            ),
         )
         order.status = "delivered"
         order.delivered_at = now

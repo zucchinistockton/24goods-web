@@ -1003,6 +1003,7 @@ report. Code: `app/core/costmodel.py` (pure `Decimal` formulas), `app/modules/ad
 | `chargeback_tier2_*` | 30 %: 200 deposit frozen | informational |
 | `target_margin` | 0.30 (net margin on the sale price) | recommendation; per product / variant override via `PUT /target` |
 | `round_step_minor` | 10 | recommendation is rounded **up** to a multiple of this (shop-currency minor units) |
+| `fx_bands`, `fx_max_age_days`, `fx_max_change` | CNY 3..15, 7 days, 0.2 | FX sanity (see 19.3) |
 | `fx` | none | `{CNY: {per_usd, updated_at, updated_by}}`, staff-entered; no rate service yet |
 
 Our own payment-channel fee is not duplicated: it is the gateway fee already configured (`zpay_fee_permille`,
@@ -1032,15 +1033,36 @@ needs no reshaping. The estimate treats the buyer's channel surcharge as pass-th
 
 ### 19.3 Estimated vs actual
 
-* **Estimate** (`GET /units`): schedule + `cost_estimate`; every component is returned; rows lacking a supplier
-  price, a rate or a direct product are `cost_incomplete` with the reasons, and get no margin or recommendation.
-* **Actual** (`GET /actual`, `/actual.csv`): the §7 margin report (supplier ledger, job-cost fallback) converted at the
-  saved rate, minus the gateway fee computed exactly like the payment ledger (`percent_of(amount, zpay_fee_permille)`).
-  Ledger rows already contain the real card, top-up and service fees, so none is added again. An order is
-  `cost_incomplete` when the report flags it (direct order whose price is not in the balance currency), a job has no
-  ledger row yet, a currency has no rate, or no cost exists.
-* **Apply** (`POST /apply`): refuses incomplete rows (`no_recommendation`) and a stale view (`price_changed`, 409);
-  writes `pricing.recommendation_applied`, then the standard `product.updated` / `variant.updated` audit row.
+* **Estimate** (`GET /units`): schedule + `cost_estimate`; every component is returned. A supplier price (or manual
+  `cost_minor`) that is missing **or zero** is `cost_incomplete` (`supplier_price`): zero is "unknown", never "free".
+  Rows lacking a price, a rate or a direct product get no margin or recommendation. `truncated: true` is returned
+  instead of silently cutting a page that exceeds 1000 rows.
+* **FX safety.** Each currency may have a plausible band (`fx_bands`, default only `CNY` 3..15 units per USD); a rate
+  outside it is refused (`fx_out_of_band`, catches the inverted rate). A move of more than `fx_max_change` (20 %)
+  against the saved rate needs `fx.confirm` (`fx_change_confirm`). A rate older than `fx_max_age_days` (7) marks the
+  rows `fx_stale` and `apply` refuses (409 `fx_stale`); saving the rate again refreshes the stamp.
+* **Apply** (`POST /apply`) is a compare-and-set. The request carries the price, the recommendation the staff member
+  saw and a fingerprint (hash of the settings, FX rates, target margin, channel rate and source cost behind it). The
+  server first locks the tenant settings row and the product / variant row, recomputes, and applies only if all three
+  still match, otherwise 409 `recommendation_changed`; the standard audited price edit then runs in the same
+  transaction, so a concurrent price edit waits and a stale apply fails: never a silent overwrite. Further refusals:
+  `no_recommendation` (incomplete), `offer_required` (several sources, none named), `offer_disabled`, `below_floor`
+  (422), `confirm_large_drop` (422: a recommendation more than 50 % below the current price needs
+  `confirm_large_drop: true`; the console asks). A recommendation equal to the current price returns
+  `{applied: false, noop: true}` and writes nothing. Audit: `pricing.recommendation_applied` (with fingerprint and
+  the large-drop confirmation) plus the standard `product.updated` / `variant.updated` row. Orders, quotes and cart
+  snapshots keep the price they were created with: only the catalog price moves.
+* **Actual** (`GET /actual`, `/actual.csv`): the §7 margin report (ledger, job-cost fallback) converted at the saved
+  rate. **Revenue = `amount_minor − fee_minor (channel surcharge) − reseller_markup_minor`**: the surcharge is
+  pass-through (it exists to cover the gateway) and the reseller's markup is the reseller's income, so neither is
+  platform revenue (`paid` shows the gross amount). The gateway fee is computed on that revenue with today's
+  `zpay_fee_permille` (it is not stored per payment, hence `fee_estimated`); the channel comes from the order, else
+  its payment row, and an unknown channel gives no fee and `channel_unknown`, never an assumed zpay. Ledger rows
+  already hold the real card, top-up and service fees. A row is `cost_incomplete` with `reasons`:
+  `ledger_incomplete`, `unreconciled` (a job without ledger row), `after_sales_adjusted` (any after-sales case not
+  rejected: a full refund leaves the report, anything else may change revenue or cost), `fx_rate`,
+  `channel_unknown`, `no_cost`. The CSV carries the reasons and neutralises formula cells.
+* The delivery worker receives only the tenant settings keys the deadline maths reads, never `cost_model`.
 * Audit actions: `pricing.settings_updated`, `pricing.target_updated`, `pricing.recommendation_applied`,
   `procurement.margin_exported`.
 

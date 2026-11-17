@@ -40,11 +40,13 @@ _RATE_FIELDS: dict[str, str] = {
     "chargeback_tier2_rate": "0.30",
     "expected_failure_rate": "0.05",
     "target_margin": "0.30",
+    "fx_max_change": "0.2",
 }
 _INT_FIELDS: dict[str, tuple[int, int, int]] = {  # default, lo, hi
     "failed_free_count": (3, 0, 1000),
     "chargeback_tier1_min_tx": (100, 0, 1_000_000),
     "round_step_minor": (10, 1, 100_000),
+    "fx_max_age_days": (7, 1, 365),
 }
 DEFAULT_SERVICE_FEE = {"gpt": "0.30", "grok": "0.15", "claude": "0"}
 DEFAULT_USES = {"standard": 3, "pro20x": 3}
@@ -57,6 +59,10 @@ DEFAULTS: dict[str, Any] = {
     "uses_per_card": dict(DEFAULT_USES),
     # {"CNY": {"per_usd": "7.20", "updated_at": iso, "updated_by": uuid}}: staff-entered
     "fx": {},
+    # plausible currency-units-per-USD band per currency; an entry outside it is refused
+    "fx_bands": {"CNY": {"min": "3", "max": "15"}},
+    "fx_max_age_days": 7,
+    "fx_max_change": "0.2",
     # {"<product_id>" | "<product_id>:<variant_id>": "0.35"}: per-target margin override
     "targets": {},
 }
@@ -73,7 +79,9 @@ INFO_FIELDS = (
 
 
 class CostSettingsError(ValueError):
-    pass
+    def __init__(self, msg: str, code: str = "bad_cost_settings") -> None:
+        super().__init__(msg)
+        self.code = code
 
 
 def _dec(raw: Any) -> Decimal | None:
@@ -121,8 +129,22 @@ def normalize(raw: dict[str, Any] | None) -> dict[str, Any]:
         v = up.get(t)
         ok = isinstance(v, int) and not isinstance(v, bool) and 1 <= v <= 1000
         out["uses_per_card"][t] = v if ok else DEFAULT_USES[t]
+    out["fx_bands"] = _norm_bands(raw.get("fx_bands"), raw.get("fx_bands") is None)
     out["fx"] = _norm_fx(raw.get("fx"))
     out["targets"] = _norm_targets(raw.get("targets"))
+    return out
+
+
+def _norm_bands(raw: Any, use_default: bool) -> dict[str, dict[str, str]]:
+    if use_default or not isinstance(raw, dict):
+        return copy.deepcopy(DEFAULTS["fx_bands"])
+    out: dict[str, dict[str, str]] = {}
+    for cur, e in raw.items():
+        if not (isinstance(cur, str) and re.fullmatch(r"[A-Z]{3}", cur)) or not isinstance(e, dict):
+            continue
+        lo, hi = _dec(e.get("min")), _dec(e.get("max"))
+        if lo is not None and hi is not None and 0 < lo < hi:
+            out[cur] = {"min": _s(lo), "max": _s(hi)}
     return out
 
 
@@ -189,6 +211,20 @@ def validate_patch(patch: dict[str, Any]) -> None:
             d = _dec(val)
             if d is None or d > hi:
                 raise CostSettingsError(f"{name}.{p}: a USD amount 0..{hi}")
+    bands = patch.get("fx_bands")
+    if bands is not None:
+        if not isinstance(bands, dict) or len(bands) > 20:
+            raise CostSettingsError("fx_bands: {CUR: {min, max}}")
+        for cur, e in bands.items():
+            lo = _dec(e.get("min")) if isinstance(e, dict) else None
+            hi = _dec(e.get("max")) if isinstance(e, dict) else None
+            if (
+                not re.fullmatch(r"[A-Z]{3}", str(cur))
+                or lo is None
+                or hi is None
+                or not 0 < lo < hi
+            ):
+                raise CostSettingsError(f"fx_bands.{cur}: 0 < min < max")
     up = patch.get("uses_per_card")
     if up is not None:
         if not isinstance(up, dict) or set(up) - set(CARD_TIERS):
@@ -204,7 +240,9 @@ def merged(cur: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
     for k, v in patch.items():
         if v is None or k in ("fx", "targets") or k not in DEFAULTS:
             continue
-        if isinstance(v, dict):
+        if k == "fx_bands":
+            new[k] = {**new[k], **v}
+        elif isinstance(v, dict):
             new[k] = {**new[k], **v}
         elif isinstance(v, (int, str)):
             new[k] = v if not isinstance(v, str) else v.strip()
@@ -212,15 +250,37 @@ def merged(cur: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
 
 
 def set_rate(
-    cur: dict[str, Any], currency: str, per_usd: str, actor: str, now: datetime | None = None
+    cur: dict[str, Any],
+    currency: str,
+    per_usd: str,
+    actor: str,
+    now: datetime | None = None,
+    confirm: bool = False,
 ) -> dict[str, Any]:
     """``currency`` units per 1 USD; stamps ``updated_at`` (the hook for a future rate service:
-    call this with ``actor='rate-service'``)."""
+    call this with ``actor='rate-service'``). A rate outside the currency's plausible band is
+    refused (catches the inverted rate, 0.139 instead of 7.2); a move of more than
+    ``fx_max_change`` against the stored rate needs ``confirm``."""
     rate = _dec(per_usd)
     if rate is None or rate <= 0 or rate > 100000 or not re.fullmatch(r"[A-Z]{3}", currency):
         raise CostSettingsError("rate: a positive decimal, currency units per 1 USD")
     if currency == "USD":
         raise CostSettingsError("USD needs no rate")
+    band = cur["fx_bands"].get(currency)
+    if band and not Decimal(band["min"]) <= rate <= Decimal(band["max"]):
+        raise CostSettingsError(
+            f"rate: {currency} per USD must be between {band['min']} and {band['max']}",
+            "fx_out_of_band",
+        )
+    old = cur["fx"].get(currency)
+    if old and not confirm:
+        prev = Decimal(old["per_usd"])
+        if abs(rate - prev) / prev > Decimal(cur["fx_max_change"]):
+            raise CostSettingsError(
+                f"rate: more than {Decimal(cur['fx_max_change']) * 100:.0f} % away from the "
+                "saved rate; confirm to change it",
+                "fx_change_confirm",
+            )
     new = copy.deepcopy(cur)
     new["fx"][currency] = {
         "per_usd": _s(rate),
@@ -228,6 +288,23 @@ def set_rate(
         "updated_by": actor,
     }
     return normalize(new)
+
+
+def fx_stale(settings: dict[str, Any], currency: str, now: datetime | None = None) -> bool:
+    """True when the saved rate is older than ``fx_max_age_days`` (or its stamp is unreadable)."""
+    if currency == "USD":
+        return False
+    e = settings["fx"].get(currency)
+    if not e:
+        return False  # a missing rate is reported as ``fx_rate`` instead
+    try:
+        at = datetime.fromisoformat(e["updated_at"])
+    except ValueError:
+        return True
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
+    age = (now or datetime.now(timezone.utc)) - at
+    return age.total_seconds() > settings["fx_max_age_days"] * 86400
 
 
 def rate_for(settings: dict[str, Any], currency: str) -> Decimal | None:
@@ -320,8 +397,8 @@ def estimate(
     price (our payment gateway's fee). Missing inputs are reported in ``incomplete`` and the
     margin fields stay ``None``: nothing is guessed."""
     est = Estimate(supplier_price=src.supplier_price_usd, sale_price_usd=sale_price_usd)
-    if src.supplier_price_usd is None:
-        est.incomplete.append("supplier_price")
+    if src.supplier_price_usd is None or src.supplier_price_usd <= 0:
+        est.incomplete.append("supplier_price")  # a zero or missing price is never "known free"
     if sale_price_usd is None:
         est.incomplete.append("fx_rate")
     if src.kind == "direct" and not src.direct_product:
@@ -347,7 +424,7 @@ def recommend_usd(
 ) -> Decimal | None:
     """Sale price (USD) whose NET margin is ``margin``: ``P = C / (1 - g - m)`` with ``C`` the
     price-independent cost and ``g`` the channel fee rate. ``None`` when unreachable."""
-    if src.supplier_price_usd is None:
+    if src.supplier_price_usd is None or src.supplier_price_usd <= 0:
         return None
     denom = Decimal(1) - channel_rate - margin
     if denom <= 0:
