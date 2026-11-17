@@ -20,6 +20,8 @@ const vendorOk = ref(true)
 const checks = ref<ManualCheck[]>([])
 const saving = ref(false)
 const loading = ref(false)
+// el-table slot rows are typed loosely by Element Plus: narrow them to the row shape of ``checks``
+const asCheck = (row: unknown): ManualCheck => row as ManualCheck
 const when = (v: string | null) => (v ? formatDateTime(v, locale.value) : '—')
 
 async function load() {
@@ -102,8 +104,8 @@ async function decide(c: ManualCheck, approve: boolean) {
       <el-table-column width="220">
         <template #default="{ row }">
           <template v-if="row.status === 'manual_pending'">
-            <el-button size="small" type="primary" @click="decide(row, true)">{{ t('regions.approve') }}</el-button>
-            <el-button size="small" type="danger" plain @click="decide(row, false)">{{ t('regions.refuse') }}</el-button>
+            <el-button size="small" type="primary" @click="decide(asCheck(row), true)">{{ t('regions.approve') }}</el-button>
+            <el-button size="small" type="danger" plain @click="decide(asCheck(row), false)">{{ t('regions.refuse') }}</el-button>
           </template>
         </template>
       </el-table-column>
