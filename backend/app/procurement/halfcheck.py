@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import select, text, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.orm import undefer
 
 from app.core.db import tenant_session
@@ -62,7 +62,11 @@ async def _finish(
             "decided_at": datetime.now(timezone.utc),
         }
         if out.account_mask:
-            values["email_masked"] = out.account_mask
+            # keep the mask derived from the sealed session itself (the API binds the order's
+            # session to it); the vendor's own mask only fills a row that has none
+            values["email_masked"] = func.coalesce(
+                HalfPriceCheck.__table__.c.email_masked, out.account_mask
+            )
         await db.execute(
             update(HalfPriceCheck.__table__)
             .where(

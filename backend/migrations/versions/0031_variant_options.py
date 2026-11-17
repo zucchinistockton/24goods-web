@@ -30,6 +30,9 @@ def upgrade() -> None:
         "(options IS NULL OR (jsonb_typeof(options) = 'object' "
         "AND options ? 'plan' AND options ? 'region'))"
     )
+    # the procurement process pins sources to a variant's options (never fails over to another
+    # plan or region): it may read this ONE new column, nothing else changes for it
+    op.execute("GRANT SELECT (options) ON product_variants TO app_procurement")
     op.execute(
         "CREATE UNIQUE INDEX uq_product_variants_options ON product_variants "
         "(tenant_id, product_id, (options->>'plan'), (options->>'region')) "
@@ -38,6 +41,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.execute("REVOKE SELECT (options) ON product_variants FROM app_procurement")
     op.execute("DROP INDEX IF EXISTS uq_product_variants_options")
     op.execute(
         "ALTER TABLE product_variants DROP CONSTRAINT IF EXISTS product_variants_options_shape"

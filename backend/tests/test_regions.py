@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 
 from tests.test_procurement_direct import DUp, _vendor
-from tests.test_procurement_vcc import _zovo
+from tests.test_procurement_vcc import _rows, _zovo
 from tests.test_variants import add_variant
 
 API = "/api/v1"
@@ -251,5 +251,63 @@ async def test_direct_topups_are_switched_off_by_product_status_not_by_code(env)
             f"{API}/orders", json={"product_id": str(up.product.id), "qty": 1, "session": "x" * 20}
         )
         assert r.status_code == 404
+    finally:
+        await up.close()
+
+
+async def test_generated_variants_cannot_be_activated_at_the_placeholder_price(env):
+    up, sid = await _gen_setup(env)
+    try:
+        admin, _ = await env.login("admin")
+        r = await admin.put(OPT, json={"region_allowlist": ["PH", "US"]})
+        assert r.status_code == 200
+        r = await admin.post(
+            GEN,
+            json={
+                "product_id": str(up.product.id),
+                "supplier_id": str(sid),
+                "plans": ["plus"],
+                "regions": ["PH", "US"],
+                "cost_estimate": "9",
+                "cost_estimates": {"PH": "6.5"},  # a PH plan costs less than the default
+            },
+        )
+        assert r.status_code == 200, r.text
+        costs = {
+            row[0]: str(row[1])
+            for row in await _rows(
+                env,
+                "SELECT params->>'payment_country', cost_estimate::numeric(20,2) "
+                "FROM supplier_offers WHERE variant_id IS NOT NULL",
+            )
+        }
+        assert costs == {"PH": "6.50", "US": "9.00"}
+        vs = (await admin.get(f"{API}/admin/products/{up.product.id}/variants")).json()["items"]
+        ph = next(v for v in vs if v["options"]["region"] == "PH")
+        url = f"{API}/admin/products/{up.product.id}/variants/{ph['id']}"
+        assert ph["status"] == "archived"
+        # no price set on purpose: refused, whatever the placeholder says
+        r = await admin.patch(url, json={"status": "active"})
+        assert r.status_code == 422 and r.json()["error"]["code"] == "variant_unpriced"
+        # a price needs the FX rate to be compared with the cost estimate
+        r = await admin.patch(url, json={"status": "active", "price": "30.00"})
+        assert r.status_code == 422 and r.json()["error"]["code"] == "fx_rate_missing"
+        r = await admin.put(
+            f"{API}/admin/procurement/pricing/settings",
+            json={"fx": {"currency": "CNY", "per_usd": "7.2"}},
+        )
+        assert r.status_code == 200, r.text
+        # 6.50 USD * 7.2 = 46.80 CNY: 30.00 is below cost, 50.00 covers it
+        r = await admin.patch(url, json={"status": "active", "price": "30.00"})
+        assert r.status_code == 422 and r.json()["error"]["code"] == "price_below_cost"
+        r = await admin.patch(url, json={"status": "active", "price": "50.00"})
+        assert r.status_code == 200, r.text
+        assert r.json()["status"] == "active" and r.json()["price"] == "50.00"
+        assert (
+            await env.scalar(
+                "SELECT price_set FROM product_variants WHERE id = :i", i=uuid.UUID(ph["id"])
+            )
+            is True
+        )
     finally:
         await up.close()
