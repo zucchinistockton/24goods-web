@@ -977,3 +977,97 @@ preflighted account" check is skipped for that host only (`direct.real_sandbox`)
 * The `1/6 h` credential lifetime is a pragmatic bound; a USDT order that is paid after it needs the buyer to
   re-supply (staff see `credential_missing`).
 
+
+## 19. Cost model and price recommendations (issue #28, owner decision 2026-11-17)
+
+Staff-only view of cost, gross margin and net profit per product / variant and supplier source, plus a **price
+recommendation**. Recommendations only: no background job ever changes a price; "apply" is the normal audited
+price edit (§1.3: the server recomputes the number, the client names only the unit). Buyers never see any of it
+(no public endpoint reads it; a test greps the public product and site payloads). Admin only, like the §7 cost
+report. Code: `app/core/costmodel.py` (pure `Decimal` formulas), `app/modules/admin/procurement_pricing.py`
+(`/admin/procurement/pricing/*`), console tab **Procurement → Pricing**. No migration: the schedule lives in
+`tenants.settings.cost_model` (a section the site-settings editor preserves), every change writes an audit row.
+
+### 19.1 Settings (`GET/PUT /settings`, USD, Decimal strings, rates as fractions)
+
+| key | default | used in the estimate |
+|---|---|---|
+| `card_open_fee` | 1.50 | yes: `vcc` only, divided by `uses_per_card` |
+| `uses_per_card` | standard 3, pro20x 3 | tier = `pro20x` when the offer's `product_code` contains `pro`/`20x` |
+| `topup_fee_rate` / `topup_fee_fixed` | 0.02 / 0 | yes: `direct` and `vcc` (card-funded), on the supplier price |
+| `service_fee_direct` | gpt 0.30, grok 0.15, claude 0 | yes: `direct` only, by the offer's `product` |
+| `failed_fee` | 0.30 | yes, with `expected_failure_rate` (default 0.05): card kinds |
+| `failed_free_count` | 3 | informational (the estimate charges every expected failure: conservative) |
+| `auth_reversal_rate` | 0.01 | informational |
+| `chargeback_tier1_*` | 15 % over 100 tx: +0.30 per tx | informational |
+| `chargeback_tier2_*` | 30 %: 200 deposit frozen | informational |
+| `target_margin` | 0.30 (net margin on the sale price) | recommendation; per product / variant override via `PUT /target` |
+| `round_step_minor` | 10 | recommendation is rounded **up** to a multiple of this (shop-currency minor units) |
+| `fx_bands`, `fx_max_age_days`, `fx_max_change` | CNY 3..15, 7 days, 0.2 | FX sanity (see 19.3) |
+| `fx` | none | `{CNY: {per_usd, updated_at, updated_by}}`, staff-entered; no rate service yet |
+
+Our own payment-channel fee is not duplicated: it is the gateway fee already configured (`zpay_fee_permille`,
+0 for self-hosted USDT) of the entry channel. **Hook for a rate service:** a job would call
+`costmodel.set_rate(settings, "CNY", rate, actor="rate-service")` and store the result under the same key; the table
+and the report only read `rate_for(settings, currency)`. A missing rate makes every shop-currency figure
+`cost_incomplete` (reason `fx_rate`), never a guess. Cost estimates in another currency use that currency's rate.
+
+### 19.2 Formulas (USD; `P` = sale price / rate, `S` = supplier price, `g` = channel fee rate)
+
+```
+service  = service_fee_direct[product]                      (direct)
+topup    = S * topup_fee_rate + topup_fee_fixed             (direct, vcc)
+card     = card_open_fee / uses_per_card[tier]              (vcc: the only source that opens a card per sale)
+failure  = expected_failure_rate * failed_fee               (direct, vcc)
+channel  = g * P
+gross    = P - S                       gross margin = gross / P
+net      = gross - service - topup - card - failure - channel      net margin = net / P
+C        = S + service + topup + card + failure              (price independent)
+P_rec    = C / (1 - g - target)        (None when 1 - g - target <= 0: "target unreachable")
+```
+
+`S` is the source's `cost_estimate` (converted at the rate of its currency); a product with no source falls back to
+its manual `cost_minor` (shop currency, kind `manual`). A variant uses its own sources, else the product's. Rows are
+keyed `(product, variant, offer, region)`; `region` is always `null` until #27 adds regions, so a region dimension
+needs no reshaping. The estimate treats the buyer's channel surcharge as pass-through (conservative).
+
+### 19.3 Estimated vs actual
+
+* **Estimate** (`GET /units`): schedule + `cost_estimate`; every component is returned. A supplier price (or manual
+  `cost_minor`) that is missing **or zero** is `cost_incomplete` (`supplier_price`): zero is "unknown", never "free".
+  Rows lacking a price, a rate or a direct product get no margin or recommendation. `truncated: true` is returned
+  instead of silently cutting a page that exceeds 1000 rows.
+* **FX safety.** Each currency may have a plausible band (`fx_bands`, default only `CNY` 3..15 units per USD); a rate
+  outside it is refused (`fx_out_of_band`, catches the inverted rate). A move of more than `fx_max_change` (20 %)
+  against the saved rate needs `fx.confirm` (`fx_change_confirm`). A rate older than `fx_max_age_days` (7) marks the
+  rows `fx_stale` and `apply` refuses (409 `fx_stale`); saving the rate again refreshes the stamp.
+* **Apply** (`POST /apply`) is a compare-and-set. The request carries the price, the recommendation the staff member
+  saw and a fingerprint (hash of the settings, FX rates, target margin, channel rate and source cost behind it). The
+  server first locks the tenant settings row and the product / variant row, recomputes, and applies only if all three
+  still match, otherwise 409 `recommendation_changed`; the standard audited price edit then runs in the same
+  transaction, so a concurrent price edit waits and a stale apply fails: never a silent overwrite. Further refusals:
+  `no_recommendation` (incomplete), `offer_required` (several sources, none named), `offer_disabled`, `below_floor`
+  (422), `confirm_large_drop` (422: a recommendation more than 50 % below the current price needs
+  `confirm_large_drop: true`; the console asks). A recommendation equal to the current price returns
+  `{applied: false, noop: true}` and writes nothing. Audit: `pricing.recommendation_applied` (with fingerprint and
+  the large-drop confirmation) plus the standard `product.updated` / `variant.updated` row. Orders, quotes and cart
+  snapshots keep the price they were created with: only the catalog price moves.
+* **Actual** (`GET /actual`, `/actual.csv`): the §7 margin report (ledger, job-cost fallback) converted at the saved
+  rate. **Revenue = `amount_minor − fee_minor (channel surcharge) − reseller_markup_minor`**: the surcharge is
+  pass-through (it exists to cover the gateway) and the reseller's markup is the reseller's income, so neither is
+  platform revenue (`paid` shows the gross amount). The gateway fee is computed on that revenue with today's
+  `zpay_fee_permille` (it is not stored per payment, hence `fee_estimated`); the channel comes from the order, else
+  its payment row, and an unknown channel gives no fee and `channel_unknown`, never an assumed zpay. Ledger rows
+  already hold the real card, top-up and service fees. A row is `cost_incomplete` with `reasons`:
+  `ledger_incomplete`, `unreconciled` (a job without ledger row), `after_sales_adjusted` (any after-sales case not
+  rejected: a full refund leaves the report, anything else may change revenue or cost), `fx_rate`,
+  `channel_unknown`, `no_cost`. The CSV carries the reasons and neutralises formula cells.
+* The delivery worker receives only the tenant settings keys the deadline maths reads, never `cost_model`.
+* Audit actions: `pricing.settings_updated`, `pricing.target_updated`, `pricing.recommendation_applied`,
+  `procurement.margin_exported`.
+
+### 19.4 Left open
+
+* The console help text exists in en and zh-CN; the typecheck of the new Vue panel ran only in CI.
+* Whether the "first 3 failures free" applies per card or per account is not modelled (informational).
+* Reseller prices (`reseller_prices`) and bundle / cart discounts are not part of the unit estimate.

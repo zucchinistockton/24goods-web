@@ -21,6 +21,7 @@ import {
   type SourceParams,
   type UnreconciledRow,
 } from '../api-procurement'
+import PricingPanel from '../components/PricingPanel.vue'
 import { createSuppliersApi, type AdminSupplier } from '../api-suppliers'
 import { usePaged } from '../composables/usePaged'
 import { useAuthStore } from '../stores/auth'
@@ -31,7 +32,7 @@ const suppliersApi = createSuppliersApi(client)
 const auth = useAuthStore()
 const { t, te, locale } = useI18n()
 
-const tab = ref<'jobs' | 'sources' | 'cost'>('jobs')
+const tab = ref<'jobs' | 'sources' | 'cost' | 'pricing'>('jobs')
 const when = (v: string | null | undefined) => (v ? formatDateTime(v, locale.value) : '—')
 const money = (v: string | null | undefined, cur: string | null | undefined) => (v == null ? '—' : `${v} ${cur ?? ''}`.trim())
 /** Server error codes of the procurement routes, translated when a key exists. */
@@ -574,6 +575,9 @@ onMounted(() => jobs.load())
             <el-pagination layout="total, prev, pager, next" :total="unreconciled.total.value" :page-size="unreconciled.pageSize" :current-page="unreconciled.page.value" @current-change="unreconciled.load" />
           </div>
         </div>
+      </el-tab-pane>
+      <el-tab-pane v-if="auth.isAdmin" name="pricing" :label="t('procurement.tab.pricing')" lazy>
+        <PricingPanel />
       </el-tab-pane>
     </el-tabs>
 
