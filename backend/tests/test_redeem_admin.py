@@ -319,6 +319,11 @@ def test_text_filter_strips_invisible_characters_and_links_are_refused():
     assert re.fullmatch(r"[a-h ]+", out), repr(out)
     assert rl.has_link("see https://x.example", "") and rl.has_link("WWW.evil.test")
     assert not rl.has_link("Back at 10:00 UTC", None)
+    # re-check of #49: invisible characters or spaces inside the scheme separator do not hide a link
+    for sneaky in ("https:\u200b//evil.example", "https: //evil.example", "w\u2060ww.evil.test",
+                   "https:\u202e//x", "ht tps : / / x", "w w w .evil.test"):  # fmt: skip
+        assert rl.has_link(sneaky), repr(sneaky)
+    assert not rl.has_link(rl.clean_text("Back at 10:00 UTC \u200b today", 100))
 
 
 async def test_links_in_announcement_text_are_refused(env, stack):
@@ -328,6 +333,10 @@ async def test_links_in_announcement_text_are_refused(env, stack):
         assert r.status_code == 422 and r.json()["error"]["code"] == "announcement_no_links"
     r = await admin.put(f"{API}/settings", json={"announcement_en": "see http://x.test"})
     assert r.status_code == 422
+    r = await admin.put(
+        f"{API}/settings", json={"announcement_en": "see https:\u200b//evil.example"}
+    )
+    assert r.status_code == 422 and r.json()["error"]["code"] == "announcement_no_links"
 
 
 async def test_public_config_serves_text_only_and_the_page_renders_it_as_text(env, stack):

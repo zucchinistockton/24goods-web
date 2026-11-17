@@ -51,8 +51,14 @@ _LINK = re.compile(r"://|www\.", re.IGNORECASE)
 
 def has_link(*texts: str | None) -> bool:
     """True when a display text carries something link-like (we never show clickable or copyable
-    URLs from an announcement: that is a phishing channel on a page buyers trust)."""
-    return any(_LINK.search(t or "") for t in texts)
+    URLs from an announcement: that is a phishing channel on a page buyers trust). Invisible / bidi
+    characters and ALL whitespace are removed before the search, so ``https:<ZWSP>//x`` or
+    ``https: //x`` (what ``clean_text`` would store) are caught too (re-check of #49)."""
+    for t in texts:
+        flat = re.sub(r"\s+", "", _UNSAFE.sub("", t or ""))
+        if _LINK.search(flat):
+            return True
+    return False
 
 
 _SPACES = re.compile(r"\s+")
