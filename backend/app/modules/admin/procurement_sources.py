@@ -179,6 +179,13 @@ async def _direct_checks(
     sandbox supplier (S-L1)."""
     if offer_kind != "direct":
         return
+    if params.get("vendor_switch") is True and supplier.env == "production":
+        # the vendor cannot restrict the switch pool yet: a switched order could pay with a card
+        # bought for a buyer. Sandbox and the demo mock only (review-v12 §21.2)
+        raise Validation(
+            "Vendor card switch is not available on a production supplier",
+            code="vendor_switch_unavailable",
+        )
     if params.get("card_mode", "fixed") == "fixed" and await funding_card_clash(
         db, supplier.tenant_id, supplier.id, params.get("card_id", 0)
     ):
