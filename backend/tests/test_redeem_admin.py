@@ -116,7 +116,7 @@ def test_settings_are_normalised_clamped_and_plain_text():
     s = rl.normalize_settings(
         {
             "maintenance": "yes",  # not a real bool
-            "announcement_en": "  Hello\x00‮  <b>world</b>\n\n" + "x" * 500,
+            "announcement_en": "  Hello\x00\u202e  <b>world</b>\n\n" + "x" * 500,
             "announcement_zh": 7,
             "ip_limits": {"preview": 999, "redeem": 0, "result": True, "preflight": 5, "evil": 1},
         }
@@ -126,7 +126,7 @@ def test_settings_are_normalised_clamped_and_plain_text():
     assert s["announcement_en"].startswith(
         "Hello <b>world</b> x"
     )  # text stays text (no markup rules)
-    assert "\x00" not in s["announcement_en"] and "‮" not in s["announcement_en"]
+    assert "\x00" not in s["announcement_en"] and "\u202e" not in s["announcement_en"]
     assert s["announcement_zh"] == ""
     assert s["ip_limits"] == {"preview": 30, "preflight": 5, "redeem": 1}
     assert rl.normalize_settings("garbage") == rl.default_settings()

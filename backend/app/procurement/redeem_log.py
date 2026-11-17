@@ -42,7 +42,7 @@ DEFAULT_MAINTENANCE = {
     "zh": "兑换服务暂时不可用，请稍后再试。",
 }
 
-_UNSAFE = re.compile(r"[\x00-\x1f\x7f-\x9f​-‏‪-‮⁦-⁩﻿]")
+_UNSAFE = re.compile(r"[\x00-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]")
 _SPACES = re.compile(r"\s+")
 _CODE_BAD = re.compile(r"[^A-Za-z0-9._:-]")
 
