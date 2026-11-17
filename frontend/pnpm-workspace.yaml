@@ -29,8 +29,9 @@ trustPolicyExclude:
 auditConfig:
   ignoreGhsas:
     # picomatch <= 4.0.7: ReDoS through repeated extglobs; no patched release (2026-11-17).
-    # Reached only via vue-router 5.4.0's file-routing plugin chunk, which only the
-    # vue-router/vite|unplugin|rollup|rolldown|webpack|esbuild entries load. We import the main
-    # entry only and use no vue-router build plugin, so it is never loaded, not even at build
-    # time; the shipped SPA bundles do not contain it. MANDATORY REVIEW: 2026-12-17.
+    # Production path: only vue-router 5.4.0's file-routing plugin chunk, loaded only by the
+    # vue-router/vite|unplugin|rollup|rolldown|webpack|esbuild entries, which we never import.
+    # It runs only at BUILD time (dev plugins unplugin-vue-components / unplugin-auto-import,
+    # on globs and paths from this repository); the shipped SPA bundles and the web image do
+    # not contain it, and no user input reaches it. MANDATORY REVIEW: 2026-12-17.
     - GHSA-fc5q-39xc-vjpf

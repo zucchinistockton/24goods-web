@@ -67,11 +67,13 @@ for (const line of ws) {
   else if (due[1] < today) { problems++; console.log(`pnpm-workspace.yaml  ${m[1]}: audit exception review was due ${due[1]}; re-assess (docs/security-exceptions.md)`) }
   note = []
 }
-// GHSA-fc5q-39xc-vjpf (picomatch) is ignored ONLY because vue-router's build plugin is never
-// loaded: importing any of its plugin entries voids that exception, so it is refused here.
-const pluginEntry = /from\s+['"]vue-router\/(vite|unplugin|rollup|rolldown|webpack|esbuild)\b|require\(\s*['"]vue-router\/(vite|unplugin|rollup|rolldown|webpack|esbuild)\b/
-const configs = ['apps/web', 'apps/admin', 'packages/shared'].flatMap((d) => {
-  try { return readdirSync(join(root, d)).filter((f) => /^vite(st)?\.config\./.test(f)).map((f) => join(root, d, f)) } catch { return [] }
+// GHSA-fc5q-39xc-vjpf (picomatch) is ignored partly because vue-router's build plugin is never
+// loaded: ANY quoted reference to one of its plugin entries (static, dynamic or side-effect
+// import, require, re-export) voids that exception, so it is refused in every workspace package
+// (apps/* and packages/*, sources and configs alike).
+const pluginEntry = /['"`]vue-router\/(vite|unplugin|rollup|rolldown|webpack|esbuild)(['"`/]|\.)/
+const workspaceDirs = ['apps', 'packages'].flatMap((d) => {
+  try { return readdirSync(join(root, d)).map((f) => join(root, d, f)).filter((p) => statSync(p).isDirectory()) } catch { return [] }
 })
 function scanPlugin(path) {
   const st = statSync(path)
@@ -84,7 +86,7 @@ function scanPlugin(path) {
     }
   })
 }
-for (const p of [...dirs.map((d) => join(root, d)), ...configs]) {
+for (const p of [...workspaceDirs, join(root, 'scripts')]) {
   try { scanPlugin(p) } catch (e) { if (e.code !== 'ENOENT') throw e }
 }
 

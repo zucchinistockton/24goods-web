@@ -26,8 +26,13 @@ fails once a review date has passed, so an exception cannot silently outlive its
    `/rolldown`, `/webpack` and `/esbuild` load that chunk. The runtime entry
    (`dist/vue-router.esm-bundler.js`) imports none of these packages.
 3. **What we load.** Our sources import only the main `vue-router` entry (46 imports, no subpath), and no
-   Vite config uses a vue-router plugin. The plugin chunk, and with it `picomatch`, is therefore **never loaded,
-   not even at build time**.
+   Vite config uses a vue-router plugin, so vue-router's copy of the path is never loaded. **`picomatch` does run
+   at build time, though:** the dev-only Vite plugins `unplugin-vue-components` (both apps) and
+   `unplugin-auto-import` (console) depend on `unplugin@3.7.0`, which uses it to match their include/exclude
+   globs against our source paths during `vite build`. Those globs and paths are written by us and come from the
+   repository, never from users. (These plugins are dev dependencies, so `pnpm audit --prod` does not list that
+   path; the exception does not hide it either.) Correction 2026-11-17 after the security review of PR #43: an
+   earlier draft said "not even at build time", which was wrong.
 4. **Deployed runtime.** The web image (Caddy serving static files) has no Node.js binary and no
    `node_modules`. Its 183 shipped JS files (buyer app, console, redemption page) contain no `picomatch`,
    `tinyglobby` or `unplugin` code. The backend is Python and does not use it.
@@ -35,8 +40,10 @@ fails once a review date has passed, so an exception cannot silently outlive its
    its input would be route-file globs written by developers at build time, never user data. In this project
    it is not called at all.
 
-**Conclusion:** not reachable from untrusted input and absent from deployed runtime code. Residual risk:
-none at runtime. At build time it is unused today.
+**Conclusion:** not reachable from untrusted input and absent from deployed runtime code, which meets the
+owner's condition. Residual risk: at build time on CI runners and developer machines, a ReDoS would need a
+pathological glob in our own Vite config or a crafted file path in the repository. Both are reviewed code, and
+the worst outcome is a slow or hung build, not a compromise of the shop.
 
 ### Conditions that void the exception
 
@@ -45,6 +52,7 @@ none at runtime. At build time it is unused today.
   `pnpm why picomatch --prod -r` at every dependency update touching `vue-router`, `vite` or `unplugin`, and at
   the review.
 - Any use of `picomatch` (directly or through a helper) on data from requests, uploads or the database.
+- Any build-time glob or path that is not written in the repository (for example generated from user content).
 
 ### Review procedure (2026-12-17 or earlier)
 
