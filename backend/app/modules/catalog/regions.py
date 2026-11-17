@@ -30,7 +30,7 @@ SETTINGS_KEY = "procurement_options"
 
 
 def is_half_plan(plan: object) -> bool:
-    """``plus_half`` and the Grok ``*_half`` keys: half-price promotions need an eligible account."""
+    """``plus_half`` and the Grok ``*_half`` keys (half price needs an eligible account)."""
     return isinstance(plan, str) and (plan == "plus_half" or plan.endswith("_half"))
 
 
