@@ -14,7 +14,7 @@ from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
 from app.core.errors import RateLimited, Unavailable
-from app.modules.realtime.publish import PREFIX
+from app.modules.realtime.publish import PREFIX, PROC_PROGRESS_CHANNEL
 
 log = logging.getLogger("app.realtime")
 
@@ -24,6 +24,7 @@ MAX_SUBSCRIBERS = 256
 MAX_TENANT_SUBSCRIBERS = 64
 MAX_ACCOUNT_SUBSCRIBERS = 4
 MAX_IP_SUBSCRIBERS = 16
+MAX_RELAYS = 32  # in-flight procurement progress relays; more are dropped (the page refetches)
 
 
 class Subscription:
@@ -41,8 +42,14 @@ class Subscription:
 
 
 class RealtimeHub:
-    def __init__(self, redis: Redis):
+    def __init__(
+        self,
+        redis: Redis,
+        on_progress: Callable[[bytes | str], Awaitable[object]] | None = None,
+    ):
         self._redis = redis
+        self._on_progress = on_progress  # API-side relay of the procurement channel
+        self._relays: set[asyncio.Task[object]] = set()
         self._subs: dict[str, set[Subscription]] = {}
         self._task: asyncio.Task[None] | None = None
         self._ready = asyncio.Event()
@@ -63,6 +70,8 @@ class RealtimeHub:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._task
             self._task = None
+        for t in list(self._relays):
+            t.cancel()
 
     def subscribe(
         self,
@@ -112,7 +121,17 @@ class RealtimeHub:
                 if not subs:
                     self._subs.pop(ch, None)
 
+    def _relay(self, raw: bytes | str) -> None:
+        if self._on_progress is None or len(self._relays) >= MAX_RELAYS:
+            return
+        task = asyncio.create_task(self._on_progress(raw), name="progress-relay")
+        self._relays.add(task)
+        task.add_done_callback(self._relays.discard)
+
     def dispatch(self, channel: str, raw: bytes | str) -> None:
+        if channel == PROC_PROGRESS_CHANNEL:
+            self._relay(raw)
+            return
         subs = self._subs.get(channel)
         if not subs:
             return
