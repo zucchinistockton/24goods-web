@@ -426,12 +426,12 @@ def test_card_operation_dedup_keeps_cards_apart_and_otp_fields_agree():
         assert "Ab12Cd" not in normalise(ev, sec).dedup_key
 
 
-async def test_card_otp_endpoint_is_empty_until_the_order_is_delivered(env, vup):
+async def test_card_otp_endpoint_is_always_empty(env, vup):
     vendor = MockZovo()
     await _zovo(vup, vendor, OPEN)
     buyer, order = await vup.paid_order()
     await vup.run()  # bought and sealed; delivery has not run: the order is still paid
-    await env.s.redis.set(
+    await env.s.redis.set(  # even a code planted in Redis is never served (owner decision)
         f"otp3ds:{order['id']}:1", '{"otp": "Zz9", "card": "x", "unit": 1}', ex=60
     )
     r = await buyer.get(f"/api/v1/orders/{order['id']}/card-otp")
@@ -662,7 +662,10 @@ async def test_card_secret_never_leaves_the_vault_strict_sweep(env, vup, caplog)
     job = await _job(vup, order)
     assert job.state == "fulfilled"
     assert [e for e in caplog.records if "malformed" in e.getMessage()] == []  # nothing echoed
-    http_bodies = [(await buyer.post(f"/api/v1/orders/{order['id']}/reveal")).text]  # the ONE exit
+    # owner decision 2026-11-17: the reveal is REFUSED; no HTTP exit shows the card
+    rev = await buyer.post(f"/api/v1/orders/{order['id']}/reveal")
+    assert rev.status_code == 409
+    http_bodies = [rev.text, (await buyer.get(f"/api/v1/orders/{order['id']}/card-otp")).text]
     # an OTP forwarded for this card goes through pub/sub as well
     raw, h = _signed({"event": "card_3ds_otp", "otp": "Qw8Er5Ty", "matrix_id": "M1",
                       "card_id": int(job.upstream_ref)})  # fmt: skip
@@ -678,8 +681,7 @@ async def test_card_secret_never_leaves_the_vault_strict_sweep(env, vup, caplog)
         http_bodies.append((await admin.get(url)).text)
     card = _card(vendor)
     pan, exp, cvv = card["card_number"], card["expire"], card["cvv"]
-    reveal = http_bodies.pop(0)
-    assert pan in reveal and cvv in reveal  # the reveal is the one place the secret may appear
+    assert pan not in rev.text and cvv not in rev.text  # refused: the reveal shows nothing
     for i, body in enumerate(http_bodies):
         assert _leaks(body, pan, exp, cvv) == [], f"http response {i}"
     # every public table, row by row: only the sealed blob holds the card
@@ -691,13 +693,13 @@ async def test_card_secret_never_leaves_the_vault_strict_sweep(env, vup, caplog)
     )
     for name, text_ in (await _all_dumps(env)).items():
         assert _leaks(text_, pan, exp, cvv) == [], f"table {name}"
-    # pub/sub: nothing published carries the card; the OTP goes only to the owner's channel
+    # pub/sub: nothing published carries the card, and the 3DS code is not published at all
     seen: list[str] = []
     while (m := await pubsub.get_message(timeout=0.3)) is not None:
         if m["type"] == "pmessage":
             seen.append(m["data"].decode())
     assert seen and all(_leaks(x, pan, exp, cvv) == [] for x in seen)
-    assert any("card_otp" in x for x in seen)  # the owner's channel got the code
+    assert not any("card_otp" in x or "Qw8Er5Ty" in x for x in seen)
     await pubsub.aclose()
     assert _leaks(caplog.text, pan, exp, cvv) == []  # logs at DEBUG, incl. both failure paths
     assert "Qw8Er5Ty" not in caplog.text
