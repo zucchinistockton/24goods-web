@@ -9,6 +9,29 @@ security review (M1 exit gate, AGENTS.md §1.11) has been passed and approved me
 deploying it to production and selling with real money. The review report itself is not in the repository yet:
 file it under `docs/research/` or link it here. Production deploy record: see the block below once done.
 
+**Production deploys 2026-11-16 (owner's explicit go-ahead, by hand).** (1) `24a64fb`: dark mode #6 + Telegram
+language #7, no migration. (2) `eed9972`: optional two-factor login #10, migration `0022a_user_totp` (additive;
+FORCE RLS verified on c4). `prod.sh smoke` all pass after each; api / web / delivery report `eed9972`.
+Rollback images on c4: `goods24-{api,web}:rollback-24a64fb` (before #10; drop table `user_totp` is not needed
+to run it) and `:rollback-d881dfa`. Before (2), two-factor login was walked through in a real browser on the
+demo (set up, sign in with a code, turn off). Hand procedure, still valid (`scripts/prod.sh deploy` has a dead
+registry token): tag rollback images from the running `:main`, `compose pull api web`, `run --rm migrate`,
+`up -d --wait`, `scripts/prod.sh smoke`. c4 root disk is at 87 %: old rollback images can be pruned.
+**Backups: the nightly off-host copy had been failing since 2026-11-08** (the dev-box cron ran
+`scripts/prod.sh backup`, which refuses until #28 is done; c4 itself kept making its 03:30 set). Fixed:
+`scripts/pull-prod-backups.sh` (read-only on c4, checksum-verified, keeps 14 sets) is what the cron runs now;
+the 2026-11-16 03:30 set is in `/root/kesiv-backups/nightly-20261116T033001Z` (`pg_restore --list`: 43 tables).
+Backups are still unencrypted and there has been no restore drill (#28, owner).
+
+**Optional two-factor login (2026-11-16, PR `feat/totp-2fa`, ADR-039, migration `0022a_user_totp`).** Buyers
+and staff can turn on an authenticator app (TOTP). Login for an enrolled account is password → pending token
+→ code (`POST /auth/login/2fa`); ten single-use recovery codes; admins can reset another user's second
+factor (Users page). Buyer app: second step on the login page (also after Google sign-in), My account →
+Settings → Two-factor login. Console: second step on the login page, user menu → Two-factor login. Tests:
+`tests/test_twofactor.py`, `tests/test_totp_core.py`. Not built: "require 2FA for staff". Security-reviewer (2026-11-16): pass with notes, no bypass of the second factor; its High finding (race in
+the wrong-code limiter) and the Medium ones (password reset keeps a squatter's enrolment; admin could reset
+another admin) are fixed, the rest are recorded as accepted risks in ADR-039. **Needs a human review before
+merge (auth path, AGENTS.md §5.3); the UI was typechecked by CI only and never seen in a browser.** When v12 reaches `main`, `0023_procurement` must revise `0022a_user_totp`.
 **Hand-off 2026-11-16 (this block supersedes the ones below).**
 
 - **v12 M2 is merged into `feat/v12-procurement`** (PR #2, squash `bfbd21c`, CI green incl. E2E on the same
