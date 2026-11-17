@@ -9,6 +9,12 @@ security review (M1 exit gate, AGENTS.md §1.11) has been passed and approved me
 deploying it to production and selling with real money. The review report itself is not in the repository yet:
 file it under `docs/research/` or link it here.
 
+**Demo testing guide and demo redemption host (2026-11-17).** `docs/testing-guide.md` is the hands-on guide for the
+shop, the console and the ZovoCard features (CDK, virtual cards, direct subscriptions, refunds, staff actions).
+`redeem.kesiv.com` serves production only; the demo's own redemption page is **`redeem-demo.kesiv.com`** (Cloudflare
+DNS → the demo box's Caddy `/etc/caddy/sites/redeem-demo.kesiv.com.conf` with the wildcard origin certificate →
+demo stack, `REDEEM_HOST=redeem-demo.kesiv.com`).
+
 **Production launch of v12, 2026-11-17 (owner's go-ahead in the same message).** Production (c4) runs `55ad99a`
 (`main` after the release merge #23 `d074ac3` and the redeem fix #24); migrations `0023`–`0030` applied (database at
 `0030_cred_delete_backstop`); api / web / delivery / **procurement** healthy; `prod.sh smoke` all pass; data intact
