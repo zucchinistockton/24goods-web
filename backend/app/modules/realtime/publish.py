@@ -10,9 +10,12 @@ from typing import Any
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
+from app.procurement.notify import PROC_PROGRESS_CHANNEL
+
 log = logging.getLogger("app.realtime")
 
 PREFIX = "rt:"
+__all__ = ["PREFIX", "PROC_PROGRESS_CHANNEL"]  # (the channel constant is re-exported)
 
 
 def user_channel(user_id: uuid.UUID | str) -> str:
@@ -31,7 +34,8 @@ async def publish(redis: Redis, channel: str, event: str, data: Any) -> None:
     try:
         await redis.publish(channel, json.dumps({"event": event, "data": data}, default=str))
     except RedisError as exc:
-        log.warning("realtime publish failed channel=%s error=%s", channel, type(exc).__name__)
+        # the channel name carries a user id: log the event type only
+        log.warning("realtime publish failed event=%s error=%s", event, type(exc).__name__)
 
 
 async def publish_message(
@@ -51,6 +55,13 @@ async def publish_order(
 ) -> None:
     await publish(redis, user_channel(buyer_id), "order", buyer_view)
     await publish(redis, staff_channel(tenant_id), "order", staff_view)
+
+
+async def publish_order_progress(redis: Redis, buyer_id: uuid.UUID, data: dict[str, Any]) -> None:
+    """API side: a direct order's buyer-facing progress step changed (issue #30). ``data`` is the
+    coarse progress view only (``order_id`` + step / percent / outcome / reason), never vendor
+    detail; the buyer's page refetches ``GET /orders/{ref}/direct`` on it."""
+    await publish(redis, user_channel(buyer_id), "order_progress", data)
 
 
 async def publish_after_sales(

@@ -68,8 +68,10 @@ from app.procurement.funding import (
     funding_mask_clash,
     lock_card,
 )
+from app.procurement.notify import notify_progress_changed
 from app.procurement.risk import DECLINE_CODES
 from app.procurement.service import SupplierRef, make_supplier, refresh_balance
+from app.suppliers import direct_progress as progress
 from app.suppliers.base import (
     JobSpec,
     Money,
@@ -795,7 +797,9 @@ async def handle_event(ctx: ProcurementContext, db: AsyncSession, payload: dict)
             )
         )
         dstatus = (ev.payload or {}).get("status")
+        hint = progress.vendor_from_webhook(ev.payload or {})
         for job in djobs:
+            _record_progress(job, hint, "webhook", now)
             if isinstance(dstatus, str) and job.state in ACTIVE:
                 job.upstream_status = clean_detail(dstatus, 32)
             if job.state in ACTIVE and not _leased(job, now):
@@ -2080,6 +2084,15 @@ async def _alert_if_stuck(db: AsyncSession, job: ProcurementJob, now: datetime) 
         )
 
 
+def _record_progress(job: ProcurementJob, vendor: Any, source: str, now: datetime) -> None:
+    """Staff timeline + buyer step bookkeeping is best effort: a corrupt ``progress`` document
+    must never abort the real state transition around it (the old document is kept)."""
+    try:
+        job.progress, _ = progress.record(job.progress, vendor, source, now)
+    except Exception as exc:
+        log.error("progress record failed error=%s", type(exc).__name__)
+
+
 def _record_reference(job: ProcurementJob, res: Result, mode: str) -> str | None:
     """A multi-step purchase (a card) knows its supplier reference before it is finished: record it
     on EVERY answer that carries one (ambiguous, pending, refused after the open), so the job is
@@ -2095,6 +2108,8 @@ def _record_reference(job: ProcurementJob, res: Result, mode: str) -> str | None
         job.card_mask = res.card_mask[:24]
     if res.detail:
         job.upstream_status = clean_detail(res.detail, 32)  # direct: vendor status:fee status
+    if res.vendor and job.kind == "direct":  # issue #30: what CHANGED goes to the staff timeline
+        _record_progress(job, res.vendor, "poll", utcnow())
     if res.account_mask and not job.account_mask:
         job.account_mask = res.account_mask[:64]  # masked e-mail only, never the session
     if res.preflight_expires_at is not None:
@@ -2418,6 +2433,71 @@ async def _apply(ctx: ProcurementContext, lease: Lease, res: Result) -> None:
         await db.commit()
 
 
+async def _publish_progress(
+    ctx: ProcurementContext, tenant_id: uuid.UUID, job_id: uuid.UUID
+) -> None:
+    """Tell the API when the buyer's STEP changed since the last SUCCESSFUL notification (the step
+    last notified lives in ``progress.pub``; it is only set after Redis accepted the message, so a
+    failed publish is retried on the next pass). The message carries ids only; the API derives the
+    buyer and the progress itself. Nothing is written, and no row lock taken, on a pass where
+    nothing changed. Never raises."""
+    try:
+        async with tenant_session(ctx.maker, tenant_id) as db:
+            job = await db.scalar(
+                select(ProcurementJob).where(
+                    ProcurementJob.id == job_id, ProcurementJob.tenant_id == tenant_id
+                )
+            )
+            if job is None or job.kind != "direct":
+                return
+            order_status = await db.scalar(
+                select(Order.status).where(Order.id == job.order_id, Order.tenant_id == tenant_id)
+            )
+            offer = await _offer_any(db, job)
+            half = bool(offer and dr.is_half_plan((offer.params or {}).get("plan")))
+            p = progress.from_job(job, half=half, order_refunded=order_status == "refunded")
+            doc = progress.stamp(job.progress, p.step, utcnow())
+            order_id, old = job.order_id, dict(job.progress or {})
+            if doc == old and doc.get("pub") == p.step:
+                return  # nothing changed: no write, no lock
+            await db.rollback()
+            if doc.get("reached") != old.get("reached"):
+                await _write_progress(db, job_id, tenant_id, reached_step=p.step)
+        if doc.get("pub") != p.step and await notify_progress_changed(
+            ctx.redis, tenant_id, order_id
+        ):
+            async with tenant_session(ctx.maker, tenant_id) as db:
+                await _write_progress(db, job_id, tenant_id, pub_step=p.step)
+    except Exception as exc:
+        log.error("progress publish failed error=%s", type(exc).__name__)
+
+
+async def _write_progress(
+    db: AsyncSession,
+    job_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    *,
+    reached_step: str | None = None,
+    pub_step: str | None = None,
+) -> None:
+    """Merge one bookkeeping key into the (freshly locked) progress document and commit."""
+    job = await db.scalar(
+        select(ProcurementJob)
+        .where(ProcurementJob.id == job_id, ProcurementJob.tenant_id == tenant_id)
+        .with_for_update()
+    )
+    if job is None:
+        await db.rollback()
+        return
+    doc = dict(job.progress or {})
+    if reached_step is not None:
+        doc = progress.stamp(doc, reached_step, utcnow())
+    if pub_step is not None:
+        doc["pub"] = pub_step
+    job.progress = doc
+    await db.commit()
+
+
 async def process_job(ctx: ProcurementContext, job_id: uuid.UUID, tenant_id: uuid.UUID) -> bool:
     lease = await _lease(ctx, job_id, tenant_id)
     if lease is None:
@@ -2428,6 +2508,8 @@ async def process_job(ctx: ProcurementContext, job_id: uuid.UUID, tenant_id: uui
         await _apply(ctx, lease, res)
     finally:
         del res  # drop the plaintext reference as early as possible
+    if lease.mode != "void":
+        await _publish_progress(ctx, lease.tenant_id, lease.job_id)
     if lease.mode == "precheck":
         await process_job(ctx, job_id, tenant_id)  # a passed check sends in the same pass
     if charged:  # review-v12 §6: the balance (and the breaker) is refreshed after every job

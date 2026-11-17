@@ -120,7 +120,29 @@ export interface JobTimelineRow {
   reason: string | null
   error_code: string | null
 }
+/** Issue #30: one change the supplier reported (poll or webhook); text already sanitised. */
+export interface SupplierTimelineRow {
+  at: string
+  src: 'poll' | 'webhook' | string
+  status?: string
+  stage?: string
+  payment_state?: string
+  funding_state?: string
+  kind?: 'event' | string
+  tid?: string
+  cat?: string
+  step?: string
+  code?: string
+  msg?: string
+  to?: string
+  fact?: string
+}
 export interface ProcJobDetail extends ProcJob {
+  /** direct jobs: what the supplier reported, one row per change (newest last) */
+  supplier_timeline?: SupplierTimelineRow[]
+  vendor_state?: { status?: string; stage?: string; payment_state?: string; funding_state?: string }
+  /** the buyer's current step as the buyer sees it */
+  buyer_progress?: { step: string; percent: number; outcome: string; reason: string | null }
   tried_offer_ids: string[]
   /** whether a code is stored; the code itself never reaches the console */
   has_code: boolean

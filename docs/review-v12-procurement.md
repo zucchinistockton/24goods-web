@@ -1508,3 +1508,83 @@ normal line height (`.form-hint`).
 reset-usage), card-rules defaults with the documented fields. **Tests:** `tests/test_procurement_cards.py` (authorization by role
 and tenant, validation, production guard, audit rows, per-tenant counts, risk maths, once-a-day warnings, PAN sweep of responses,
 logs and audit rows); admin vitest `test/card-pool-v13.test.ts`.
+
+## 22. Progress display and the supplier timeline (issue #30)
+
+Goal: the buyer sees where a direct order or a CDK redemption stands (a step list, a percentage, plain failure text); staff see
+every change the supplier reported. Model taken from the vendor reference code's `RechargeView.vue` (issue #31 evaluation): an
+event timeline plus polling of the result; here the timeline is recorded server side and the buyer gets only the coarse step.
+
+**22.1 Step model** (`app/suppliers/direct_progress.py`, pure, unit-tested). `map_progress(job state, vendor status / stage /
+payment_state / funding_state, flags)` -> `(step, percent, terminal, outcome, reason)`. Never raises.
+
+| step | % | whose | when |
+|---|---|---|---|
+| `paid` | 10 | ours | order paid, job not sent |
+| `half_check` | 15 | ours | half-price plan, not sent yet (time = the check's decision) |
+| `waiting_supplier` | 20 | ours | job parked without a funding card (#29). The key says nothing about cards on purpose |
+| `sent` | 30 | ours | sent to the vendor, no vendor state yet |
+| `queued` | 40 | vendor | `queued`, `awaiting_card` |
+| `funding` | 55 | vendor | `funding_pending`, or an unready `funding_state` |
+| `processing` | 70 | vendor | `dispatching`, `running`, `requires_action`, `pending`, any `*review*`, `funding_state=card_ready` |
+| `payment_submitted` | 85 | vendor | `plus_paid`, or a `payment_state` that says submitted / paid / charged / settled |
+| `completed` | 100 | ours | OUR job is `fulfilled`. A vendor `completed` alone shows 85: it is a hint (the same rule as every vendor signal) |
+| `failed` | kept | terminal | job `failed` / `voided`, or `needs_manual` with a vendor failure status. Reason `declined` (`declined`, `failed_precharge`), `cancelled`, `expired`, else `not_completed` |
+| `refunded` | kept | terminal | the order is refunded |
+| `attention` | kept | not terminal | `needs_manual` without a vendor failure. Reason `account` (session / credential codes) or `review`; the internal error code is never sent |
+
+A failure keeps the percent of the furthest step reached. A redemption (`redeem_progress`) uses the same table without `paid`;
+it reaches `completed` through the vendor's own terminal status (`completed` or the sandbox's `succeeded`) because no delivery of
+ours follows.
+
+**[I] Inferred (not in the vendor docs):** the values of `payment_state` and `funding_state` (only `funding_state: card_ready` and
+`final`/`held`-style hold statuses appear in the doc examples); the `stage` vocabulary beyond `cdk_accepted` and `completed`
+(matched by substrings `fund`, `card_select`, `dispatch`, `running`, `processing`, `action`, `pending`, `paid`, `submitted`);
+that every `*review*` status keeps processing; the id key of a `data.events` item (`timeline_event_id`, else `id`, else
+`event_id`); that an unknown status with no other signal means `queued`. An unknown value never maps to `completed` or `failed`.
+Run the sandbox once per status before real money to confirm the table.
+
+**22.2 Staff timeline.** Stored on the job, not in a new table: `procurement_jobs.progress` (jsonb, migration `0034_job_progress`)
+holds `v` (last vendor fields), `events` (the timeline), `seen` (vendor event ids), `reached` (first time of each step) and `pub`
+(last published step). An entry is added only when `status`, `stage`, `payment_state` or `funding_state` CHANGED, or for a vendor
+timeline event id not seen before; source `poll` (every supplier read: `_record_reference`) or `webhook` (`handle_event`).
+Identical consecutive entries are dropped; at most 200 entries (oldest dropped) and 400 remembered event ids. An entry holds time,
+source, the four fields, `public_code` (machine token) and `public_message` sanitised by `clean_message`: control and
+bidi characters removed, no URLs, no e-mail addresses, digit runs (card numbers) become `****`, 24+ character token-like strings
+removed, 160 characters. Nothing else of the vendor body is kept (`vendor_view` is a whitelist), so no session, code, card number
+or OTP can reach the column. The webhook whitelist gained `payment_state`, `funding_state`, `timeline_event_id`, `category`,
+`step`, `public_code`, `payment_fact` and a sanitised `public_message`. Staff read it in `GET /admin/procurement/jobs/{id}`
+(`supplier_timeline`, `vendor_state`, `buyer_progress`); RLS and the tenant filter are those of the job. Why not a table: one
+bounded document per job needs no new grant or policy and is read with the job; the cost is one rewritten row per change (at most
+a few dozen in practice).
+
+**22.3 Buyer.** `GET /orders/{ref}/direct` gains `progress` (steps with `done | current | todo | failed | attention` and a time,
+percent, outcome, reason key, completion time). Times: paid = `orders.paid_at`, half check = its decision time, waiting = first
+wait, sent = first send, vendor steps = `progress.reached`. No vendor code, message, status text or internal error code is in it.
+The order page shows a bar, the percentage, the steps and a plain sentence (en + zh-CN). **Realtime (least privilege):** after a job pass whose step differs from `progress.pub`, the
+procurement process publishes ONLY `{"tenant_id","order_id"}` on the single channel `rt:procprogress`
+(`procurement/notify.py`; no buyer id, no step data, no import of API code). `progress.pub` is set only after Redis accepted the
+message, so a failed publish is retried on the next pass; a pass where nothing changed writes nothing and takes no row lock. The
+API hub (`modules/realtime/hub.py`) relays it through `modules/realtime/progress.py`: it parses defensively (malformed messages
+are ignored), reads the order under THAT tenant (another tenant's order is not found), resolves the buyer itself, recomputes the
+progress from the database and publishes the coarse `order_progress` event (`order_id`, step, percent, outcome, reason) on the
+buyer's channel; the page refetches the direct info once on it. No new timer and **no new DB grant** (0034 grants nothing on
+`orders`). The procurement Redis ACL gets exactly `+publish` and `&rt:procprogress`, so a compromised vendor-facing process
+cannot forge an event on any user or staff channel. **Existing deployments** must patch `secrets/users.acl` (Redis does not
+re-read it by itself) and reload; see ADR-043 for the exact line.
+
+**22.3a Hardening.** Vendor text is truncated to 4x the cap before any pattern and every pattern is linear (URL-, mail- and
+domain-like tokens are dropped whole; 64 KB adversarial inputs finish in well under a millisecond). Recording is best effort
+(`engine._record_progress`: a corrupt `progress` document is logged by exception type and kept, the state transition commits).
+The buyer's step never moves backwards: `progress.v` only takes an equal or higher rank (a late webhook or a vendor `failed` on an
+active job is ignored for the buyer), while `progress.raw` and the staff timeline keep every change. `vendor_view` reads the
+NEWEST 50 vendor events (by event time, else numeric id, else list tail). Webhook progress fields are `clean_code`d and capped.
+
+**22.4 Redemption page.** The proxy's `result` and `redeem` answers carry the same `progress` document (only fixed keys). The SPA
+(`deploy/redeem/`) shows the bar, the steps and the reason sentence on the result view, updated by the existing polling (4 s
+backing off to 15 s, 2 min); no extra vendor call.
+
+**22.5 Tests.** `tests/test_direct_progress.py`: the mapping table and unknown values, sanitising, the whitelist, recording /
+dedupe by value and by vendor event id / the 200 cap, the webhook whitelist, the redemption shape; with the engine and the mock
+vendor: timeline rows, staff view, buyer view (coarse keys, leak sweep including the session marker), one realtime publish per
+step change, a webhook entry, tenant isolation (foreign job 404, RLS, other buyer 404). Vitest: `test/directProgress.test.ts`.

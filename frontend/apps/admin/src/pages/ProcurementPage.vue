@@ -652,6 +652,29 @@ onMounted(() => {
             </div>
           </template>
 
+          <template v-if="detail.buyer_progress">
+            <h2 class="h gap">{{ t('procurement.job.supplierTimeline') }}</h2>
+            <p class="small">
+              <span class="muted">{{ t('procurement.job.buyerSees') }}:</span>
+              <b> {{ detail.buyer_progress.step }} · {{ detail.buyer_progress.percent }}%</b>
+              <span v-if="detail.buyer_progress.reason" class="muted"> · {{ detail.buyer_progress.reason }}</span>
+            </p>
+            <p v-if="!detail.supplier_timeline?.length" class="muted small">{{ t('procurement.job.supplierTimelineEmpty') }}</p>
+            <el-timeline v-else>
+              <el-timeline-item v-for="(e, i) in detail.supplier_timeline" :key="i" :timestamp="when(e.at)" :type="e.src === 'webhook' ? 'success' : 'info'" placement="top">
+                <span class="muted small">{{ t(`procurement.job.src.${e.src === 'webhook' ? 'webhook' : 'poll'}`) }}</span>
+                <div v-if="e.status || e.stage || e.payment_state || e.funding_state" class="mono small">
+                  <span v-if="e.status">{{ t('procurement.job.vStatus') }}={{ e.status }} </span>
+                  <span v-if="e.stage">{{ t('procurement.job.vStage') }}={{ e.stage }} </span>
+                  <span v-if="e.payment_state">{{ t('procurement.job.vPayment') }}={{ e.payment_state }} </span>
+                  <span v-if="e.funding_state">{{ t('procurement.job.vFunding') }}={{ e.funding_state }}</span>
+                </div>
+                <div v-if="e.code || e.step || e.cat" class="mono small">{{ [e.cat, e.step, e.code].filter(Boolean).join(' / ') }}<span v-if="e.to"> → {{ e.to }}</span><span v-if="e.fact"> ({{ e.fact }})</span></div>
+                <div v-if="e.msg" class="small pre">{{ e.msg }}</div>
+              </el-timeline-item>
+            </el-timeline>
+          </template>
+
           <h2 class="h gap">{{ t('procurement.job.timeline') }}</h2>
           <el-timeline>
             <el-timeline-item v-for="(e, i) in detail.timeline" :key="i" :timestamp="when(e.at)" :type="e.severity === 'critical' ? 'danger' : e.severity === 'warning' ? 'warning' : 'primary'" placement="top">

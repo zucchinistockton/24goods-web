@@ -308,6 +308,7 @@ class MockZovo:
     direct_fee_status: str = "held"  # ``service_fee_status`` of an order that did not complete
     direct_omit: set[str] = field(default_factory=set)  # order-view fields left out (a quirk)
     direct_order_over: dict[str, Any] = field(default_factory=dict)  # order-view overrides
+    direct_events: list[dict[str, Any]] = field(default_factory=list)  # ``data.events`` (issue #30)
     usage_remaining: dict[int, int] = field(default_factory=dict)  # funding card -> remaining uses
     list_cap: int = 100  # rows per page the order list really returns (paging tests)
     direct_current_plan: str = "free"  # what the preflight reports as the account's plan
@@ -737,7 +738,7 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
                 o["status"] = "running"
             else:
                 o["status"] = mock.direct_end
-        return JSONResponse(_env(0, {"order": _order_view(o), "events": []}))
+        return JSONResponse(_env(0, {"order": _order_view(o), "events": list(mock.direct_events)}))
 
     def _write(request: Request, path: str, body: dict[str, Any]) -> JSONResponse:
         if path == "/gpt-direct/orders":

@@ -122,6 +122,8 @@ class ProcurementJob(Base):
     used_last4: Mapped[str | None] = mapped_column(String(4))
     card_candidates_at: Mapped[datetime | None]
     card_attempt: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # 0034 (issue #30): vendor state, staff timeline and step times (see the migration docstring)
+    progress: Mapped[dict[str, Any] | None]
     created_at: Mapped[datetime] = created_at()
     updated_at: Mapped[datetime] = updated_at()
 

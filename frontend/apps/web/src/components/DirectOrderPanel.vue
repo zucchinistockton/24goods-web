@@ -3,11 +3,14 @@
  * What the buyer may see of a direct order: the masked account, the plan and where it stands.
  * When the first session expired or was refused, the buyer can supply a fresh one here.
  */
-import { onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { DirectOrderInfo } from '@24goods/shared'
 import { api } from '../api'
+import DirectProgress from './DirectProgress.vue'
+import { createCoalescer } from '../lib/progressUi'
 import DirectSessionSheet from './DirectSessionSheet.vue'
+import { useRealtimeStore } from '../stores/realtime'
 import { showSuccessToast, toastError } from '../ui'
 
 const props = defineProps<{ orderId: string; productId: string | null; canResupply: boolean }>()
@@ -24,6 +27,18 @@ async function load() {
   }
 }
 onMounted(load)
+// issue #30: the engine publishes a coarse event when the buyer's step changes; the page then
+// refetches the direct info. Debounced (500 ms) and coalesced: never two loads in flight, and
+// events that arrive during one cost a single extra load. Nothing polls beyond the page's sync.
+const rt = useRealtimeStore()
+const refetch = createCoalescer(load, 500)
+const off = rt.on('order_progress', (e) => {
+  if (e.order_id === props.orderId) refetch.trigger()
+})
+onBeforeUnmount(() => {
+  off()
+  refetch.cancel()
+})
 defineExpose({ load })
 
 async function resupply(session: string) {
@@ -46,6 +61,7 @@ const stateText = (s: string | null) => (s && te(`direct.state.${s}`) ? t(`direc
 <template>
   <div v-if="info" class="direct">
     <h3 class="direct-title">{{ t('direct.orderTitle') }}</h3>
+    <DirectProgress v-if="info.progress" :progress="info.progress" />
     <dl class="facts">
       <div>
         <dt>{{ t('direct.account') }}</dt>

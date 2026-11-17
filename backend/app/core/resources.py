@@ -17,6 +17,7 @@ from app.core.security import SessionStore
 from app.core.tenancy import TenantResolver
 from app.core.vaultkeys import build_credential_sealer, build_sealer
 from app.modules.realtime.hub import RealtimeHub
+from app.modules.realtime.progress import handle_message as handle_progress
 from app.payments.bepusdt import BepusdtClient, BepusdtConfig
 from app.payments.zpay import ZPayClient, ZPayConfig
 
@@ -105,7 +106,7 @@ def build_resources(
         bepusdt=BepusdtClient(bepusdt_config(settings), http),
         delivery=delivery,
         http=http,
-        hub=RealtimeHub(redis),
+        hub=RealtimeHub(redis, lambda raw: handle_progress(maker, redis, raw)),
         procurement=procurement,
         cred_sealer=build_credential_sealer(settings),
     )

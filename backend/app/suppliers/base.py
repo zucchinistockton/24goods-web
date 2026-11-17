@@ -178,6 +178,9 @@ class Result:
     no_order_verified: bool = False
     # direct: short machine summary of the vendor order (``status:fee_status``), shown to staff
     detail: str | None = None
+    # direct: whitelist of the vendor order read (state fields + sanitised timeline events), see
+    # ``suppliers/direct_progress.py``; never a raw body
+    vendor: dict[str, Any] | None = None
 
     @classmethod
     def from_error(
