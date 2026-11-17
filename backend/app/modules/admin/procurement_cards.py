@@ -89,6 +89,12 @@ async def _ask(res: Resources, path: str, payload: dict[str, Any]) -> dict[str, 
     if resp.status_code == 404:
         raise NotFound("No ZovoCard supplier")
     if resp.status_code == 409:
+        try:
+            code = resp.json()["error"]["code"]
+        except (ValueError, KeyError, TypeError):
+            code = ""
+        if code == "supplier_disabled":
+            raise InvalidState("The supplier is disabled", code="supplier_disabled")
         raise InvalidState(
             "Writes to a production supplier are disabled", code="production_writes_disabled"
         )

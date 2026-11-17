@@ -17,7 +17,7 @@ from tests.test_procurement_direct import (  # noqa: F401  (fixture helpers)
     _vendor,
     dup,
 )
-from tests.test_procurement_vcc import _rows, _sql, _zovo
+from tests.test_procurement_vcc import OK_KEY, _rows, _sql, _zovo
 
 API = "/api/v1/admin/procurement/cards"
 AUTO = {"product": "claude", "plan": "pro", "card_mode": "auto_existing"}
@@ -356,6 +356,107 @@ async def test_a_buyers_card_cannot_be_reset_as_a_funding_card(env, dup):  # noq
     assert r.status_code == 422 and vendor.usage_resets == []
 
 
+async def _buyer_vcc(
+    env, tenant_id, *, sid, ref: str | None, mask: str | None, key: str, state="fulfilled"
+):
+    oid = await _order(env, tenant_id)
+    await _sqlt(
+        env,
+        tenant_id,
+        "INSERT INTO procurement_jobs (tenant_id, order_id, unit_no, kind, state, step, "
+        "idempotency_key, supplier_id, upstream_ref, card_mask) VALUES (:t, :o, 1, 'vcc', :st, "
+        "'submit', :k, :s, :u, :m)",
+        t=tenant_id, o=oid, st=state, k=key, s=sid, u=ref, m=mask,
+    )  # fmt: skip
+
+
+async def test_buyer_cards_are_excluded_whatever_the_supplier_row_or_the_record(env, dup):  # noqa: F811
+    vendor = _vendor2()
+    for cid in (7777, 7778, 7779, 7780):
+        vendor.add_funding_card(cid)
+    sid, _ = await _zovo(dup, vendor, AUTO)
+    sid2, _ = await _zovo(dup, vendor, AUTO, code="zovocard_b", priority=20)
+    # M1: bought through the OTHER supplier row of the same vendor account
+    await _buyer_vcc(env, env.tenant_id, sid=sid2, ref="7777", mask=None, key="pj:o1")
+    # a hand-pasted buyer card: no vendor id, no supplier, only the mask
+    await _buyer_vcc(env, env.tenant_id, sid=None, ref=None, mask="537800****7778", key="pj:o2")
+    # a voided job's mask does not exclude (the card is not a live buyer card)
+    await _buyer_vcc(
+        env, env.tenant_id, sid=None, ref=None, mask="537800****7779", key="pj:o3", state="voided"
+    )
+    # ANOTHER tenant's buyer card on the same ids/masks must not exclude ours
+    await _buyer_vcc(
+        env, env.other_tenant_id, sid=None, ref="7780", mask="537800****7780", key="pj:o4"
+    )
+    staff, _ = await env.login("agent")
+    r = await staff.get(f"{API}/pool", params={"product": "gpt", "supplier_id": str(sid)})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    ids = {c["id"] for c in body["cards"]}
+    assert 7777 not in ids and 7778 not in ids
+    assert {4242, 4243, 7779, 7780} <= ids
+    assert body["excluded_buyer_cards"] == 2
+    assert all("buyer_mask" not in c for c in body["cards"])
+    assert "537800" not in r.text
+    admin, _ = await env.login("admin")
+    for cid in (7777, 7778):
+        r = await admin.post(
+            f"{API}/reset-failed",
+            json={"card_ids": [cid], "confirm": True, "supplier_id": str(sid)},
+        )
+        assert r.status_code == 422, (cid, r.text)
+    assert vendor.usage_resets == []
+    r = await admin.post(
+        f"{API}/reset-failed", json={"card_ids": [7780], "confirm": True, "supplier_id": str(sid)}
+    )
+    assert r.status_code == 200, r.text  # the foreign tenant's record does not block us
+
+
+async def test_a_disabled_supplier_is_not_written_to_but_can_be_read(env, dup):  # noqa: F811
+    vendor = _vendor2()
+    sid, _ = await _zovo(dup, vendor, AUTO)
+    await _sql(env, "UPDATE suppliers SET enabled = false WHERE id = :i", i=sid)
+    admin, _ = await env.login("admin")
+    q = {"supplier_id": str(sid)}
+    r = await admin.put(f"{API}/rules/gpt", json={"light_max_uses": 3, **q})
+    assert r.status_code == 409 and r.json()["error"]["code"] == "supplier_disabled", r.text
+    r = await admin.post(f"{API}/reset-failed", json={"card_ids": [4242], "confirm": True, **q})
+    assert r.status_code == 409 and r.json()["error"]["code"] == "supplier_disabled", r.text
+    assert not [x for x in vendor.requests if x[0] != "GET"]
+    assert (await admin.get(f"{API}/rules", params=q)).status_code == 200
+
+
+def test_a_sandbox_row_pointing_at_a_public_non_sandbox_host_counts_as_production():
+    from app.suppliers.zovocard.client import ZovoConfig
+
+    def cfg(url: str, env: str = "sandbox") -> ZovoConfig:
+        return ZovoConfig(base_url=url, app_secret=OK_KEY, env=env)
+
+    assert cfg("https://zovocard.com/openapi/v1").production_target  # sandbox label, prod host
+    assert cfg("https://sandbox.zovocard.com.evil.example/openapi/v1").production_target
+    assert cfg("https://sandbox.zovocard.com/openapi/v1", "production").production_target
+    assert not cfg("https://sandbox.zovocard.com/openapi/v1").production_target
+    assert not cfg("http://m/openapi/v1").production_target  # our simulator, dev only
+
+
+async def test_the_client_backstop_blocks_a_mislabelled_sandbox_write():
+    import pytest
+
+    from app.suppliers.zovocard.client import (
+        ProductionWriteBlocked,
+        TokenBucket,
+        ZovoClient,
+        ZovoConfig,
+    )
+
+    client = ZovoClient(
+        ZovoConfig(base_url="https://zovocard.com/openapi/v1", app_secret=OK_KEY),
+        bucket=TokenBucket(6000, 100),
+    )
+    with pytest.raises(ProductionWriteBlocked):
+        await client.request("PUT", "/gpt-direct/card-rules", json_body={}, idempotency_key="k1")
+
+
 async def test_write_calls_are_rate_limited(env, dup):  # noqa: F811
     await _zovo(dup, _vendor2(), AUTO)
     admin, _ = await env.login("admin")
@@ -464,7 +565,7 @@ def test_parsers_drop_unknown_shapes_and_never_keep_a_card_number():
     )  # fmt: skip
     assert total == 3 and len(rows) == 1
     assert rows[0] == {"id": 1, "last4": "4242", "product_code": "P1", "status": "ACTIVE",
-                       "balance": "5"}  # fmt: skip
+                       "balance": "5", "buyer_mask": False}  # fmt: skip
     assert "5378" not in str(rows) and "123" not in str(rows)
     assert cp.parse_usage("junk") == {"readable": False}
     u = cp.parse_usage({"light": {"remaining": -1, "cap": 0}, "pro20": {}, "cooling": True})

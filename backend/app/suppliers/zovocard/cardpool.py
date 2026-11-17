@@ -56,11 +56,16 @@ def last4_of_pan(pan: Any) -> str | None:
     return digits[-4:] if len(digits) >= 12 else None
 
 
-def parse_card_rows(data: Any) -> tuple[list[dict[str, Any]], int | None]:
+def parse_card_rows(
+    data: Any, exclude_masks: frozenset[str] = frozenset()
+) -> tuple[list[dict[str, Any]], int | None]:
     """``GET /cards`` [V]: ``{total, list: [{id, card_number, product_code, available_amount,
     status, ...}]}`` -> ``(rows, total)``. A row keeps id, last four, product code, balance (a
-    decimal string), status. The PAN and everything else are dropped."""
+    decimal string), status, and ``buyer_mask``: True when the masked number (first six + last
+    four, computed here while the PAN is still in hand) is in ``exclude_masks``, i.e. a card
+    bought for a buyer. The PAN and everything else are dropped."""
     from app.suppliers.zovocard.supplier import _dec_or_none  # local: no import cycle
+    from app.suppliers.zovocard.webhook import mask_pan
 
     if not isinstance(data, Mapping):
         return [], None
@@ -82,6 +87,9 @@ def parse_card_rows(data: Any) -> tuple[list[dict[str, Any]], int | None]:
                 "product_code": _SKIP_RE.sub("", code),
                 "status": status,
                 "balance": str(bal) if bal is not None else None,
+                "buyer_mask": bool(exclude_masks)
+                and last4_of_pan(item.get("card_number")) is not None
+                and mask_pan(item.get("card_number")) in exclude_masks,
             }
         )
     return rows, total
@@ -198,13 +206,16 @@ def parse_rules(data: Any) -> dict[str, dict[str, Any]]:
 
 
 # --------------------------------------------------------------------------------------- calls
-async def read_cards(client: ZovoClient) -> list[dict[str, Any]]:
-    """Every card of our vendor account (not deleted), at most :data:`MAX_PAGES` pages."""
+async def read_cards(
+    client: ZovoClient, exclude_masks: frozenset[str] = frozenset()
+) -> list[dict[str, Any]]:
+    """Every card of our vendor account (not deleted), at most :data:`MAX_PAGES` pages. Rows whose
+    masked number is in ``exclude_masks`` carry ``buyer_mask=True``."""
     rows: list[dict[str, Any]] = []
     seen: set[int] = set()
     for page in range(1, MAX_PAGES + 1):
         resp = await client.get("/cards", params={"page": str(page), "page_size": str(PAGE_SIZE)})
-        got, total = parse_card_rows(resp.data)
+        got, total = parse_card_rows(resp.data, exclude_masks)
         fresh = [r for r in got if r["id"] not in seen]
         seen.update(r["id"] for r in fresh)
         rows.extend(fresh)

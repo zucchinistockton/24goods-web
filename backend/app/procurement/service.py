@@ -46,6 +46,7 @@ class SupplierRef:
     adapter: str
     env: str
     health: str
+    enabled: bool = True
 
 
 def make_supplier(ctx: ProcurementContext, ref: SupplierRef) -> Supplier:
@@ -78,7 +79,9 @@ async def load_ref(
         )
         if row is None:
             raise SupplierNotFound
-        return SupplierRef(row.id, row.tenant_id, row.code, row.adapter, row.env, row.health)
+        return SupplierRef(
+            row.id, row.tenant_id, row.code, row.adapter, row.env, row.health, row.enabled
+        )
 
 
 def _health_of(report: ProbeReport) -> tuple[str, str | None]:

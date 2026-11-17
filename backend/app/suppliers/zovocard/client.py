@@ -83,6 +83,17 @@ class ZovoConfig:
         if not self.app_secret:
             raise ValueError("app_secret is required")
 
+    @property
+    def production_target(self) -> bool:
+        """Writes need the opt-in. ``env=production`` is production; so is a ``sandbox`` row whose
+        public https host is not the vendor's own sandbox (it may well be production). Only the
+        vendor sandbox and a plain-http host (our simulator, dev only) are exempt."""
+        if self.env == "production":
+            return True
+        from app.suppliers.zovocard.direct import real_sandbox  # local: keeps imports one-way
+
+        return self.base_url.startswith("https://") and not real_sandbox(self.base_url, self.env)
+
 
 @dataclass(frozen=True)
 class ZovoResponse:
@@ -185,7 +196,7 @@ class ZovoClient:
             raise ValueError("invalid API path")
         if mutating:
             # checked BEFORE anything else: a production write never leaves the process
-            if self.config.env == "production" and not self.config.allow_production_writes:
+            if self.config.production_target and not self.config.allow_production_writes:
                 log.warning("zovocard refused production write %s %s", method, path)
                 raise ProductionWriteBlocked()
         if write:

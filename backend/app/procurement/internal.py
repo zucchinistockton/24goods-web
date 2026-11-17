@@ -192,6 +192,8 @@ def create_procurement_app(ctx: ProcurementContext) -> Starlette:
     def _card_error(exc: Exception) -> JSONResponse:
         if isinstance(exc, service.SupplierNotFound):
             return _err(404, "not_found", "No ZovoCard supplier")
+        if isinstance(exc, cardpool.SupplierDisabled):
+            return _err(409, "supplier_disabled", "The supplier is disabled")
         if isinstance(exc, cardpool.ProductionWritesDisabled):
             return _err(
                 409, "production_writes_disabled", "Writes to a production supplier are disabled"
