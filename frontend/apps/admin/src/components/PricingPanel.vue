@@ -25,7 +25,7 @@ function fail(e: unknown) {
 // ------------------------------------------------------------------ fee schedule
 const MONEY_KEYS = ['card_open_fee', 'topup_fee_fixed', 'failed_fee', 'chargeback_tier1_surcharge', 'chargeback_tier2_deposit'] as const
 const RATE_KEYS = ['topup_fee_rate', 'auth_reversal_rate', 'chargeback_tier1_rate', 'chargeback_tier2_rate', 'expected_failure_rate', 'target_margin'] as const
-const INT_KEYS = ['failed_free_count', 'chargeback_tier1_min_tx', 'round_step_minor'] as const
+const INT_KEYS = ['failed_free_count', 'max_auto_switches', 'chargeback_tier1_min_tx', 'round_step_minor'] as const
 const INFO = new Set(['failed_free_count', 'auth_reversal_rate', 'chargeback_tier1_rate', 'chargeback_tier1_min_tx', 'chargeback_tier1_surcharge', 'chargeback_tier2_rate', 'chargeback_tier2_deposit'])
 const DIRECT = ['gpt', 'grok', 'claude'] as const
 const TIERS = ['standard', 'pro20x'] as const
@@ -64,6 +64,8 @@ async function saveSettings() {
   for (const k of RATE_KEYS) if (!errs[k] && Number(form[k]) >= 1 && k !== 'target_margin') errs[k] = t('procurement.pricing.err.rate')
   if (!errs.target_margin && Number(form.target_margin) >= 1) errs.target_margin = t('procurement.pricing.err.rate')
   for (const k of INT_KEYS) if (!/^[0-9]{1,7}$/.test(form[k] ?? '') || (k === 'round_step_minor' && Number(form[k]) < 1)) errs[k] = t('procurement.pricing.err.int')
+  // the vendor's own default is 2: the cost estimate may not assume fewer switches (server floor)
+  if (!errs.max_auto_switches && (Number(form.max_auto_switches) < 2 || Number(form.max_auto_switches) > 10)) errs.max_auto_switches = t('procurement.pricing.err.switches')
   for (const k of DIRECT) if (!DEC.test(direct[k] ?? '')) errs[`direct_${k}`] = t('procurement.pricing.err.decimal')
   if (fx.per_usd.trim() && !DEC.test(fx.per_usd.trim())) errs.fx = t('procurement.pricing.err.decimal')
   if (Object.keys(errs).length) return
