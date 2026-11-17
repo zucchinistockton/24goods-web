@@ -595,8 +595,8 @@ export function createRedeemApi(c: ApiClient) {
       c.get<Paginated<RedeemAttempt> & { retention_days: number }>(`${base}/attempts`, { ...f, page, page_size }),
     stats: (days = 30) => c.get<RedeemStats>(`${base}/stats`, { days }),
     lookup: (b: { code?: string; order_ref?: string }) => c.post<RedeemLookup>(`${base}/lookup`, b),
-    setCdk: (action: 'disable' | 'enable', code: string) =>
-      c.post<{ action: string; before: { status: string | null }; after: { status: string | null } }>(`${base}/cdk/${seg(action)}`, { code, confirm: true }),
+    setCdk: (action: 'disable' | 'enable', code: string, forceUnsold = false) =>
+      c.post<{ action: string; before: { status: string | null }; after: { status: string | null } }>(`${base}/cdk/${seg(action)}`, { code, confirm: true, ...(forceUnsold ? { force_unsold: true } : {}) }),
     settings: () => c.get<RedeemSettings>(`${base}/settings`),
     saveSettings: (patch: RedeemSettingsPatch) => c.put<RedeemSettings>(`${base}/settings`, patch),
   }

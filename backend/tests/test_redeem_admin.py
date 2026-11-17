@@ -354,7 +354,10 @@ async def test_public_config_serves_text_only_and_the_page_renders_it_as_text(en
     js = _app_js()
     assert "/redeem/config" in js and "announce" in js
     assert not re.search(r"innerHTML|insertAdjacentHTML|document\.write|outerHTML", js)
-    assert re.search(r"var el = \$\('notice'\)\s+el\.textContent = ", js)
+    assert re.search(
+        r"el\.textContent = text \? prefix \+ Array\.from\(String\(text\)\)\.slice\(0, 400\)", js
+    )
+    assert "setAttribute('role', 'alert')" in js and "t('maint')" in js
 
 
 async def test_per_ip_limits_come_from_the_settings_within_bounds(env, stack):

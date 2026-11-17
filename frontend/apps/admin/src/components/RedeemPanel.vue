@@ -5,7 +5,7 @@
  * the vendor. A pasted code lives only in this component's memory for one request and is cleared
  * afterwards; the log shows masked codes only.
  */
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { formatDateTime } from '@24goods/shared'
 import { client } from '../api'
@@ -30,7 +30,11 @@ const auth = useAuthStore()
 const { t, te, locale } = useI18n()
 const sub = ref<'log' | 'lookup' | 'stats' | 'settings'>('log')
 const when = (v: string | null) => (v ? formatDateTime(v, locale.value) : '—')
-const word = (ns: string, k: string | null) => (k ? (te(`redeem.${ns}.${k}`) ? t(`redeem.${ns}.${k}`) : k) : '—')
+const num = (n: number) => new Intl.NumberFormat(locale.value).format(n)
+const dayFmt = (d: string) => new Intl.DateTimeFormat(locale.value, { dateStyle: 'medium', timeZone: 'UTC' }).format(new Date(`${d}T00:00:00Z`))
+/** A known code gets its translation; an unknown one is shown as "Other (code)" with the raw code in the tooltip. */
+const word = (ns: string, k: string | null | undefined) => (k ? (te(`redeem.${ns}.${k}`) ? t(`redeem.${ns}.${k}`) : t('redeem.other', { code: k })) : '—')
+const raw = (ns: string, k: string | null | undefined) => (k && !te(`redeem.${ns}.${k}`) ? k : undefined)
 const asAttempt = (row: unknown) => row as RedeemAttempt
 function fail(e: unknown) {
   const code = (e as { code?: string })?.code
@@ -98,7 +102,13 @@ async function setCdk(action: 'disable' | 'enable') {
   if (!ok) return
   acting.value = true
   try {
-    await api.setCdk(action, lastCode.value)
+    try {
+      await api.setCdk(action, lastCode.value)
+    } catch (e) {
+      // a code we never sold: only after a second, explicit confirmation, and it is audited as forced
+      if ((e as { code?: string })?.code !== 'code_not_ours' || !(await confirmBox(t('redeem.lookup.confirm.force'), t(`redeem.lookup.${action}`)))) throw e
+      await api.setCdk(action, lastCode.value, true)
+    }
     toastOk(t('redeem.lookup.done'))
     const code = lastCode.value
     found.value = await api.lookup({ code })
@@ -108,6 +118,10 @@ async function setCdk(action: 'disable' | 'enable') {
     acting.value = false
   }
 }
+const oursLine = computed(() => {
+  const o = found.value?.ours
+  return o ? t('redeem.lookup.oursLine', { order: o.order_no, status: word('orderStatus', o.status), buyer: o.buyer ?? '—', delivered: when(o.delivered_at) }) : ''
+})
 const vendorText = computed(() => {
   const v = found.value?.vendor
   if (!v) return ''
@@ -167,9 +181,12 @@ async function saveSettings() {
   }
 }
 
+watch(sub, (v) => {
+  if (v === 'stats' && !stats.value && !statsLoading.value) void loadStats()
+})
+
 onMounted(() => {
   void log.reload()
-  void loadStats()
   if (auth.isAdmin) void loadSettings()
 })
 </script>
@@ -181,30 +198,30 @@ onMounted(() => {
       <el-tab-pane name="log" :label="t('redeem.tab.log')">
         <p class="muted small">{{ t('redeem.log.help', { days: retention }) }}</p>
         <el-form inline class="filters" @submit.prevent="log.reload()">
-          <el-form-item><el-input v-model="filter.q" :placeholder="t('redeem.log.searchCode')" clearable maxlength="40" style="width: 190px" @keyup.enter="log.reload()" /></el-form-item>
-          <el-form-item><el-input v-model="filter.order_ref" :placeholder="t('redeem.log.orderRef')" clearable maxlength="16" style="width: 150px" @keyup.enter="log.reload()" /></el-form-item>
+          <el-form-item><el-input v-model="filter.q" :aria-label="t('redeem.log.searchCode')" :placeholder="t('redeem.log.searchCode')" clearable maxlength="40" style="width: 190px" @keyup.enter="log.reload()" /></el-form-item>
+          <el-form-item><el-input v-model="filter.order_ref" :aria-label="t('redeem.log.orderRef')" :placeholder="t('redeem.log.orderRef')" clearable maxlength="16" style="width: 150px" @keyup.enter="log.reload()" /></el-form-item>
           <el-form-item>
-            <el-select v-model="filter.outcome" clearable :placeholder="t('redeem.log.outcome')" style="width: 150px" @change="log.reload()">
+            <el-select v-model="filter.outcome" :aria-label="t('redeem.log.outcome')" clearable :placeholder="t('redeem.log.outcome')" style="width: 150px" @change="log.reload()">
               <el-option v-for="o in OUTCOMES" :key="o" :value="o" :label="word('outcome', o)" />
             </el-select>
           </el-form-item>
           <el-form-item>
-            <el-select v-model="filter.step" clearable :placeholder="t('redeem.log.step')" style="width: 130px" @change="log.reload()">
+            <el-select v-model="filter.step" :aria-label="t('redeem.log.step')" clearable :placeholder="t('redeem.log.step')" style="width: 130px" @change="log.reload()">
               <el-option v-for="s in STEPS" :key="s" :value="s" :label="word('step', s)" />
             </el-select>
           </el-form-item>
-          <el-form-item><el-date-picker v-model="filter.range" type="daterange" value-format="YYYY-MM-DD" :start-placeholder="t('redeem.log.from')" :end-placeholder="t('redeem.log.to')" style="width: 250px" @change="log.reload()" /></el-form-item>
+          <el-form-item><el-date-picker v-model="filter.range" :aria-label="t('redeem.log.dateRange')" type="daterange" value-format="YYYY-MM-DD" :start-placeholder="t('redeem.log.from')" :end-placeholder="t('redeem.log.to')" style="width: 250px" @change="log.reload()" /></el-form-item>
           <el-form-item><el-button type="primary" native-type="submit" :loading="log.loading.value">{{ t('redeem.search') }}</el-button></el-form-item>
         </el-form>
         <el-table v-loading="log.loading.value" :data="log.items.value" row-key="id" :empty-text="t('redeem.log.empty')">
           <el-table-column :label="t('redeem.log.time')" width="170"><template #default="{ row }">{{ when(asAttempt(row).at) }}</template></el-table-column>
-          <el-table-column :label="t('redeem.log.step')" width="110"><template #default="{ row }">{{ word('step', asAttempt(row).step) }}</template></el-table-column>
-          <el-table-column :label="t('redeem.log.outcome')" width="130"><template #default="{ row }"><el-tag :type="outcomeTag(asAttempt(row).outcome)" size="small">{{ word('outcome', asAttempt(row).outcome) }}</el-tag></template></el-table-column>
-          <el-table-column :label="t('redeem.log.reason')" min-width="150"><template #default="{ row }">{{ asAttempt(row).reason ? word('reason', asAttempt(row).reason) : '—' }}</template></el-table-column>
+          <el-table-column :label="t('redeem.log.step')" width="110"><template #default="{ row }"><span :title="raw('step', asAttempt(row).step)">{{ word('step', asAttempt(row).step) }}</span></template></el-table-column>
+          <el-table-column :label="t('redeem.log.outcome')" width="130"><template #default="{ row }"><el-tag :type="outcomeTag(asAttempt(row).outcome)" size="small" :title="raw('outcome', asAttempt(row).outcome)">{{ word('outcome', asAttempt(row).outcome) }}</el-tag></template></el-table-column>
+          <el-table-column :label="t('redeem.log.reason')" min-width="150"><template #default="{ row }"><span :title="raw('reason', asAttempt(row).reason)">{{ word('reason', asAttempt(row).reason) }}</span></template></el-table-column>
           <el-table-column :label="t('redeem.log.code')" width="150"><template #default="{ row }"><span class="mono">{{ asAttempt(row).code ?? '—' }}</span></template></el-table-column>
-          <el-table-column :label="t('redeem.log.plan')" prop="plan" width="110" />
+          <el-table-column :label="t('redeem.log.plan')" width="110"><template #default="{ row }"><span :title="raw('plan', asAttempt(row).plan)">{{ word('plan', asAttempt(row).plan) }}</span></template></el-table-column>
           <el-table-column :label="t('redeem.log.order')" width="140"><template #default="{ row }"><span class="mono">{{ asAttempt(row).order_no ?? '—' }}</span></template></el-table-column>
-          <el-table-column :label="t('redeem.log.client')" width="120"><template #default="{ row }"><span class="mono small">{{ asAttempt(row).ip_class ?? '—' }}</span></template></el-table-column>
+          <el-table-column :label="t('redeem.log.client')" width="120"><template #default="{ row }"><span class="mono small" :title="t('redeem.log.client')">{{ asAttempt(row).ip_class ?? '—' }}</span></template></el-table-column>
         </el-table>
         <div class="pager"><el-pagination layout="total, prev, pager, next" :total="log.total.value" :page-size="log.pageSize" :current-page="log.page.value" @current-change="log.load" /></div>
       </el-tab-pane>
@@ -213,9 +230,9 @@ onMounted(() => {
       <el-tab-pane name="lookup" :label="t('redeem.tab.lookup')">
         <p class="muted small">{{ t('redeem.lookup.help') }}</p>
         <el-form inline @submit.prevent="lookup">
-          <el-form-item><el-input v-model="lookupCode" type="password" show-password autocomplete="off" :placeholder="t('redeem.lookup.code')" maxlength="128" style="width: 300px" /></el-form-item>
+          <el-form-item><el-input v-model="lookupCode" :aria-label="t('redeem.lookup.code')" type="password" show-password autocomplete="off" :placeholder="t('redeem.lookup.code')" maxlength="128" style="width: 300px" /></el-form-item>
           <el-form-item>{{ t('redeem.lookup.or') }}</el-form-item>
-          <el-form-item><el-input v-model="lookupOrder" :placeholder="t('redeem.log.orderRef')" maxlength="16" style="width: 160px" /></el-form-item>
+          <el-form-item><el-input v-model="lookupOrder" :aria-label="t('redeem.log.orderRef')" :placeholder="t('redeem.log.orderRef')" maxlength="16" style="width: 160px" /></el-form-item>
           <el-form-item><el-button type="primary" native-type="submit" :loading="looking">{{ t('redeem.lookup.go') }}</el-button></el-form-item>
           <el-form-item v-if="found"><el-button @click="clearLookup">{{ t('redeem.lookup.clear') }}</el-button></el-form-item>
         </el-form>
@@ -224,15 +241,14 @@ onMounted(() => {
             <el-descriptions-item :label="t('redeem.log.code')"><span class="mono">{{ found.code ?? '—' }}</span></el-descriptions-item>
             <el-descriptions-item :label="t('redeem.lookup.ours')">
               <template v-if="found.ours">
-                <span class="mono">{{ found.ours.order_no }}</span> · {{ found.ours.status }} · {{ t('redeem.lookup.buyer') }} {{ found.ours.buyer ?? '—' }} ·
-                {{ t('redeem.lookup.delivered') }} {{ when(found.ours.delivered_at) }}
+                <span :title="raw('orderStatus', found.ours.status)">{{ oursLine }}</span>
               </template>
               <span v-else class="muted">{{ t('redeem.lookup.notOurs') }}</span>
             </el-descriptions-item>
             <el-descriptions-item v-if="found.vendor" :label="t('redeem.lookup.vendor')">
               <el-tag :type="found.vendor.available && found.vendor.found ? (cdkActions(found.vendor.status).disable ? 'success' : 'info') : 'warning'" size="small">{{ vendorText }}</el-tag>
-              <span v-if="found.vendor.available && found.vendor.plan" class="muted"> · {{ found.vendor.plan }}</span>
-              <span v-if="found.vendor.available && found.vendor.env" class="muted"> · {{ found.vendor.env }}</span>
+              <span v-if="found.vendor.available && found.vendor.plan" class="muted" :title="raw('plan', found.vendor.plan)"> · {{ word('plan', found.vendor.plan) }}</span>
+              <span v-if="found.vendor.available && found.vendor.env" class="muted" :title="raw('env', found.vendor.env)"> · {{ word('env', found.vendor.env) }}</span>
             </el-descriptions-item>
             <el-descriptions-item v-else :label="t('redeem.lookup.vendor')"><span class="muted">{{ t('redeem.lookup.pasteForVendor') }}</span></el-descriptions-item>
           </el-descriptions>
@@ -243,9 +259,9 @@ onMounted(() => {
           <h4>{{ t('redeem.lookup.attempts') }}</h4>
           <el-table :data="found.attempts" row-key="id" :empty-text="t('redeem.log.empty')" size="small">
             <el-table-column :label="t('redeem.log.time')" width="170"><template #default="{ row }">{{ when(asAttempt(row).at) }}</template></el-table-column>
-            <el-table-column :label="t('redeem.log.step')" width="110"><template #default="{ row }">{{ word('step', asAttempt(row).step) }}</template></el-table-column>
+            <el-table-column :label="t('redeem.log.step')" width="110"><template #default="{ row }"><span :title="raw('step', asAttempt(row).step)">{{ word('step', asAttempt(row).step) }}</span></template></el-table-column>
             <el-table-column :label="t('redeem.log.outcome')" width="130"><template #default="{ row }"><el-tag :type="outcomeTag(asAttempt(row).outcome)" size="small">{{ word('outcome', asAttempt(row).outcome) }}</el-tag></template></el-table-column>
-            <el-table-column :label="t('redeem.log.reason')" min-width="140"><template #default="{ row }">{{ asAttempt(row).reason ? word('reason', asAttempt(row).reason) : '—' }}</template></el-table-column>
+            <el-table-column :label="t('redeem.log.reason')" min-width="140"><template #default="{ row }"><span :title="raw('reason', asAttempt(row).reason)">{{ word('reason', asAttempt(row).reason) }}</span></template></el-table-column>
           </el-table>
         </div>
       </el-tab-pane>
@@ -256,31 +272,31 @@ onMounted(() => {
           <el-button size="small" @click="loadStats">{{ t('redeem.refresh') }}</el-button>
           <template v-if="stats">
             <div class="tiles">
-              <div class="tile"><b>{{ stats.totals.attempts }}</b><span>{{ t('redeem.stats.attempts') }}</span></div>
-              <div class="tile"><b>{{ stats.totals.completed }}</b><span>{{ t('redeem.stats.completed') }}</span></div>
-              <div class="tile"><b>{{ stats.totals.failed }}</b><span>{{ t('redeem.stats.failed') }}</span></div>
+              <div class="tile"><b>{{ num(stats.totals.attempts) }}</b><span>{{ t('redeem.stats.attempts') }}</span></div>
+              <div class="tile"><b>{{ num(stats.totals.completed) }}</b><span>{{ t('redeem.stats.completed') }}</span></div>
+              <div class="tile"><b>{{ num(stats.totals.failed) }}</b><span>{{ t('redeem.stats.failed') }}</span></div>
               <div class="tile"><b>{{ ratePct(stats.totals.success_rate) }}</b><span>{{ t('redeem.stats.rate') }}</span></div>
             </div>
             <p class="muted small">{{ t('redeem.stats.help') }}</p>
             <div class="bars" role="img" :aria-label="t('redeem.stats.perDay')">
-              <span v-for="(d, i) in stats.days" :key="d.day" class="bar" :title="`${d.day}: ${d.attempts}`" :style="{ height: bars[i] + '%' }" />
+              <span v-for="(d, i) in stats.days" :key="d.day" class="bar" :title="t('redeem.stats.barTitle', { day: dayFmt(d.day), n: num(d.attempts) })" :style="{ height: bars[i] + '%' }" />
             </div>
             <el-row :gutter="16">
               <el-col :xs="24" :md="14">
                 <h4>{{ t('redeem.stats.perDay') }}</h4>
                 <el-table :data="dayRows" row-key="day" size="small" :empty-text="t('redeem.log.empty')" max-height="320">
-                  <el-table-column prop="day" :label="t('redeem.stats.day')" width="120" />
-                  <el-table-column prop="attempts" :label="t('redeem.stats.attempts')" width="90" />
-                  <el-table-column prop="completed" :label="t('redeem.stats.completed')" width="100" />
-                  <el-table-column prop="failed" :label="t('redeem.stats.failed')" width="90" />
+                  <el-table-column :label="t('redeem.stats.day')" width="130"><template #default="{ row }">{{ dayFmt(row.day) }}</template></el-table-column>
+                  <el-table-column :label="t('redeem.stats.attempts')" width="100"><template #default="{ row }">{{ num(row.attempts) }}</template></el-table-column>
+                  <el-table-column :label="t('redeem.stats.completed')" width="100"><template #default="{ row }">{{ num(row.completed) }}</template></el-table-column>
+                  <el-table-column :label="t('redeem.stats.failed')" width="90"><template #default="{ row }">{{ num(row.failed) }}</template></el-table-column>
                   <el-table-column :label="t('redeem.stats.rate')" width="100"><template #default="{ row }">{{ ratePct(row.success_rate) }}</template></el-table-column>
                 </el-table>
               </el-col>
               <el-col :xs="24" :md="10">
                 <h4>{{ t('redeem.stats.reasons') }}</h4>
                 <el-table :data="stats.top_reasons" row-key="reason" size="small" :empty-text="t('redeem.log.empty')">
-                  <el-table-column :label="t('redeem.log.reason')"><template #default="{ row }">{{ word('reason', row.reason) }}</template></el-table-column>
-                  <el-table-column prop="count" width="80" />
+                  <el-table-column :label="t('redeem.log.reason')"><template #default="{ row }"><span :title="raw('reason', row.reason)">{{ word('reason', row.reason) }}</span></template></el-table-column>
+                  <el-table-column :label="t('redeem.stats.attempts')" width="100"><template #default="{ row }">{{ num(row.count) }}</template></el-table-column>
                 </el-table>
               </el-col>
             </el-row>

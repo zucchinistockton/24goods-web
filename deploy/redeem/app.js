@@ -4,7 +4,7 @@
   'use strict'
   var T = {
     en: {
-      title: 'Redeem your code', brand: 'Redeem', lang: '中文',
+      title: 'Redeem your code', maint: 'Maintenance', brand: 'Redeem', lang: '中文',
       codeTitle: 'Enter your code', codeLead: 'The code you received with your order. It is checked before anything else happens.',
       codeLabel: 'Redemption code', check: 'Check code',
       accountTitle: 'Connect your account', plan: 'Plan',
@@ -33,6 +33,7 @@
       r_cancelled: 'The redemption was cancelled before it was applied.', r_expired: 'The redemption expired before it was applied.',
       r_not_completed: 'The plan could not be applied to your account.', r_refunded: 'This redemption was refunded.',
       r_review: 'Our team is looking at this. Do not start over.', r_account: 'The account needs attention. Contact support with the reference below.',
+      e_bad_code: 'That does not look like a redemption code. Check it for typos.',
       e_invalid_request: 'That does not look right. Check what you entered and try again.',
       e_code_unavailable: 'This code cannot be redeemed. Check it for typos; if it was already used, it cannot be used again.',
       e_credential_invalid: 'The session text was not accepted. Sign in again, copy a fresh one and paste all of it.',
@@ -47,7 +48,7 @@
       e_network: 'No connection. Check your network and try again.'
     },
     zh: {
-      title: '兑换码兑换', brand: '兑换', lang: 'English',
+      title: '兑换码兑换', maint: '维护中', brand: '兑换', lang: 'English',
       codeTitle: '输入兑换码', codeLead: '请输入订单中收到的兑换码。系统会先校验兑换码，再进行后续步骤。',
       codeLabel: '兑换码', check: '校验兑换码',
       accountTitle: '关联你的账号', plan: '套餐',
@@ -66,7 +67,7 @@
       badTitle: '兑换未完成', badLead: '兑换没有成功，请携带下方参考编号联系客服。',
       laterTitle: '仍在处理中', laterLead: '处理时间比平时长。你的兑换码是安全的：请几分钟后再次查询，不要重新开始。',
       progTitle: '进度', progAt: '完成于',
-      p_sent: '兑换码已受理', p_half_check: '半价资格检查', p_waiting_supplier: '等待供应方',
+      p_sent: '兑换码已受理', p_half_check: '半价资格检查', p_waiting_supplier: '等待供应商',
       p_queued: '排队中', p_funding: '准备付款', p_processing: '正在开通到你的账号',
       p_payment_submitted: '已提交付款', p_completed: '已完成', p_failed: '未完成',
       p_refunded: '已退款', p_attention: '需要处理', p_unknown: '处理中',
@@ -76,6 +77,7 @@
       r_cancelled: '兑换在开通前已被取消。', r_expired: '兑换在开通前已过期。',
       r_not_completed: '套餐未能开通到你的账号。', r_refunded: '该兑换已退款。',
       r_review: '我们的团队正在查看，请不要重新开始。', r_account: '账号需要处理，请携带下方参考编号联系客服。',
+      e_bad_code: '兑换码格式不正确，请检查是否输入有误。',
       e_invalid_request: '输入内容有误，请检查后重试。',
       e_code_unavailable: '该兑换码无法兑换。请检查是否输入有误；已使用的兑换码不能再次使用。',
       e_credential_invalid: '会话内容未通过验证。请重新登录，复制最新的完整内容后再粘贴。',
@@ -111,14 +113,23 @@
   // the operator's announcement / maintenance text: plain text only, always set with textContent
   function renderNotice() {
     var key = lang === 'zh' ? 'zh' : 'en'
-    var text = (site.maintenance && site.message[key]) || site.announcement[key] || site.announcement.en || ''
     var el = $('notice')
-    el.textContent = String(text).slice(0, 400)
+    var text, prefix = ''
+    if (site.maintenance) {
+      // maintenance never falls back to the announcement; the fixed sentence is the last resort
+      text = site.message[key] || site.message.en || t('e_maintenance')
+      prefix = t('maint') + ': '
+      el.setAttribute('role', 'alert')
+    } else {
+      text = site.announcement[key] || site.announcement.en || ''
+      el.setAttribute('role', 'status')
+    }
+    el.textContent = text ? prefix + Array.from(String(text)).slice(0, 400).join('') : ''
     el.hidden = !text
     el.className = site.maintenance ? 'notice warn' : 'notice'
   }
   function loadSite() {
-    fetch('/redeem/config', { credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer' })
+    fetch('/redeem/config', { credentials: 'omit', referrerPolicy: 'no-referrer' }) // the proxy sends max-age=30
       .then(function (r) { return r.ok ? r.json() : null })
       .then(function (j) {
         var d = j && j.data
@@ -174,7 +185,7 @@
   }
   function failed(e) {
     var code = (e && e.code) || 'unavailable'
-    if (code === 'maintenance') { site.maintenance = true; renderNotice() }
+    if (code === 'maintenance') { site.maintenance = true; renderNotice(); alertMsg(null); return } // the banner already says it
     if (code === 'session_expired') { reset(); alertMsg(code); return }
     alertMsg(code)
   }
@@ -183,7 +194,7 @@
     ev.preventDefault()
     var code = $('code').value.trim()
     if (st.busy) return
-    if (!/^[A-Za-z0-9._:-]{8,128}$/.test(code)) { alertMsg('invalid_request'); return }
+    if (!/^[A-Za-z0-9._:-]{8,128}$/.test(code)) { alertMsg('bad_code'); return }
     var btn = this.querySelector('.primary')
     alertMsg(null); busy(btn, true)
     call('preview', { code: code }).then(function (d) {
