@@ -1071,3 +1071,125 @@ needs no reshaping. The estimate treats the buyer's channel surcharge as pass-th
 * The console help text exists in en and zh-CN; the typecheck of the new Vue panel ran only in CI.
 * Whether the "first 3 failures free" applies per card or per account is not modelled (informational).
 * Reseller prices (`reseller_prices`) and bundle / cart discounts are not part of the unit estimate.
+
+## 20. Plan × region checkout and the half-price check (issue #27, owner decisions 2026-11-17)
+
+Migrations `0031_variant_options`, `0032_half_price_checks`; tests `backend/tests/test_regions.py`,
+`backend/tests/test_half_price.py`, `frontend/apps/web/test/variant-options.test.ts`. Developed for the demo;
+production untouched (the production-write gate of §11 applies to every preflight below).
+
+### 20.1 Data model: variants, not a matrix
+
+No new matrix table. A product already has a flat list of variants (v11), each with its own price, floor, stock and
+its own supplier sources (`supplier_offers.variant_id`). A variant gets nullable structured attributes
+`product_variants.options = {"plan": "<vendor plan key>", "region": "<ISO country>"}` (CHECK: an object with both
+keys; partial UNIQUE index on `(tenant, product, plan, region)`; FORCE RLS and `app_api` table grants unchanged).
+Admin create / patch validate it (`^[a-z0-9_]{1,40}$`, `^[A-Z]{2}$`, nothing else, 409 `variant_options_taken` for a
+duplicate in any status). A source of such a variant carries `plan`, `payment_country` and (direct) `payment_currency`
+exactly as before. The buyer product payload adds `variant_options` (true only when EVERY active variant has options:
+the UI then shows two selectors, plan chips then region chips with the price; any plain variant falls back to the
+v11 chips), per variant `options`, `region_currency` (display label of the region's own charge currency, PHP / EGP /
+CLP / JPY / USD; the amount shown stays in the shop currency) and `half_price`.
+
+### 20.2 Regions from the vendor
+
+* The procurement process reads `GET /gpt-direct/plans` -> `payment_regions` (already parsed and cached 60 s with the
+  plans catalogue): `POST /internal/regions {tenant_id, product}` (token, rate limited, 502 `supplier_unavailable`
+  when the vendor cannot be read). The API never calls the vendor.
+* Owner settings (`tenants.settings["procurement_options"]`, admin `GET/PUT /admin/procurement/options`, audited
+  `procurement.options_updated`): `region_allowlist` (default PH, EG, CL, JP, US; Grok / Claude are USD-only per the
+  vendor docs, so only the regions the vendor lists for them apply) and `half_price_check`.
+  `GET /admin/procurement/regions?product=` returns the vendor list with `allowed` per region (`available: false` and
+  no rows when the vendor cannot be read).
+* A region the vendor stops offering is hidden, never forced: the adapter's availability check (cdk and gpt direct
+  offers naming `payment_country`) answers `region_not_offered`, the cached `last_check_ok` goes false and the variant
+  reads out of stock. A catalogue that lists no region at all is read as "not stated" and hides nothing.
+
+### 20.3 Generator
+
+`POST /admin/procurement/generate-variants {product_id, supplier_id, vendor_product, plans[], regions[], card_id?,
+cost_estimate?}` (platform admin; CDK and direct products only; direct needs the funding `card_id`). For each missing
+`(plan, region)`: an ARCHIVED variant named `Plan · RG` with options, price = the product's price as a placeholder
+(the schema forbids 0; archived, so never shown), and ONE source (supplier, plan, country, currency) that is
+DISABLED. Idempotent (existing combinations are `kept`); regions outside the allowlist or not currently offered by
+the vendor are `skipped` (`not_allowed`, `not_offered`); at most 50 variants per product. Prices are never
+auto-applied: staff set the price (the #28 recommendation applies as usual), check the source and activate both. The
+cost estimate is whatever the staff member types: the vendor's quote is not read here (deviation from the brief:
+the unit-cost estimate of §19 already shows it per source). Audit: `variant.generated` per variant.
+
+### 20.4 Half-price check before payment (check-then-order)
+
+Applies when the PRIMARY (priority-first) enabled source of the variant has a half-price plan key
+(`plus_half`, Grok `*_half`; `is_half_plan`), for CDK and direct products alike. **Check-then-order**: an order for
+such a plan cannot be created without a passed check. `create_order` (the funnel of buy-now, cart and quotes) refuses
+with 422 `half_check_required` unless handed a usable check of the same buyer, product and variant (`half_check_id` on
+`POST /orders`; 422 `half_check_invalid` when it belongs to another buyer / product, was used, expired (30 min) or has
+no usable outcome); the check is locked and consumed (`half_price_checks.order_id`, UNIQUE) in the order's own
+transaction. Cart and quote paths pass none, so a half-price plan is buy-now only. `pay_url` re-checks the rule for
+orders that exist already (409 `half_check_required` / `half_check_refused`).
+
+* `GET /half-checks/required?product_id&variant_id` -> `{required, method, plan}` (tells the UI whether a session is
+  needed); `POST /half-checks {product_id, variant_id?, session?}` -> `{id, status, reason, method, plan, account,
+  quote, expires_at, usable}`; 6 per buyer and 30 per IP per 10 minutes; 409 `half_check_not_required`; 422
+  `session_*` (same offline validation as checkout); 503 `half_check_unavailable` (procurement unreachable: the pending
+  row and its sealed session are deleted at once).
+* **The session** is validated and sealed AT ONCE with the procurement public key (`credvault`, AAD = tenant + check
+  id) into `half_price_checks.blob`; the API role can INSERT and read every column except `blob` / `kid`. Only the
+  procurement process opens it (`POST /internal/half-check`), for the one read, then nulls `blob` in the same
+  statement as the outcome (also on every error path); the sweeper wipes any blob older than 15 minutes and drops
+  unused checks after 2 days; the API deletes only its own abandoned `pending` rows. A trigger limits `app_api` to
+  `order_id` NULL -> value and `manual_pending` -> `manual_approved` / `manual_refused`: it cannot turn a refusal into
+  a pass. For a direct product the UI reuses the pasted session in memory for the order itself (sealed again for the
+  order as in §18); for a CDK product it is used only for the check. Tested with the strict sweep of every table,
+  HTTP body, Redis key / value, pub/sub message and DEBUG log.
+* **Methods** (owner setting `half_price_check`, stored on each check):
+  * `vendor_preflight` (default): the supplier's `POST /gpt-direct/preflight` with the session and the plan / region.
+    Eligible = no `blocking_reason`, no future `can_purchase_at`, no `subscription_recovery_required`, no
+    `subscription_has_active`, no `quote_error`, and a quote for the half-price key itself [I: the vendor quotes it only
+    to an eligible account; `promotions` is parsed for staff display only]. The vendor's real sandbox never quotes
+    (`quotes: null`) [V]: there the quote condition is waived. Ineligible -> status `ineligible` with the reason
+    (`subscription_active`, `preflight_blocked`, `purchase_not_yet`, `quote_error`, `plan_not_quoted`, ...), refused
+    before payment with a buyer message; a rejected session -> `session_invalid`; a vendor / network failure ->
+    `unavailable`.
+  * `chatgpt_direct` (the owner's fallback): ONE plain read-only `GET https://chatgpt.com/backend-api/accounts/check/
+    v4-2023-04-27` for the buyer's OWN account with the access token of the session just pasted, from the procurement
+    process (the only one with egress), ordinary httpx defaults, `Authorization: Bearer`, `Accept`, an honest
+    `User-Agent` (`24goods-eligibility-check/1.0`), no browser-fingerprint imitation, no TLS impersonation, no
+    sentinel / attestation / risk preparation, no proxy, no retry. 3 reads per buyer per 10 minutes and 60 per hour
+    for everyone (shared egress IP), then `unavailable` / `rate_limited`. Eligible = a FREE account that ChatGPT lists
+    a `plus` or 50 % campaign for [I]; 401 -> `session_invalid`; 403 / 429 / challenge page / non-JSON -> `unavailable`
+    (`chatgpt_refused`, `unreadable_answer`) so staff can switch the method; nothing is stored; the outcome is logged
+    as `half-check check=<id> method=... outcome=... reason=...` without the session. GPT sessions only. Tests use a
+    stub transport, never the real service.
+  * `manual`: nothing is read and no session is stored; the check is `manual_pending` and usable. The order is created
+    and paid, then the engine holds the job BEFORE the supplier is called: `needs_manual` `half_price_check_manual`
+    (the order moves to `manual_review`). Console (Procurement -> Regions): approve, then Retry the job; refuse
+    (`half_price_check_refused`), then refund the order. A refusal before payment makes `pay` fail with
+    `half_check_refused`. Audit: `half_check.started`, `half_check.approved`, `half_check.refused`.
+* **Second line of defence**: the vendor fails half-price keys BEFORE any charge when the account is not eligible and
+  never falls back to full price. At execution the adapter reads the same preflight: for a half-price plan a
+  `quote_error` or a missing quote is a definite `FATAL` `half_price_ineligible` (no retry loop, nothing sent,
+  `needs_manual`, the order is refunded through the normal refund path), whatever the earlier check or staff approval
+  said.
+
+### 20.5 Direct top-ups can be switched off
+
+Per product: an `upstream_direct` product with status `draft` / `archived` is neither listed nor buyable (404), the
+CDK products next to it are unaffected, so a CDK-only shop is configuration, not code (#35 option A; tested).
+
+### 20.6 Buyer and console UI
+
+Buyer (mobile first, en + zh-CN, existing tokens): `VariantPicker` (plan chips -> region chips with price, currency
+label, "lowest" hint, "unavailable" tag) on the product page and in the buy sheet; for a half-price plan the buy sheet
+runs `HalfCheckSheet` after the order-information step: the shop's method decides whether the session sheet
+(`DirectSessionSheet`, purpose `check`) is shown, then the result (continue / not eligible with the reason / paste
+again / try again later) and only then the order. Console: Products -> variants "Generate plan × region variants"
+(`VariantGenerator`), Procurement -> Regions (allowlist, method with a hint per method, manual checks), translated job
+reasons for the three new `error_code`s.
+
+### 20.7 Left open
+
+* The e2e smoke scenario was not extended (CI runs it); the typecheck of the new Vue components ran only in CI.
+* The half-price promotion key of the account-check document and the vendor's `promotions` shape are inferred [I];
+  confirm against a real eligible / ineligible account before production.
+* The generator does not read the vendor quote for a cost estimate (staff enter it or use the §19 estimate).

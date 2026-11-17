@@ -641,3 +641,20 @@ Details live in the ADRs named in brackets.
 - Catalog: `PUT /admin/{products|categories}/{id}/pin`, `POST /admin/{products|categories}/reorder`, `GET|PUT /admin/catalog/settings`, `GET /products?sort=manual|sales|price_asc|price_desc|newest`.
 - Avatars: `PUT /me/avatar/preset` `{preset}`; `avatar_preset` in user, sender and inbox views.
 
+
+## Plan × region and half-price check (issue #27, review-v12 §20)
+
+Buyer:
+- Product payload: `variant_options` (bool), `half_price` (bool); each variant `options {plan, region}`, `region_currency`, `half_price`.
+- `GET /half-checks/required?product_id&variant_id` -> `{required, method, plan}`.
+- `POST /half-checks {product_id, variant_id?, session?}` -> `{id, status, reason, method, plan, account, quote, expires_at, usable}`; `status` is `passed | ineligible | unavailable | session_invalid | manual_pending`. Errors: 409 `half_check_not_required`, 422 `session_required` / `session_*`, 429, 503 `half_check_unavailable`. The session is never stored in plaintext, logged or echoed.
+- `POST /orders` takes `half_check_id` for half-price plans: 422 `half_check_required` (none), 422 `half_check_invalid` (not this buyer's / product's, used, expired, unusable). `POST /orders/{ref}/pay`: 409 `half_check_required` / `half_check_refused`.
+
+Console (platform admin):
+- `GET|PUT /admin/procurement/options {region_allowlist?, half_price_check?}` (`vendor_preflight | chatgpt_direct | manual`).
+- `GET /admin/procurement/regions?product=gpt|claude|grok` -> `{available, regions: [{country, currency, allowed}]}`.
+- `POST /admin/procurement/generate-variants {product_id, supplier_id, vendor_product, plans[], regions[], card_id?, cost_estimate?}` -> `{created[], kept[], skipped[]}`; 503 `regions_unavailable`, 422 `card_required` / `bad_mode` / `too_many`.
+- `GET /admin/procurement/half-checks?status=` and `POST /admin/procurement/half-checks/{id}/decision {approve}` (manual method; 409 `check_not_pending`).
+- Variant create / patch accept `options {plan, region}` (409 `variant_options_taken`); `AdminVariant.options`.
+
+Internal (procurement only, token): `POST /internal/regions`, `POST /internal/half-check {tenant_id, check_id}`.

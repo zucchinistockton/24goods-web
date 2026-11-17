@@ -462,3 +462,9 @@ Decision:
 
 Consequences: no new card revenue; an existing paid card order is delivered to the vault but the buyer must be refunded or served by staff outside the app. Turning sales back on is a config change but would still show nothing to the buyer until the reveal refusal is removed in code and re-reviewed (§1.1).
 
+
+### ADR-041: Plan × region as variant options; half-price check before payment (issue #27, review-v12 §20)
+
+Context: buyers pick product, plan and checkout region with a price per combination (CDK codes and direct top-ups); half-price plans are only for eligible accounts, which should be known before the buyer pays.
+Decision: a variant carries `options {plan, region}` (no matrix table; each combination is a normal variant with its own sources); regions come from the vendor's live `payment_regions` through procurement, narrowed by an owner allowlist; a generator creates archived, unpriced, source-disabled combinations idempotently. The half-price check is check-then-order: `create_order` refuses a half-price plan without a passed check; the session is sealed to the procurement key and only procurement opens it, with an owner-selectable method (vendor preflight, plain read of the buyer's own ChatGPT account check, or manual hold). The vendor still enforces half price at execution.
+Consequences: no change to payment or fulfilment invariants; half-price plans are buy-now only; the `chatgpt_direct` method depends on a third party answering and degrades to "unavailable" instead of being worked around.
