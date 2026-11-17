@@ -59,6 +59,7 @@ from app.models import (
     SupplierOffer,
     SupplierWebhookEvent,
 )
+from app.modules.realtime.publish import publish_order_progress
 from app.procurement import ledger
 from app.procurement.context import ProcurementContext
 from app.procurement.funding import (
@@ -70,6 +71,7 @@ from app.procurement.funding import (
 )
 from app.procurement.risk import DECLINE_CODES
 from app.procurement.service import SupplierRef, make_supplier, refresh_balance
+from app.suppliers import direct_progress as progress
 from app.suppliers.base import (
     JobSpec,
     Money,
@@ -795,7 +797,9 @@ async def handle_event(ctx: ProcurementContext, db: AsyncSession, payload: dict)
             )
         )
         dstatus = (ev.payload or {}).get("status")
+        hint = progress.vendor_from_webhook(ev.payload or {})
         for job in djobs:
+            job.progress, _ = progress.record(job.progress, hint, "webhook", now)
             if isinstance(dstatus, str) and job.state in ACTIVE:
                 job.upstream_status = clean_detail(dstatus, 32)
             if job.state in ACTIVE and not _leased(job, now):
@@ -2095,6 +2099,8 @@ def _record_reference(job: ProcurementJob, res: Result, mode: str) -> str | None
         job.card_mask = res.card_mask[:24]
     if res.detail:
         job.upstream_status = clean_detail(res.detail, 32)  # direct: vendor status:fee status
+    if res.vendor and job.kind == "direct":  # issue #30: what CHANGED goes to the staff timeline
+        job.progress, _ = progress.record(job.progress, res.vendor, "poll", utcnow())
     if res.account_mask and not job.account_mask:
         job.account_mask = res.account_mask[:64]  # masked e-mail only, never the session
     if res.preflight_expires_at is not None:
@@ -2418,6 +2424,63 @@ async def _apply(ctx: ProcurementContext, lease: Lease, res: Result) -> None:
         await db.commit()
 
 
+async def _publish_progress(
+    ctx: ProcurementContext, tenant_id: uuid.UUID, job_id: uuid.UUID
+) -> None:
+    """Publish the buyer's coarse progress when its STEP changed since the last publish (the
+    last published step lives in ``progress.pub``). Never raises: a missed publish only means the
+    page shows the new step at its next fetch."""
+    try:
+        async with tenant_session(ctx.maker, tenant_id) as db:
+            job = await db.scalar(
+                select(ProcurementJob)
+                .where(ProcurementJob.id == job_id, ProcurementJob.tenant_id == tenant_id)
+                .with_for_update()
+            )
+            if job is None or job.kind != "direct":
+                await db.rollback()
+                return
+            order = (
+                await db.execute(
+                    select(Order.status, Order.buyer_id).where(
+                        Order.id == job.order_id, Order.tenant_id == tenant_id
+                    )
+                )
+            ).first()
+            offer = await _offer_any(db, job)
+            half = bool(offer and dr.is_half_plan((offer.params or {}).get("plan")))
+            p = progress.from_job(
+                job, half=half, order_refunded=bool(order and order.status == "refunded")
+            )
+            doc = progress.stamp(job.progress, p.step, utcnow())
+            if doc.get("pub") == p.step:
+                if doc != (job.progress or {}):
+                    job.progress = doc
+                    await db.commit()
+                else:
+                    await db.rollback()
+                return
+            doc["pub"] = p.step
+            job.progress = doc
+            order_id, buyer_id = job.order_id, order.buyer_id if order else None
+            await db.commit()
+        if buyer_id is not None:
+            await publish_order_progress(
+                ctx.redis,
+                tenant_id,
+                buyer_id,
+                {
+                    "order_id": str(order_id),
+                    "step": p.step,
+                    "percent": p.percent,
+                    "outcome": p.outcome,
+                    "reason": p.reason,
+                },
+            )
+    except Exception as exc:
+        log.error("progress publish failed error=%s", type(exc).__name__)
+
+
 async def process_job(ctx: ProcurementContext, job_id: uuid.UUID, tenant_id: uuid.UUID) -> bool:
     lease = await _lease(ctx, job_id, tenant_id)
     if lease is None:
@@ -2428,6 +2491,8 @@ async def process_job(ctx: ProcurementContext, job_id: uuid.UUID, tenant_id: uui
         await _apply(ctx, lease, res)
     finally:
         del res  # drop the plaintext reference as early as possible
+    if lease.mode != "void":
+        await _publish_progress(ctx, lease.tenant_id, lease.job_id)
     if lease.mode == "precheck":
         await process_job(ctx, job_id, tenant_id)  # a passed check sends in the same pass
     if charged:  # review-v12 §6: the balance (and the breaker) is refreshed after every job

@@ -42,6 +42,7 @@ from app.core.middleware import client_ip_from
 from app.core.ratelimit import hit
 from app.procurement import service
 from app.procurement.context import ProcurementContext
+from app.suppliers import direct_progress as dp
 from app.suppliers.registry import SupplierConfigError, load_secrets
 from app.suppliers.zovocard import PRODUCTION_BASE_URL, SANDBOX_BASE_URL
 from app.suppliers.zovocard.client import sanitize_error_code
@@ -206,7 +207,14 @@ def shape_redeem(data: Any) -> dict[str, Any]:
     d = _dict(data)
     order = _dict(d.get("order"))
     status = _s(order.get("status") or d.get("status"))
+    prog = dp.redeem_progress(
+        status,
+        order.get("stage") or d.get("stage"),
+        order.get("payment_state"),
+        order.get("funding_state"),
+    )
     return {
+        "progress": prog,
         # the vendor nests it as data.order.id (verified in the sandbox 2026-11-16)
         "order_id": _s(
             order.get("order_id") or order.get("id") or d.get("id") or d.get("order_id"), 80
@@ -232,7 +240,16 @@ def shape_result(data: Any) -> dict[str, Any]:
                 "at": _iso(e.get("created_at") or e.get("at")),
             }
         )
+    done_at = _iso(order.get("completed_at"))
+    prog = dp.redeem_progress(
+        status,
+        order.get("stage"),
+        order.get("payment_state"),
+        order.get("funding_state"),
+        done_at,
+    )
     return {
+        "progress": prog,
         "order_id": _s(order.get("order_id") or order.get("id"), 80),
         "status": status,
         "stage": _s(order.get("stage")),

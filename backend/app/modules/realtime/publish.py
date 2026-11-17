@@ -53,6 +53,15 @@ async def publish_order(
     await publish(redis, staff_channel(tenant_id), "order", staff_view)
 
 
+async def publish_order_progress(
+    redis: Redis, tenant_id: uuid.UUID, buyer_id: uuid.UUID, data: dict[str, Any]
+) -> None:
+    """A direct order's buyer-facing progress step changed (issue #30). ``data`` is the coarse
+    progress view only (``order_id`` + step / percent / outcome / reason), never vendor detail;
+    the buyer's page refetches ``GET /orders/{ref}/direct`` on it."""
+    await publish(redis, user_channel(buyer_id), "order_progress", data)
+
+
 async def publish_after_sales(
     redis: Redis,
     tenant_id: uuid.UUID,

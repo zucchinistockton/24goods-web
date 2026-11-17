@@ -762,7 +762,9 @@ def test_redeem_answer_in_the_vendors_real_shape():
             "status": "succeeded",
         },
     }
-    assert shape_redeem(real) == {
+    shaped = shape_redeem(real)
+    assert shaped.pop("progress")["outcome"] == "completed"  # issue #30: the same step model
+    assert shaped == {
         "order_id": "SBXORD-b5020d12a1a8a9a0",
         "status": "succeeded",
         "stage": None,

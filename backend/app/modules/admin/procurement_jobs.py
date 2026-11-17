@@ -52,6 +52,7 @@ from app.modules.admin.suppliers import _dec, _iso
 from app.modules.orders.admin import _checkout_left_review, hold_reason, lock_for_release
 from app.modules.orders.events import add_event, snapshot
 from app.procurement import engine
+from app.suppliers import direct_progress as dp
 from app.suppliers.base import CARD_FIELD_SEP, canonical_card_secret, clean_detail
 from app.suppliers.zovocard.webhook import mask_pan
 
@@ -345,7 +346,30 @@ async def job_detail(
         for r in ledger
     ]
     view["timeline"] = await _timeline(db, tid, job.id)
+    view.update(await _supplier_progress(db, job))
     return view
+
+
+async def _supplier_progress(db: AsyncSession, job: ProcurementJob) -> dict[str, Any]:
+    """Issue #30: the supplier timeline (one entry per CHANGE, already sanitised when it was
+    recorded), the last vendor state and the buyer's current step. Direct jobs only."""
+    if job.kind != "direct":
+        return {}
+    doc = job.progress or {}
+    order_status = await db.scalar(
+        select(Order.status).where(Order.id == job.order_id, Order.tenant_id == job.tenant_id)
+    )
+    p = dp.from_job(job, order_refunded=order_status == "refunded")
+    return {
+        "supplier_timeline": list(doc.get("events") or []),
+        "vendor_state": dict(doc.get("v") or {}),
+        "buyer_progress": {
+            "step": p.step,
+            "percent": p.percent,
+            "outcome": p.outcome,
+            "reason": p.reason,
+        },
+    }
 
 
 # ------------------------------------------------------------------ actions

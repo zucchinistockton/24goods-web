@@ -24,9 +24,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import audit
 from app.core.credvault import CredentialSealer
 from app.core.errors import Conflict, InvalidState, NotFound, Unavailable, Validation
-from app.models import Order, ProcurementCredential, ProcurementJob, SupplierOffer
+from app.models import HalfPriceCheck, Order, ProcurementCredential, ProcurementJob, SupplierOffer
 from app.modules.catalog import upstream
 from app.modules.common.modes import MAX_DIRECT_QTY
+from app.suppliers import direct_progress as dp
 from app.suppliers.direct_credential import CredentialError, validate_credential
 
 log = logging.getLogger("app.orders.direct")
@@ -123,16 +124,20 @@ def info_view(
     plan: str | None,
     state: str | None,
     waiting: bool = False,
+    progress: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """What the buyer may see about a direct order: the masked account and the plan, never more.
     ``waiting_for_supplier`` is the coarse status of a job that has no funding card yet (issue
-    #29): no card id, no reason, no internal detail."""
+    #29): no card id, no reason, no internal detail. ``progress`` (issue #30) is the coarse step
+    list from :func:`app.suppliers.direct_progress.buyer_view`: step keys, percent, outcome and a
+    reason KEY only, never a vendor code or message."""
     return {
         "order_id": str(order.id),
         "account": job_mask or cred_mask,
         "plan": plan,
         "state": state,
         "waiting_for_supplier": waiting,
+        "progress": progress,
     }
 
 
@@ -151,6 +156,11 @@ async def owner_info(db: AsyncSession, order: Order) -> dict[str, Any]:
                 ProcurementJob.account_mask,
                 ProcurementJob.state,
                 ProcurementJob.error_code,
+                ProcurementJob.upstream_ref,
+                ProcurementJob.upstream_status,
+                ProcurementJob.first_sent_at,
+                ProcurementJob.card_wait_since,
+                ProcurementJob.progress,
                 SupplierOffer.params,
             )
             .outerjoin(SupplierOffer, SupplierOffer.id == ProcurementJob.offer_id)
@@ -184,7 +194,46 @@ async def owner_info(db: AsyncSession, order: Order) -> dict[str, Any]:
         plan,
         row.state if row else None,
         waiting,
+        await _progress(db, order, row, params),
     )
+
+
+async def _progress(db: AsyncSession, order: Order, row: Any, params: Any) -> dict[str, Any]:
+    """The buyer's step list. Our own steps come from our rows, the vendor steps from what the
+    engine recorded; the mapping never raises and only ever shows a coarse reason key."""
+    half = dp.is_half(params)
+    done = (row.progress or {}) if row is not None else {}
+    job = _JobFacts(row) if row is not None else None
+    p = (
+        dp.from_job(job, half=half, order_refunded=order.status == "refunded")
+        if job is not None
+        else dp.map_progress(job_state=None, half=half, order_refunded=order.status == "refunded")
+    )
+    checked = await db.scalar(
+        select(HalfPriceCheck.decided_at).where(
+            HalfPriceCheck.tenant_id == order.tenant_id, HalfPriceCheck.order_id == order.id
+        )
+    )
+    times: dict[str, Any] = dict(done.get("reached") or {})
+    for key, value in (
+        ("paid", order.paid_at),
+        ("half_check", checked),
+        ("waiting_supplier", row.card_wait_since if row else None),
+        ("sent", row.first_sent_at if row else None),
+    ):
+        if value is not None:
+            times[key] = value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    waited = bool(row and row.card_wait_since)
+    return dp.buyer_view(p, half=half, waited=waited, at=times)
+
+
+class _JobFacts:
+    """The few job columns the mapping reads (a result row of the owner query)."""
+
+    def __init__(self, row: Any) -> None:
+        self.state, self.error_code = row.state, row.error_code
+        self.upstream_ref, self.upstream_status = row.upstream_ref, row.upstream_status
+        self.first_sent_at, self.progress = row.first_sent_at, row.progress
 
 
 async def resupply(

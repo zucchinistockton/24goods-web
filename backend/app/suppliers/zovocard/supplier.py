@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from app.suppliers import direct_progress as progress
 from app.suppliers.base import (
     Availability,
     Balance,
@@ -1149,6 +1150,9 @@ class ZovoCardSupplier:
         status = order.get("status")
         phase = dr.order_phase(status)
         detail = _order_detail(order)
+        vendor = progress.vendor_view(
+            order, resp.data.get("events") if isinstance(resp.data, Mapping) else None
+        )
         card_id, card_last4 = dr.order_card(order)  # the card that paid (vendor_switch may move it)
         if phase == "done" and not (
             isinstance(crid, str)
@@ -1166,7 +1170,11 @@ class ZovoCardSupplier:
             # a COMPLETED order is only delivered when it provably is OUR order for this plan
             # and this account: the request id and plan must be present and equal
             return Result(
-                Outcome.FATAL, error_code="order_mismatch", upstream_ref=ref, detail=detail
+                Outcome.FATAL,
+                error_code="order_mismatch",
+                upstream_ref=ref,
+                detail=detail,
+                vendor=vendor,
             )
         if phase == "failed":
             return Result(
@@ -1175,6 +1183,7 @@ class ZovoCardSupplier:
                 upstream_ref=ref,
                 account_mask=mask,
                 detail=detail,
+                vendor=vendor,
                 card_id=card_id,
                 card_last4=card_last4,
             )
@@ -1184,6 +1193,7 @@ class ZovoCardSupplier:
                 upstream_ref=ref,
                 account_mask=mask,
                 detail=detail,
+                vendor=vendor,
                 card_id=card_id,
                 card_last4=card_last4,
             )
@@ -1192,6 +1202,7 @@ class ZovoCardSupplier:
             upstream_ref=ref,
             account_mask=mask,
             detail=detail,
+            vendor=vendor,
             card_id=card_id,
             card_last4=card_last4,
             secrets=(dr.delivery_text(spec, mask, ref),),  # plan, masked account, order: no secret

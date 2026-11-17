@@ -22,6 +22,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from app.suppliers.base import SupplierEvent, WebhookRejected, dec
+from app.suppliers.direct_progress import clean_message
 
 MAX_BODY = 64 * 1024
 SIGNATURE_HEADER = "x-signature"
@@ -34,6 +35,8 @@ _CDK_FIELDS = (
     "from_status", "to_status", "status", "stage", "occurred_at", "app_id",
     "client_request_id", "service_fee_minor", "service_fee_status", "final_amount_minor",
     "currency", "card_last_four", "funding_hold_status",
+    "payment_state", "funding_state", "timeline_event_id", "category", "step", "public_code",
+    "payment_fact",
 )  # fmt: skip
 _FIELDS: dict[str, tuple[str, ...]] = {
     "balance_change": (
@@ -112,6 +115,8 @@ def normalise(data: Mapping[str, Any], secret: str) -> SupplierEvent:
     if isinstance(data.get("event_id"), str) and isinstance(etype, str):
         kind = etype[:48]
         payload = {k: _scalar(k, data[k]) for k in _CDK_FIELDS if k in data}
+        if "public_message" in data:  # sanitised HERE: vendor free text is never stored raw
+            payload["public_message"] = clean_message(data["public_message"])
         ref = data.get("cdk_id") if kind.startswith("cdk.") else data.get("order_id")
         if kind.startswith("gpt_direct.") and data.get("cdk_id") is not None:
             ref = data.get("cdk_id")
