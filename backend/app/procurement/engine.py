@@ -62,6 +62,7 @@ from app.models import (
 from app.procurement import ledger
 from app.procurement.context import ProcurementContext
 from app.procurement.funding import (
+    buyer_card_since,
     card_in_flight,
     funding_card_clash,
     funding_mask_clash,
@@ -1542,6 +1543,14 @@ async def _assign_card(
         return False
     for cid, _l in sorted(cands):
         await lock_card(db, offer.supplier_id, cid)
+    for _cid, last4 in cands:
+        # a buyer card recorded AFTER the pre-check that shares a candidate's last four: the
+        # full-mask check must run again before anything is spent (re-audit M2)
+        if await buyer_card_since(db, job.tenant_id, last4, at):
+            job.card_candidates = job.card_candidates_at = None
+            job.step, job.next_poll_at = "submit", now + timedelta(seconds=1)
+            job.attempts = 0
+            return False
     for cid, last4 in cands:
         # a card bought for a buyer is never a funding card (H1); the mask check ran on the
         # pre-check's answer (masks never leave that call) and again for the same card here by id

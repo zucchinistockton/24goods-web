@@ -381,6 +381,30 @@ async def test_stale_candidates_are_re_checked_before_any_spend(env, dup, monkey
     assert vendor.direct_cards_sent and vendor.direct_executions == 1
 
 
+async def test_a_buyer_card_recorded_after_the_pre_check_forces_a_new_check(env, dup, monkeypatch):  # noqa: F811
+    """Re-audit M2: a buyer card pasted by hand (mask only, no vendor id) between the pre-check
+    and the spend, matching the picked card, sends the job back to the full-mask pre-check."""
+    from app.procurement import engine
+    from app.suppliers.zovocard.webhook import mask_pan
+
+    vendor = _two_cards()
+    vendor.card_pool = [4243, 4242]  # the vendor would pick 4243
+    await _zovo(dup, vendor, AUTO)
+    orig, raced = engine._assign_card, []
+
+    async def racing(ctx, db, job, offer, now):
+        if not raced:  # the buyer card lands after the pre-check vetted 4243, before the spend
+            raced.append(vendor.schedule_calls)
+            await _buyer_card_job(env, mask=mask_pan(vendor.cards[4243]["card_number"]))
+        return await orig(ctx, db, job, offer, now)
+
+    monkeypatch.setattr(engine, "_assign_card", racing)
+    buyer, order = await dup.paid_direct(claude_session(new_marker()))
+    await _drive(env, dup, order, buyer)
+    assert raced and vendor.direct_cards_sent == [4242]  # 4243 was never spent on
+    assert vendor.schedule_calls > raced[0]  # the vetted list was dropped and checked again
+
+
 # ------------------------------------------------------------------ vendor-reported card
 async def test_a_reported_card_other_than_the_sent_one_is_a_discrepancy(env, dup):  # noqa: F811
     vendor = _two_cards()
@@ -599,6 +623,9 @@ def test_cost_rows_include_the_switch_cost():
     assert cm.estimate(st3, sw, D("30"), D("0.02")).switch_cost == D("0.045")
     assert cm.normalize({})["max_auto_switches"] == 2
     assert cm.normalize({"max_auto_switches": -1})["max_auto_switches"] == 2  # invalid: default
+    # re-audit M3: never below the vendor default (we send no switch cap)
+    assert cm.normalize({"max_auto_switches": 1})["max_auto_switches"] == 2
+    assert cm.normalize({"max_auto_switches": 0})["max_auto_switches"] == 2
     # only direct sources switch cards
     assert cm.estimate(st, cm.Source("cdk", D("20"), vendor_switch=True), D("30"), D("0")
                        ).switch_cost == 0  # fmt: skip

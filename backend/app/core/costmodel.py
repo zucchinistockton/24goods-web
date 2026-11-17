@@ -46,7 +46,7 @@ _INT_FIELDS: dict[str, tuple[int, int, int]] = {  # default, lo, hi
     "failed_free_count": (3, 0, 1000),
     # vendor_switch: the most extra card attempts the vendor may make after a refused payment
     # (vendor default 2); the cost bound of the switch assumes all of them are used and billed
-    "max_auto_switches": (2, 0, 10),
+    "max_auto_switches": (2, 2, 10),  # floor = the vendor default: we send no switch cap
     "chargeback_tier1_min_tx": (100, 0, 1_000_000),
     "round_step_minor": (10, 1, 100_000),
     "fx_max_age_days": (7, 1, 365),

@@ -1410,6 +1410,22 @@ card is opened). The decline / chargeback thresholds are watched in part 2.
 `POST /gpt-direct/cards/reset-usage`, `direct_no_card_next` / `direct_no_card_code` (refused order POSTs),
 `direct_order_over` (e.g. a reported `card_id`), `direct_switch_to` (the vendor switches card when `no_auto_card_switch` is false), `card_last_four` on orders.
 
+### 21.6a Re-audit of the fix round (2026-11-17)
+
+* **M1, "no order" proof.** The vendor order list search (`_direct_find`), which unlocks a re-key, claims
+  `order_not_found` only when the answer states `total` and that many DISTINCT order ids were read. A missing
+  `total` (an unknown page-size cap), an empty page before `total`, or a row without an id is AMBIGUOUS
+  (`order_list_unverifiable` / `malformed_order`): the job goes to staff, never to a new key. Distinct ids keep
+  rows that shift between pages from ending the search early. `{list, total}` is [V] (sandbox 2026-11-16);
+  matching `client_request_id` on the rows is [I].
+* **M2, buyer card recorded between the check and the spend.** `_assign_card` drops a vetted list and re-runs
+  the full-mask pre-check when a non-voided buyer card whose mask ends in a candidate's last four was recorded or
+  changed after the list was checked (`funding.buyer_card_since`). A false match only costs one more pre-check;
+  only cards recorded after the check count, so there is no loop. Candidates without last four rely on the
+  pre-check's full-mask check alone.
+* **M3, cost floor.** `max_auto_switches` cannot go below the vendor default (2): we send no switch cap, so the
+  estimate must not assume fewer switches than the vendor may make.
+
 ### 21.7 Left open
 
 * The exact JSON of `card-pool/schedule` (`pick` as an object or an id, the candidate id key) and the "no card" error

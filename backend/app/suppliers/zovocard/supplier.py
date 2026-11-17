@@ -1227,8 +1227,14 @@ class ZovoCardSupplier:
 
     async def _direct_find(self, spec: dr.DirectSpec, rid: str, account_mask: str | None) -> Result:
         """Search the vendor's order list for ``rid``: its status when found, UNAVAILABLE
-        ``order_not_found`` when the whole list has no such order, else an error result."""
-        seen_rows = 0
+        ``order_not_found`` when the whole list has no such order, else an error result.
+
+        "Not found" unlocks a re-key (a new idempotency key, so a second order could be sent), so
+        it is claimed only when the vendor states ``total`` and that many DISTINCT orders were
+        read: a missing ``total`` (a page-size cap we do not know), an empty page before
+        ``total``, or a row without an id is AMBIGUOUS. Counting distinct ids keeps rows that
+        shift between pages (newest-first inserts) from ending the search early."""
+        seen: set[str] = set()
         for page in range(1, ORDER_LIST_MAX_PAGES + 1):
             try:
                 resp = await self.client.get(
@@ -1239,21 +1245,22 @@ class ZovoCardSupplier:
             rows = resp.data.get("list") if isinstance(resp.data, Mapping) else None
             if not isinstance(rows, list):
                 return Result(Outcome.AMBIGUOUS, error_code="malformed_order_list")
-            seen_rows += len(rows)
             total = resp.data.get("total") if isinstance(resp.data, Mapping) else None
             for item in rows:
+                oid = dr.order_id_of(item) if isinstance(item, Mapping) else None
                 if isinstance(item, Mapping) and item.get("client_request_id") == rid:
-                    found = dr.order_id_of(item)
-                    if found is None:
+                    if oid is None:
                         return Result(Outcome.AMBIGUOUS, error_code="malformed_order")
-                    return await self._direct_status(spec, found, rid, None, account_mask)
-            # page until the vendor says there is no more (``total`` rows seen, or a short page)
-            if isinstance(total, int) and not isinstance(total, bool):
-                done = not rows or seen_rows >= total
-            else:
-                done = len(rows) < 100
-            if done:
+                    return await self._direct_status(spec, oid, rid, None, account_mask)
+                if oid is None:
+                    return Result(Outcome.AMBIGUOUS, error_code="malformed_order")
+                seen.add(oid)
+            if not isinstance(total, int) or isinstance(total, bool) or total < 0:
+                return Result(Outcome.AMBIGUOUS, error_code="order_list_unverifiable")
+            if len(seen) >= total:
                 return Result(Outcome.UNAVAILABLE, error_code="order_not_found")
+            if not rows:  # the vendor ran out of rows before its own total
+                return Result(Outcome.AMBIGUOUS, error_code="order_list_unverifiable")
         # the list is longer than we are willing to read: "not found" would be a guess
         return Result(Outcome.AMBIGUOUS, error_code="order_list_too_long")
 
