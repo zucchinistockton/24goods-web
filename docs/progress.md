@@ -4,6 +4,35 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 ## Current state — hand-off (read this first in a new session)
 
+**Hand-off 2026-11-17 13:24 UTC (session paused on the 5-hour limit). START HERE.**
+
+- **Production (c4) runs `55ad99a`** (v12 launch, see the launch block below). Nothing newer is deployed there, by
+  owner decision ("develop on the demo, not production"). Waiting for production: #36 (no virtual-card sales /
+  no card reveal) and #37 (cost model). Hand deploy procedure + `--profile procurement` in the launch block.
+- **Demo (demo.kesiv.com) runs `main` `156ddc7`**: v12 + #36 + #37. Demo redemption page `redeem-demo.kesiv.com`
+  (production page `redeem.kesiv.com`). Testing guide: `docs/testing-guide.md`. The vendor sandbox expires
+  **2026-11-18 10:57**: then run `/opt/24goods-demo/deploy/sandbox-off.sh` on the demo host.
+- **Open work, in order** (tracking issue #33; owner accepted all suggestions; demo only):
+  1. **#27 PR #38 `feat/regions-half`** (worktree `.claude/worktrees/regions`): plan × region variants + half-price
+     check before payment (vendor preflight / `chatgpt_direct` / manual, admin-selectable). **Not mergeable yet**:
+     frontend typecheck error (`RegionsPanel.vue:105-106`), payment audit FAIL (failover can buy a full-price plan for
+     a half-price sale; sources not validated against variant options) and security notes. **The full fix list is on
+     PR #38** (comment of 2026-11-17). Next: give that list to an implementer on the branch → CI → short re-audit →
+     merge → demo → browser check.
+  2. #29 automatic card selection / issuance (owner: yes), 3. #30 progress display + detailed logs,
+  4. #31 redemption admin (port features from the vendor's `zovo_card_cdk_auto`, do not deploy it — evaluation on
+     #31), 5. #35 shop sells codes, redemption on its own platform (both modes kept; direct can be switched off per
+     product), 6. #34 OKX Agentic Wallet top-ups (later).
+- **Owner decisions of 2026-11-17** (details on the issues): five ChatGPT regions (PH, EG, CL, JP, US); price
+  recommendations only (#28); virtual cards never shown or sold to buyers (#32, done); ZovoCard may pick/issue cards
+  automatically (#29); half-price check method admin-selectable, `chatgpt_direct` = plain read-only check, no
+  fingerprinting / anti-bot workarounds (#27).
+- **Owner tasks still open for production**: top up the ZovoCard wallet (6.27 USD at launch), set the production
+  webhook callback, create products/sources, rotate the ZovoCard keys and `APP_OWNER_PASSWORD` (pasted in chat),
+  file the security review report, encrypted backups + restore drill.
+- Owner's Chrome freezing after pasting a session: our pages are fine in a clean Chrome (measured); likely an
+  extension or Chrome writing help in the everyday profile; the session boxes now opt out of such tools.
+
 **v12 released to `main` (2026-11-17, owner decision).** The owner stated on 2026-11-17 that the independent
 security review (M1 exit gate, AGENTS.md §1.11) has been passed and approved merging v12 procurement to `main`,
 deploying it to production and selling with real money. The review report itself is not in the repository yet:
@@ -214,7 +243,7 @@ merge (auth path, AGENTS.md §5.3); the UI was typechecked by CI only and never 
     balance read (N4); unbounded RETRYABLE (N7); parked job with a healthy alternative (N8); refund with a
     fulfilled-undelivered unit (N5); recovery `IDEMPOTENCY_CONFLICT` (N6). The fresh pre-check adds one
     `GET /gpt-direct/plans` per first send: check the mock's rate limit and the e2e scenario plans.
-- **Done in the 2026-11-15 night session.** Audit fixes for H1, H2, M1–M5, L1, L2, L4, L5, L7 (`38754af`..
+- **Done in the 2026-11-15 session.** Audit fixes for H1, H2, M1–M5, L1, L2, L4, L5, L7 (`38754af`..
   `6469097`, migration 0027, 40 tests); admin page handles the new codes (`5531880`); `main` merged into the
   branch and procurement alerts moved to the Telegram message catalog (`2895860`). Behaviour change: a source
   cannot be switched on without a cost estimate unless the supplier reports its own USD price. On `main`:
@@ -246,7 +275,7 @@ merge (auth path, AGENTS.md §5.3); the UI was typechecked by CI only and never 
 - Housekeeping: `docs/research/zovocard/` is untracked in the main checkout (vendor docs; decide whether it
   belongs in git); stale local branches `worktree-agent-*`, `fix/pay-ux`, `docs/deploy-*` can be deleted.
 
-**Hand-off 2026-11-15 evening (superseded by the block above; kept for the M2 build notes and the original
+**Hand-off 2026-11-15 (superseded by the block above; kept for the M2 build notes and the original
 audit findings).**
 
 - **START HERE.** Branch `feat/v12-procurement-m2` (worktree `.claude/worktrees/agent-af3aa371765135692`,
