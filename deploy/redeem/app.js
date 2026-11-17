@@ -22,6 +22,15 @@
       okTitle: 'Done', okLead: 'The plan is active on your account. You can close this page.',
       badTitle: 'Not completed', badLead: 'The redemption did not go through. Contact support with the reference below.',
       laterTitle: 'Still in progress', laterLead: 'It is taking longer than usual. Your code is safe: check again in a few minutes, and do not start over.',
+      progTitle: 'Progress', progAt: 'Completed',
+      p_sent: 'Code accepted', p_half_check: 'Half-price check', p_waiting_supplier: 'Waiting for the supplier',
+      p_queued: 'Queued', p_funding: 'Preparing payment', p_processing: 'Being applied to your account',
+      p_payment_submitted: 'Payment submitted', p_completed: 'Completed', p_failed: 'Not completed',
+      p_refunded: 'Refunded', p_attention: 'Needs attention', p_unknown: 'In progress',
+      r_declined: 'The payment was declined, so the plan could not be applied. Contact support with the reference below.',
+      r_cancelled: 'The redemption was cancelled before it was applied.', r_expired: 'The redemption expired before it was applied.',
+      r_not_completed: 'The plan could not be applied to your account.', r_refunded: 'This redemption was refunded.',
+      r_review: 'Our team is looking at this. Do not start over.', r_account: 'The account needs attention. Contact support with the reference below.',
       e_invalid_request: 'That does not look right. Check what you entered and try again.',
       e_code_unavailable: 'This code cannot be redeemed. Check it for typos; if it was already used, it cannot be used again.',
       e_credential_invalid: 'The session text was not accepted. Sign in again, copy a fresh one and paste all of it.',
@@ -53,6 +62,15 @@
       okTitle: '兑换成功', okLead: '套餐已在你的账号上生效，可以关闭此页面。',
       badTitle: '兑换未完成', badLead: '兑换没有成功，请携带下方参考编号联系客服。',
       laterTitle: '仍在处理中', laterLead: '处理时间比平时长。你的兑换码是安全的：请几分钟后再次查询，不要重新开始。',
+      progTitle: '进度', progAt: '完成于',
+      p_sent: '兑换码已受理', p_half_check: '半价资格检查', p_waiting_supplier: '等待供应方',
+      p_queued: '排队中', p_funding: '准备付款', p_processing: '正在开通到你的账号',
+      p_payment_submitted: '已提交付款', p_completed: '已完成', p_failed: '未完成',
+      p_refunded: '已退款', p_attention: '需要处理', p_unknown: '处理中',
+      r_declined: '付款被拒绝，套餐未能开通。请携带下方参考编号联系客服。',
+      r_cancelled: '兑换在开通前已被取消。', r_expired: '兑换在开通前已过期。',
+      r_not_completed: '套餐未能开通到你的账号。', r_refunded: '该兑换已退款。',
+      r_review: '我们的团队正在查看，请不要重新开始。', r_account: '账号需要处理，请携带下方参考编号联系客服。',
       e_invalid_request: '输入内容有误，请检查后重试。',
       e_code_unavailable: '该兑换码无法兑换。请检查是否输入有误；已使用的兑换码不能再次使用。',
       e_credential_invalid: '会话内容未通过验证。请重新登录，复制最新的完整内容后再粘贴。',
@@ -70,7 +88,7 @@
   var $ = function (id) { return document.getElementById(id) }
   var t = function (k) { return T[lang][k] || T.en[k] || k }
   // flow state: memory only, gone on reload
-  var st = { step: 0, token: null, plan: '', preflight: null, credential: null, requestId: null, busy: false, result: null }
+  var st = { step: 0, token: null, plan: '', preflight: null, credential: null, requestId: null, busy: false, result: null, progress: null }
   var SECTIONS = ['s-code', 's-account', 's-confirm', 's-result']
 
   function paint() {
@@ -80,6 +98,7 @@
     var nodes = document.querySelectorAll('[data-t]')
     for (var i = 0; i < nodes.length; i++) nodes[i].textContent = t(nodes[i].getAttribute('data-t'))
     if (st.result) showResult(st.result.kind, st.result.order)
+    renderProgress(st.progress)
   }
   function show(step) {
     st.step = step
@@ -112,7 +131,8 @@
     }, function () { throw { code: 'network' } })
   }
   function reset() {
-    st.token = st.preflight = st.credential = st.requestId = st.result = null
+    st.token = st.preflight = st.credential = st.requestId = st.result = st.progress = null
+    renderProgress(null)
     st.plan = ''
     $('code').value = ''
     $('session').value = ''
@@ -188,9 +208,48 @@
     }).then(function () { busy(btn, false) })
   })
 
+  var KNOWN = ['sent', 'half_check', 'waiting_supplier', 'queued', 'funding', 'processing', 'payment_submitted', 'completed', 'failed', 'refunded', 'attention']
+  var STATES = ['done', 'current', 'todo', 'failed', 'attention']
+  var REASONS = ['declined', 'cancelled', 'expired', 'not_completed', 'refunded', 'review', 'account']
+  function stamp(at) {
+    var ms = typeof at === 'number' ? (at < 1e12 ? at * 1000 : at) : typeof at === 'string' ? Date.parse(at) : NaN
+    if (!isFinite(ms) || ms <= 0) return ''
+    try { return new Date(ms).toLocaleString(lang === 'zh' ? 'zh-CN' : 'en', { dateStyle: 'medium', timeStyle: 'short' }) } catch (e) { return '' }
+  }
+  // the same coarse step model as the buyer's order page; everything shown comes from fixed keys
+  function renderProgress(p) {
+    var box = $('progress')
+    if (!p || !Array.isArray(p.steps)) { box.hidden = true; return }
+    st.progress = p
+    var pct = Math.max(0, Math.min(100, Math.round(Number(p.percent) || 0)))
+    var tone = p.outcome === 'completed' ? 'ok' : p.outcome === 'failed' ? 'bad' : p.outcome === 'attention' ? 'warn' : ''
+    box.className = 'progress ' + tone
+    box.hidden = false
+    $('pct').textContent = pct + '%'
+    $('fill').style.width = pct + '%'
+    $('bar').setAttribute('aria-valuenow', String(pct))
+    var note = $('pnote')
+    var rk = (p.outcome === 'failed' || p.outcome === 'attention') ? (REASONS.indexOf(p.reason) >= 0 ? 'r_' + p.reason : p.outcome === 'failed' ? 'r_not_completed' : 'r_review') : ''
+    note.hidden = !rk
+    note.textContent = rk ? t(rk) : ''
+    var list = $('psteps')
+    list.textContent = ''
+    p.steps.slice(0, 12).forEach(function (s) {
+      var li = document.createElement('li')
+      li.className = STATES.indexOf(s.state) >= 0 ? s.state : 'todo'
+      if (s.state === 'current') li.setAttribute('aria-current', 'step')
+      var d = document.createElement('span'); d.className = 'd'; d.setAttribute('aria-hidden', 'true')
+      var n = document.createElement('span'); n.className = 'n'; n.textContent = t('p_' + (KNOWN.indexOf(s.key) >= 0 ? s.key : 'unknown'))
+      li.appendChild(d); li.appendChild(n)
+      var when = stamp(s.at)
+      if (when) { var tm = document.createElement('span'); tm.className = 't'; tm.textContent = when; li.appendChild(tm) }
+      list.appendChild(li)
+    })
+  }
   var OK = /^(succeeded|success|completed|done|redeemed)$/i
   var BAD = /^(failed|rejected|cancell?ed|refunded|error)$/i
   function settle(d) {
+    if (d && d.progress) renderProgress(d.progress)
     var status = String((d && d.status) || '')
     if (OK.test(status) && d.terminal !== false) { showResult('ok', d.order_id); return true }
     if (BAD.test(status) || (d && d.terminal && !OK.test(status))) { showResult('bad', d.order_id); return true }
