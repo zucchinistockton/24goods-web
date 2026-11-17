@@ -26,6 +26,9 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
   4. #31 redemption admin (port features from the vendor's `zovo_card_cdk_auto`, do not deploy it — evaluation on
      #31), 5. #35 shop sells codes, redemption on its own platform (both modes kept; direct can be switched off per
      product), 6. #34 OKX Agentic Wallet top-ups (later).
+- **Audit exception (owner-approved 2026-11-17, temporary):** `pnpm audit` ignores GHSA-fc5q-39xc-vjpf (picomatch
+  ReDoS, no patched release) only; not reachable at runtime or from untrusted input. **Mandatory review
+  2026-12-17** (`pnpm lint` fails after that date). Assessment: `docs/security-exceptions.md`.
 - **Owner decisions of 2026-11-17** (details on the issues): five ChatGPT regions (PH, EG, CL, JP, US); price
   recommendations only (#28); virtual cards never shown or sold to buyers (#32, done); ZovoCard may pick/issue cards
   automatically (#29); half-price check method admin-selectable, `chatgpt_direct` = plain read-only check, no
