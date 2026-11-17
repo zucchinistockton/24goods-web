@@ -26,6 +26,8 @@ from app.core.ratelimit import enforce
 from app.core.resources import Resources
 from app.models import Product, ProductVariant, SupplierAccount, SupplierOffer, User
 from app.modules.admin.suppliers import _dec, _iso, platform_admin
+from app.modules.admin.variants import source_cost_guard
+from app.modules.catalog.regions import is_half_plan, options_of, source_matches_options
 from app.procurement.funding import funding_card_clash
 from app.suppliers.base import OfferSpec
 from app.suppliers.zovocard.direct import direct_spec
@@ -158,6 +160,61 @@ async def _direct_checks(
         raise Validation(
             "A sandbox supplier cannot take real buyers' sessions in production",
             code="sandbox_in_prod",
+        )
+
+
+async def _options_guard(
+    db: AsyncSession,
+    tenant_id: uuid.UUID,
+    variant_id: uuid.UUID | None,
+    kind: str,
+    params: dict[str, Any],
+) -> None:
+    """A source of a plan x region variant buys exactly that plan in that region: otherwise a
+    half-price sale could be fulfilled with a full-price plan, or in another region (payment
+    audit 2026-11-17, finding 2)."""
+    if variant_id is None or kind == "vcc":
+        return
+    opts = options_of(
+        await db.scalar(
+            select(ProductVariant.options).where(
+                ProductVariant.id == variant_id, ProductVariant.tenant_id == tenant_id
+            )
+        )
+    )
+    if not source_matches_options(params, opts):
+        raise Validation(
+            "The source's plan / payment country must match the variant's plan and region",
+            code="source_options_mismatch",
+        )
+
+
+def _plan_mix_guard(
+    kind: str,
+    params: dict[str, Any],
+    enabled: bool,
+    others: list[SupplierOffer],
+    skip: uuid.UUID | None = None,
+) -> None:
+    """The enabled sources of one target never mix half-price and full-price plans, and a
+    half-price target never mixes plan or country: failover or round-robin would otherwise reach
+    the half-price source for an order that was never checked (payment audit round 2, finding 1)."""
+    if kind == "vcc" or not enabled:
+        return
+    live = [dict(o.params or {}) for o in others if o.id != skip and o.enabled and o.kind != "vcc"]
+    live.append(params)
+    if len(live) < 2:
+        return
+    half = [is_half_plan(p.get("plan")) for p in live]
+    if any(half) and (
+        not all(half)
+        or len({(p.get("plan"), p.get("product", "gpt"), p.get("payment_country")) for p in live})
+        > 1
+    ):
+        raise Validation(
+            "The enabled sources of a target cannot mix half-price and full-price plans, "
+            "plans or countries",
+            code="source_plan_mixed",
         )
 
 
@@ -320,9 +377,11 @@ async def add_source(
     params = _params(body.params, kind)
     if not _valid_params(kind, params):
         raise Validation("These source parameters cannot be sent to a supplier", code="bad_params")
+    await _options_guard(db, tid, body.variant_id, kind, params)
     existing = await _offers(db, tid, body.product_id, body.variant_id)
     _same_vendor_product(kind, params, [o for o, _ in existing])
     await _direct_checks(db, res, kind, params, supplier, enabling=body.enabled)
+    _plan_mix_guard(kind, params, body.enabled, [o for o, _ in existing])
     if len(existing) >= MAX_OFFERS_PER_TARGET:
         raise Validation("Too many sources for this target", code="too_many_sources")
     if any(o.supplier_id == supplier.id and o.params == params for o, _ in existing):
@@ -342,6 +401,9 @@ async def add_source(
     )
     if offer.enabled:
         _require_cost(offer, supplier)
+        await source_cost_guard(
+            db, tid, offer, others_enabled=[o for o, _ in existing if o.enabled and o.kind != "vcc"]
+        )
     db.add(offer)
     try:
         await db.flush()
@@ -470,6 +532,7 @@ async def update_source(
                 "These source parameters cannot be sent to a supplier", code="bad_params"
             )
         if params != offer.params:
+            await _options_guard(db, admin.tenant_id, offer.variant_id, offer.kind, params)
             if offer.kind == "direct":
                 await _direct_checks(
                     db, res, "direct", params, supplier, enabling=bool(offer.enabled)
@@ -499,11 +562,35 @@ async def update_source(
     if body.enabled is not None:
         offer.enabled = body.enabled
         if body.enabled:
+            await _options_guard(
+                db, admin.tenant_id, offer.variant_id, offer.kind, dict(offer.params or {})
+            )
             await _direct_checks(
                 db, res, offer.kind, dict(offer.params or {}), supplier, enabling=True
             )
     if offer.enabled and (body.enabled or body.clear_cost or body.currency or body.params):
         _require_cost(offer, supplier)  # an enabled source never loses its cost
+    if offer.enabled:
+        with db.no_autoflush:
+            others = await _offers(db, admin.tenant_id, offer.product_id, offer.variant_id)
+        if body.enabled or body.params is not None:
+            _plan_mix_guard(
+                offer.kind, dict(offer.params or {}), True, [o for o, _ in others], skip=offer.id
+            )
+        if offer.kind != "vcc" and (
+            body.enabled
+            or body.clear_cost
+            or body.cost_estimate is not None
+            or body.currency
+            or body.params is not None
+        ):
+            with db.no_autoflush:
+                await source_cost_guard(
+                    db,
+                    admin.tenant_id,
+                    offer,
+                    others_enabled=[o for o, _ in others if o.id != offer.id and o.enabled],
+                )
     try:
         await db.flush()
     except IntegrityError:

@@ -17,8 +17,9 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
      check before payment (vendor preflight / `chatgpt_direct` / manual, admin-selectable). **Not mergeable yet**:
      frontend typecheck error (`RegionsPanel.vue:105-106`), payment audit FAIL (failover can buy a full-price plan for
      a half-price sale; sources not validated against variant options) and security notes. **The full fix list is on
-     PR #38** (comment of 2026-11-17). Next: give that list to an implementer on the branch → CI → short re-audit →
-     merge → demo → browser check.
+     PR #38** (comment of 2026-11-17). **Fixes applied 2026-11-17 on the branch** (typecheck, source pinning, account /
+     qty binding, unpriced variants, DEFINER decision, hardening; see review-v12 §20.8), then two re-audit rounds (no-check half-price failover, keyed account binding
+     from token claims, cost floor, INSERT guard, prod role assertion). Next: CI → merge → demo → browser check.
   2. #29 automatic card selection / issuance (owner: yes), 3. #30 progress display + detailed logs,
   4. #31 redemption admin (port features from the vendor's `zovo_card_cdk_auto`, do not deploy it — evaluation on
      #31), 5. #35 shop sells codes, redemption on its own platform (both modes kept; direct can be switched off per

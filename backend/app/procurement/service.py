@@ -414,3 +414,46 @@ async def run_loop(ctx: ProcurementContext, stop: asyncio.Event) -> None:
             await asyncio.wait_for(stop.wait(), ctx.settings.balance_interval_s)
         except asyncio.TimeoutError:
             continue
+
+
+async def _zovo_supplier(
+    ctx: ProcurementContext, tenant_id: uuid.UUID
+) -> tuple[SupplierRef, Supplier]:
+    """The first enabled ZovoCard supplier of the platform tenant, built (never probed here)."""
+    async with tenant_session(ctx.maker, tenant_id) as db:
+        kind = await db.scalar(select(Tenant.kind).where(Tenant.id == tenant_id))
+        if kind != PLATFORM:
+            raise SupplierNotFound
+        row = await db.scalar(
+            select(SupplierAccount)
+            .where(
+                SupplierAccount.tenant_id == tenant_id,
+                SupplierAccount.enabled.is_(True),
+                SupplierAccount.adapter == "zovocard",
+            )
+            .order_by(SupplierAccount.priority, SupplierAccount.created_at)
+            .limit(1)
+        )
+        if row is None:
+            raise SupplierNotFound
+        ref = SupplierRef(row.id, row.tenant_id, row.code, row.adapter, row.env, row.health)
+    try:
+        return ref, make_supplier(ctx, ref)
+    except SupplierConfigError:
+        raise SupplierNotFound from None
+
+
+async def payment_regions(
+    ctx: ProcurementContext, tenant_id: uuid.UUID, product: str
+) -> list[dict[str, str]]:
+    """The vendor's current payment regions for ``product`` (GET only, cached by the adapter).
+    An unreachable vendor raises :class:`SupplierError`; the caller shows "unavailable"."""
+    _ref, supplier = await _zovo_supplier(ctx, tenant_id)
+    try:
+        fn = getattr(supplier, "payment_regions", None)
+        if fn is None:
+            return []
+        pairs = await asyncio.wait_for(fn(product), ctx.settings.probe_timeout_s)
+    finally:
+        await supplier.aclose()
+    return [{"country": c, "currency": cur} for c, cur in pairs]

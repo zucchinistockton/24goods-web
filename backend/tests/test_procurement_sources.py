@@ -13,7 +13,9 @@ SRC = "/api/v1/admin/procurement/sources"
 SUP = "/api/v1/admin/suppliers"
 
 
-async def _variant(env, product, tenant_id: uuid.UUID | None = None) -> uuid.UUID:
+async def _variant(
+    env, product, tenant_id: uuid.UUID | None = None, price: int = 1000, floor: int = 0
+) -> uuid.UUID:
     from app.models import ProductVariant
 
     tid = tenant_id or env.tenant_id
@@ -22,7 +24,7 @@ async def _variant(env, product, tenant_id: uuid.UUID | None = None) -> uuid.UUI
         db.add(
             ProductVariant(
                 id=vid, tenant_id=tid, product_id=product.id, name_i18n={"en": "Plus"},
-                price_minor=1000, status="active",
+                price_minor=price, floor_price_minor=floor, status="active",
             )
         )  # fmt: skip
         await db.commit()
@@ -49,7 +51,13 @@ def _body(product, supplier_id, **over) -> dict:
 async def test_sources_lifecycle_sort_routing_and_audit(env):
     admin, _ = await env.login("admin")
     product = await env.product(mode="upstream_cdk")
-    vid = await _variant(env, product)
+    # the variant is ACTIVE: enabling a source needs an FX rate and a price AND floor above cost
+    r = await admin.put(
+        "/api/v1/admin/procurement/pricing/settings",
+        json={"fx": {"currency": "CNY", "per_usd": "7.2"}},
+    )
+    assert r.status_code == 200, r.text
+    vid = await _variant(env, product, price=5000, floor=5000)
     a = (await _create(admin))["id"]
     b = (await _create(admin, code="zovocard_b"))["id"]
     # variant-level and product-level sources are separate targets

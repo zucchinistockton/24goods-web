@@ -98,6 +98,10 @@ class ProductVariant(Base):
     after_sales_hours: Mapped[int | None] = mapped_column(Integer)
     subscription: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
     procurement_routing: Mapped[str] = mapped_column(String(16), default="priority")
+    # issue #27: {"plan": <vendor plan key>, "region": <ISO country>} or NULL (plain variant)
+    options: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
+    # False = generated with a placeholder price: cannot be active until staff set a price
+    price_set: Mapped[bool] = mapped_column(default=True, server_default="true")
     sold: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = created_at()
     updated_at: Mapped[datetime] = updated_at()

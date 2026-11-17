@@ -26,6 +26,9 @@ class ProcurementContext:
     sealer: CardSealer | None = None
     # buyer-credential opener (upstream_direct): the ONLY place a buyer's session is decrypted
     cred_opener: CredentialOpener | None = None
+    # half-price check method ``chatgpt_direct``: tests inject a stub transport; None = a plain
+    # httpx client per call (never a proxy, never a fingerprint imitation)
+    chatgpt_http: httpx.AsyncClient | None = None
     # tests: build suppliers from a factory (SupplierRef -> Supplier) instead of the registry
     supplier_factory: Callable[[Any], Any] | None = None
     # monotonic time of the last credential sweep (None = never)

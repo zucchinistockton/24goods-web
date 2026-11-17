@@ -48,6 +48,7 @@ from app.core.db import set_tenant, tenant_session
 from app.core.errors import Conflict
 from app.models import (
     CardStock,
+    HalfPriceCheck,
     Order,
     Outbox,
     ProcurementCredential,
@@ -103,6 +104,7 @@ STUCK_AFTER = timedelta(minutes=30)
 PLAN_REFUSALS = frozenset(
     {
         "not_purchasable",
+        "region_not_offered",  # the vendor withdrew the region after the sale (issue #27)
         "invalid_offer",
         "cdk_gpt_only",
         "kind_not_supported_m1",
@@ -182,6 +184,46 @@ class HasRedis(Protocol):
     redis: Any
 
 
+async def _pins(
+    db: AsyncSession, order: OrderRow
+) -> tuple[dict[str, str] | None, tuple[str, str | None] | None]:
+    """What a source must match for THIS order: the variant's ``options`` (plan, region) and the
+    plan / country of the half-price check the order was created with. Never fail over to another
+    plan or country."""
+    from app.modules.catalog.regions import options_of
+
+    opts = None
+    if order.variant_id is not None:
+        opts = options_of(
+            await db.scalar(
+                select(ProductVariant.options).where(
+                    ProductVariant.id == order.variant_id,
+                    ProductVariant.tenant_id == order.tenant_id,
+                )
+            )
+        )
+    chk = (
+        await db.execute(
+            select(HalfPriceCheck.plan, HalfPriceCheck.country).where(
+                HalfPriceCheck.tenant_id == order.tenant_id, HalfPriceCheck.order_id == order.id
+            )
+        )
+    ).first()
+    return opts, ((chk.plan, chk.country) if chk else None)
+
+
+def _pinned(
+    params: dict[str, Any],
+    opts: dict[str, str] | None,
+    chk: tuple[str, str | None] | None,
+) -> bool:
+    from app.modules.catalog.regions import source_matches_options
+
+    if not source_matches_options(params, opts):
+        return False
+    return chk is None or (params.get("plan"), params.get("payment_country")) == chk
+
+
 async def candidates(
     ctx: HasRedis,
     db: AsyncSession,
@@ -236,6 +278,14 @@ async def candidates(
         stmt = stmt.where(
             SupplierAccount.env != "sandbox"
         )  # a real session never goes to a sandbox
+    opts, chk = await _pins(db, order)
+    stmt_rows = list((await db.execute(stmt)).all())
+    if chk is None:
+        # fail closed: an order with no attached half-price check never reaches a half-price
+        # source (failover / round-robin included); with nothing else left the job needs staff
+        from app.modules.catalog.regions import is_half_plan
+
+        stmt_rows = [r for r in stmt_rows if not is_half_plan((r.params or {}).get("plan"))]
     rows = [
         OfferRow(
             r.id,
@@ -244,7 +294,8 @@ async def candidates(
             dict(r.params or {}),
             SupplierRef(r.supplier_id, order.tenant_id, r.code, r.adapter, r.env, r.health),
         )
-        for r in (await db.execute(stmt)).all()
+        for r in stmt_rows
+        if _pinned(dict(r.params or {}), opts, chk)  # before round-robin: it rotates matches only
     ]
     if len(rows) > 1 and await _routing(db, order) == "round_robin":
         target = f"{order.product_id}:{order.variant_id or '-'}"
@@ -307,6 +358,20 @@ async def _transition(
 
 def _emit(db: AsyncSession, tenant_id: uuid.UUID, topic: str, key: str, payload: dict) -> None:
     db.add(Outbox(tenant_id=tenant_id, topic=topic, key=key[:128], payload=payload))
+
+
+async def _half_hold(db: AsyncSession, job: ProcurementJob) -> str | None:
+    """A ``manual`` half-price check blocks the first send until staff approve it."""
+    status = await db.scalar(
+        select(HalfPriceCheck.status).where(
+            HalfPriceCheck.tenant_id == job.tenant_id, HalfPriceCheck.order_id == job.order_id
+        )
+    )
+    if status == "manual_pending":
+        return "half_price_check_manual"
+    if status == "manual_refused":
+        return "half_price_check_refused"
+    return None
 
 
 async def _needs_manual(
@@ -1204,6 +1269,24 @@ async def _lease(ctx: ProcurementContext, job_id: uuid.UUID, tenant_id: uuid.UUI
                 await _needs_manual(db, job, "offer_changed")
                 await db.commit()
                 return None
+            if problem := await _half_hold(db, job):
+                # the half-price check of this order awaits (or was refused by) staff: the supplier
+                # is NOT called (issue #27); approve in the console, then retry the job
+                await _needs_manual(db, job, problem)
+                if problem == "half_price_check_manual" and job.alerted_at is None:
+                    # a paid order waits for staff: one visible warning (the Regions list also
+                    # flags it overdue after ``MANUAL_SLA``)
+                    job.alerted_at = now
+                    await audit(
+                        db,
+                        tenant_id=job.tenant_id,
+                        action="procurement.half_hold",
+                        target=f"procurement_job:{job.id}",
+                        detail={"order_id": str(job.order_id), "sla_minutes": 60},
+                        severity="warning",
+                    )
+                await db.commit()
+                return None
             if gate := _balance_gate(ctx, offer, now):
                 # a low (breaker) or unknown (stale reading) balance: wait, never fail over or
                 # give up; the job resumes by itself when the balance is known and sufficient
@@ -1407,6 +1490,12 @@ async def sweep_credentials(ctx: ProcurementContext, *, force: bool = False) -> 
         return 0
     ctx.cred_swept_at = now
     total = 0
+    try:  # half-price check sessions (migration 0032): wipe any that outlived their read
+        from app.procurement.halfcheck import wipe_stale
+
+        total += await wipe_stale(ctx)
+    except Exception as exc:
+        log.error("half-check sweep failed error=%s", type(exc).__name__)
     async with tenant_session(ctx.maker, None) as db:
         res = await db.execute(
             text(
@@ -1473,6 +1562,26 @@ async def _call(ctx: ProcurementContext, lease: Lease) -> Result:
                 cred, problem = await _open_credential(ctx, lease)
                 if cred is None:
                     return Result(Outcome.FATAL, error_code=problem or "credential_unreadable")
+                from app.modules.catalog.regions import is_half_plan
+
+                if is_half_plan(lease.spec.offer.params.get("plan")) and lease.order_id:
+                    # the order's session must be the account the half-price check was made for:
+                    # compared HERE (the session is sealed for the API), before any vendor call
+                    from app.procurement.halfcheck import verify_account
+
+                    async with tenant_session(ctx.maker, lease.tenant_id) as vdb:
+                        refused = await verify_account(
+                            ctx,
+                            vdb,
+                            lease.tenant_id,
+                            lease.order_id,
+                            str(lease.spec.offer.params.get("product") or "gpt"),
+                            cred,
+                        )
+                        await vdb.rollback()
+                    if refused:
+                        del cred
+                        return Result(Outcome.FATAL, error_code=refused)
                 spec = replace(lease.spec, credential=cred)
                 del cred
                 try:
@@ -1691,7 +1800,15 @@ async def _apply_precheck(
         await _set_check(db, job, True)
     elif o is Outcome.UNAVAILABLE:
         await _set_check(db, job, False)
-        await _failover(ctx, db, job, order, "plan_unavailable")
+        # the catalog's own reason is what staff must see (``region_not_offered``: the vendor
+        # withdrew the region after the sale)
+        await _failover(
+            ctx,
+            db,
+            job,
+            order,
+            "region_not_offered" if res.error_code == "region_not_offered" else "plan_unavailable",
+        )
     else:
         job.error_code = clean_detail(res.error_code or "precheck_failed")
         if job.attempts > MAX_RETRIES:

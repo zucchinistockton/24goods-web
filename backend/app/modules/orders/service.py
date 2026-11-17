@@ -65,6 +65,7 @@ from app.modules.common.vcc import ensure_sellable
 from app.modules.common.views import REVEALABLE, order_card_payload
 from app.modules.content.site import tenant_settings
 from app.modules.orders import direct as direct_svc
+from app.modules.orders import halfcheck
 from app.modules.orders.events import add_event, snapshot
 from app.modules.payments import usdt as usdt_svc
 from app.modules.payments.channels import channel_cfg, entry_cfg, is_usdt, split_amount
@@ -303,6 +304,8 @@ async def create_order(
     variant: ProductVariant | None = None,
     direct: direct_svc.DirectSeal | None = None,
     cred_sealer: CredentialSealer | None = None,
+    half_check_id: uuid.UUID | None = None,
+    half_check_confirm: bool = False,
 ) -> tuple[Order, Message | None]:
     """Create a pending order. ``amount_minor`` is the SUBTOTAL (storefront markup included):
     the promo discount is subtracted and the channel fee added here, server-side
@@ -320,6 +323,29 @@ async def create_order(
         raise Validation("This product needs the account session", code="session_required")
     if enforce_cap:
         await enforce_payables_cap(db, settings, buyer)
+    half_claimed: uuid.UUID | None = None
+    if (
+        product_id is not None
+        and delivery_mode in ("upstream_cdk", "upstream_direct")
+        and kind == "goods"
+    ):
+        # half-price plans (plus_half, *_half) are never orderable without a passed check of this
+        # buyer (check-then-order); every other path (cart, quote) passes none and is refused
+        half_target = await halfcheck.requirement(
+            db, buyer.tenant_id, product_id, variant.id if variant else None
+        )
+        if half_target is not None:
+            half_claimed = await halfcheck.claim(
+                db,
+                buyer,
+                half_check_id,
+                product_id=product_id,
+                variant_id=variant.id if variant else None,
+                qty=qty,
+                target=half_target,
+                account_masked=direct.email_masked if direct is not None else None,
+                confirm_manual=half_check_confirm,
+            )
     stock_reserved = 0
     if product_id is not None and delivery_mode == "manual" and kind == "goods":
         if variant is not None:
@@ -387,6 +413,8 @@ async def create_order(
     await db.flush()
     if direct is not None and cred_sealer is not None:
         await direct_svc.store(db, cred_sealer, order, direct)  # sealed, never plaintext
+    if half_claimed is not None:
+        await halfcheck.attach(db, order.tenant_id, half_claimed, order.id)
     order.access_code_plain = code  # type: ignore[attr-defined]
     await add_event(db, order, None, "pending_payment", actor_id=buyer.id, reason="created")
     await audit(
@@ -445,6 +473,8 @@ async def buy_now(
     session: str | None = None,
     cred_sealer: CredentialSealer | None = None,
     redis: Any = None,
+    half_check_id: uuid.UUID | None = None,
+    half_check_confirm: bool = False,
 ) -> tuple[Order, Message | None]:
     product = await get_active_product(db, product_id)
     if product.delivery_mode == "upstream_direct" and storefront is not None:
@@ -528,6 +558,8 @@ async def buy_now(
         variant=variant,
         direct=direct,
         cred_sealer=cred_sealer,
+        half_check_id=half_check_id,
+        half_check_confirm=half_check_confirm,
     )
     if ev is not None:
         await promo_svc.reserve(db, ev, buyer, order_id=order.id, ip=ip)
@@ -646,6 +678,7 @@ async def pay_url(
     # an unpaid virtual-card order from before the stop (owner decision 2026-11-17) cannot be paid:
     # the card would be bought and the buyer could never see it
     ensure_sellable(res.settings, order.delivery_mode)
+    await halfcheck.order_gate(db, order)
     usdt = is_usdt(channel)
     if usdt and not res.bepusdt.configured:
         raise Unavailable("Payment channel not configured")

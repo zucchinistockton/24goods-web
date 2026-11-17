@@ -71,6 +71,8 @@ import type {
   TwoFactorChallenge,
   TwoFactorSetup,
   TwoFactorStatus,
+  HalfCheck,
+  HalfCheckRequired,
 } from '../types'
 
 export const DEFAULT_PAY_CHANNEL = 'zpay_alipay'
@@ -230,6 +232,17 @@ export function createBuyerApi(c: ApiClient) {
     quotes: {
       accept: (id: string) => c.post<Order>(`/quotes/${seg(id)}/accept`),
     },
+    /** issue #27: half-price eligibility check BEFORE payment. The session is sealed server side. */
+    halfChecks: {
+      required: (product_id: string, variant_id?: string | null) =>
+        c.get<HalfCheckRequired>('/half-checks/required', { product_id, ...(variant_id ? { variant_id } : {}) }),
+      create: (product_id: string, variant_id?: string | null, session?: string | null) =>
+        c.post<HalfCheck>('/half-checks', {
+          product_id,
+          ...(variant_id ? { variant_id } : {}),
+          ...(session ? { session } : {}),
+        }),
+    },
     orders: {
       /** `src` = traffic attribution tag from a direct buy link (`[a-z0-9_-]{0,32}`). */
       create: (
@@ -241,11 +254,17 @@ export function createBuyerApi(c: ApiClient) {
         variant_id?: string | null,
         /** upstream_direct only: the buyer's account session text; sealed by the server at once */
         session?: string | null,
+        /** half-price plans: the passed eligibility check of this buyer (issue #27) */
+        half_check_id?: string | null,
+        /** a `manual` check is decided by staff after payment: the buyer confirmed that */
+        half_check_confirm?: boolean,
       ) =>
         c.post<Order>('/orders', {
           product_id,
           qty,
           ...(session ? { session } : {}),
+          ...(half_check_id ? { half_check_id } : {}),
+          ...(half_check_id && half_check_confirm ? { half_check_confirm: true } : {}),
           ...(variant_id ? { variant_id } : {}),
           ...(promo_code ? { promo_code } : {}),
           ...(src ? { src } : {}),

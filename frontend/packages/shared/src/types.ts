@@ -61,6 +61,16 @@ export interface ProductVariant {
   after_sales_months?: number | null
   /** The variant (or its product) is a subscription. */
   subscription?: boolean
+  /** issue #27: plan x region attributes (plan = vendor plan key, region = ISO country). */
+  options?: VariantOptions | null
+  /** The region's own charge currency, a display label next to the price (PHP, EGP, ...). */
+  region_currency?: string | null
+  /** Buying this needs the half-price eligibility check first. */
+  half_price?: boolean
+}
+export interface VariantOptions {
+  plan: string
+  region: string
 }
 
 export interface ProductSummary {
@@ -89,6 +99,10 @@ export interface ProductSummary {
   variants?: ProductVariant[]
   /** v11 W1: the variants have different prices, so `price` reads "from ¥X". */
   price_from?: boolean
+  /** issue #27: every active variant has plan x region options (two selectors). */
+  variant_options?: boolean
+  /** issue #27: a half-price plan is sold here (check eligibility before paying). */
+  half_price?: boolean
 }
 export type ProductStatus = 'active' | 'draft'
 export interface Product extends ProductSummary {
@@ -143,6 +157,10 @@ export interface AdminVariant {
   after_sales_months: number | null
   after_sales_hours: number | null
   subscription: Record<string, unknown> | null
+  /** issue #27: plan x region attributes (null = a plain variant) */
+  options?: VariantOptions | null
+  /** issue #27: false = generated variant without an explicit price; activation is refused */
+  price_set?: boolean
   sold: number
 }
 /** Body for POST/PATCH /admin/products/{id}/variants. */
@@ -956,4 +974,34 @@ export interface DirectOrderInfo {
   account: string | null
   plan: string | null
   state: string | null
+}
+
+/** issue #27: the half-price eligibility check (`POST /half-checks`). Never carries the session. */
+export type HalfCheckStatus =
+  | 'passed'
+  | 'ineligible'
+  | 'unavailable'
+  | 'session_invalid'
+  | 'manual_pending'
+  | 'manual_approved'
+  | 'manual_refused'
+export type HalfCheckMethod = 'vendor_preflight' | 'chatgpt_direct' | 'manual'
+export interface HalfCheck {
+  id: string
+  status: HalfCheckStatus
+  /** machine reason of an ineligible / unavailable result (maps to `halfcheck.reason.*`) */
+  reason: string | null
+  method: HalfCheckMethod
+  plan: string
+  /** masked account e-mail the vendor read */
+  account: string | null
+  quote: { amount_minor: number; currency: string; exponent: number } | null
+  expires_at: string
+  /** can an order be created with it now */
+  usable: boolean
+}
+export interface HalfCheckRequired {
+  required: boolean
+  method: HalfCheckMethod | null
+  plan: string | null
 }

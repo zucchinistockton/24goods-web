@@ -35,6 +35,7 @@ from app.modules.admin.payment_gateways import router as payment_gateways_router
 from app.modules.admin.payment_ops import router as payment_ops_router
 from app.modules.admin.procurement_cost import router as admin_procurement_cost_router
 from app.modules.admin.procurement_jobs import router as admin_procurement_jobs_router
+from app.modules.admin.procurement_options import router as admin_procurement_options_router
 from app.modules.admin.procurement_pricing import router as admin_procurement_pricing_router
 from app.modules.admin.procurement_sources import router as admin_procurement_sources_router
 from app.modules.admin.router import router as admin_router
@@ -59,6 +60,7 @@ from app.modules.me.router import router as me_router
 from app.modules.operations import jobs as operations_jobs
 from app.modules.operations.router import router as operations_router
 from app.modules.orders.checkout_router import router as checkout_router
+from app.modules.orders.half_router import router as half_checks_router
 from app.modules.orders.router import router as orders_router
 from app.modules.orders.service import expire_pending
 from app.modules.payments.epay_page import router as epay_page_router
@@ -191,6 +193,7 @@ def api_router() -> APIRouter:
         chat_router,
         chat_actions_router,
         orders_router,
+        half_checks_router,
         checkout_router,
         payments_router,
         uploads_router,
@@ -212,6 +215,7 @@ def api_router() -> APIRouter:
         admin_procurement_jobs_router,
         admin_procurement_cost_router,
         admin_procurement_pricing_router,
+        admin_procurement_options_router,
         webhooks_router,
         challenges_router,
     ):
@@ -233,6 +237,17 @@ def _route_table() -> APIRouter:
     return table
 
 
+async def _assert_api_role(r: Resources) -> None:
+    """Production: the API connects as ``app_api``. The half-price checks table is protected by
+    triggers that apply to that role only (migration 0032); another role would bypass them."""
+    from sqlalchemy import text
+
+    async with r.maker() as db:
+        who = await db.scalar(text("SELECT current_user"))
+    if who != "app_api":
+        raise RuntimeError(f"the API must connect as app_api, not {who}")
+
+
 def create_app(res: Resources | None = None, *, background: bool = True) -> FastAPI:
     """``res`` given: resources are shared/owned by the caller (serve.py, tests)."""
     settings = res.settings if res is not None else get_settings()
@@ -244,6 +259,9 @@ def create_app(res: Resources | None = None, *, background: bool = True) -> Fast
             app.state.res = build_resources(settings)
         r: Resources = app.state.res
         tasks: list[asyncio.Task[None]] = []
+        if settings.is_prod:
+            # every entry point: serve.py passes its own resources (``owned`` is False there)
+            await _assert_api_role(r)
         trim()  # drop import/startup garbage from RSS
         if background:
             r.hub.ensure_started()

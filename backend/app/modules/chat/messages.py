@@ -69,6 +69,9 @@ SYSTEM_TEXT: dict[str, str] = {
     "completed": "Order completed. Thank you!",
     "expired": "The order expired before payment.",
     "manual_review": "This order needs a manual review by our team.",
+    "half_price_refused": (
+        "Half price could not be granted for this account. The order will be refunded in full."
+    ),
     "price_changed": "The order price was changed to {amount} {currency}.",
     "order_cancelled": "The order was cancelled.",
     "delivery_expedite": "The buyer asks the seller to ship this order as soon as possible.",

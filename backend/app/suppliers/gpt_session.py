@@ -63,6 +63,12 @@ def _jwt_payload(token: str) -> dict[str, object]:
     return payload
 
 
+def jwt_claims(token: str) -> dict[str, object]:
+    """The UNVERIFIED claims of an access token (raises ``GptSessionError`` if malformed). Only
+    for values the vendor's own use of the token vouches for; never logged."""
+    return _jwt_payload(token)
+
+
 def _str(obj: object, key: str) -> str:
     value = obj.get(key) if isinstance(obj, dict) else None
     return value if isinstance(value, str) else ""

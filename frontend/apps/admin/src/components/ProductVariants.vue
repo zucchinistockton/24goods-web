@@ -11,6 +11,7 @@ import {
 } from '@24goods/shared'
 import { api } from '../api'
 import { confirmBox, toastError, toastOk } from '../ui'
+import VariantGenerator from './VariantGenerator.vue'
 
 /**
  * v11 W1: variants (SKUs) of an existing product. Each change is saved at once through the
@@ -179,7 +180,10 @@ const termsText = (v: AdminVariant): string => {
   <div class="variants">
     <div class="head">
       <h3 class="sec">{{ t('variants.title') }}</h3>
-      <el-button size="small" type="primary" @click="openNew">{{ t('variants.add') }}</el-button>
+      <div class="head-actions">
+        <VariantGenerator :product-id="productId" :delivery-mode="deliveryMode" @changed="load(); emit('changed')" />
+        <el-button size="small" type="primary" @click="openNew">{{ t('variants.add') }}</el-button>
+      </div>
     </div>
     <p class="muted hint">{{ t('variants.hint') }}</p>
     <el-table v-loading="loading" :data="items" size="small" :empty-text="t('variants.empty')">
@@ -187,6 +191,8 @@ const termsText = (v: AdminVariant): string => {
         <template #default="{ row }">
           {{ nameOf(row as AdminVariant) }}
           <el-tag v-if="(row as AdminVariant).status === 'archived'" size="small" type="info">{{ t('variants.archivedTag') }}</el-tag>
+          <el-tag v-if="(row as AdminVariant).price_set === false" size="small" type="warning">{{ t('variants.unpricedTag') }}</el-tag>
+          <el-tag v-if="(row as AdminVariant).options" size="small" effect="plain" class="opt">{{ (row as AdminVariant).options?.plan }} · {{ (row as AdminVariant).options?.region }}</el-tag>
         </template>
       </el-table-column>
       <el-table-column :label="`${t('products.form.price')} (${currency})`" prop="price" width="110" />
@@ -253,6 +259,13 @@ const termsText = (v: AdminVariant): string => {
 <style scoped>
 .variants {
   margin: 8px 0 16px;
+}
+.head-actions {
+  display: flex;
+  gap: 8px;
+}
+.opt {
+  margin-inline-start: 4px;
 }
 .head {
   display: flex;

@@ -8,10 +8,15 @@ asserts that no API code references an opener or imports this module).
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import json
 from pathlib import Path
 
+from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat
 
 from app.core.cardvault import CardContext, CardOpener
 from app.core.credvault import DOMAIN
@@ -26,6 +31,21 @@ class CredentialOpener:
 
     def open(self, blob: bytes, *, tenant_id: str, order_id: str) -> str:
         return self._inner.open(blob, CardContext(str(tenant_id), DOMAIN, str(order_id)))
+
+    def account_binding(self, tenant_id: str, identity: str) -> str:
+        """Keyed binding of a buyer account identity (half-price checks, issue #27): an HMAC under
+        a key derived (HKDF) from the lexicographically first PRIVATE session key, which only this
+        process holds, so the database alone (or the API, which holds the shared internal token)
+        can neither compute nor dictionary-check it. Domain-separated and tenant-scoped. Adding a
+        later key id keeps the binding; removing the first key id invalidates open checks (they
+        live 30 minutes, and a mismatch is a refusal before any spend)."""
+        kid = min(self._inner._privs)
+        raw = self._inner._privs[kid].private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())
+        key = HKDF(
+            algorithm=hashes.SHA256(), length=32, salt=None, info=b"24goods/half-account/v1"
+        ).derive(raw)
+        msg = str(tenant_id).encode() + b"\x1f" + identity.encode()
+        return hmac.new(key, msg, hashlib.sha256).hexdigest()
 
 
 def load_credential_opener(path: str) -> CredentialOpener | None:

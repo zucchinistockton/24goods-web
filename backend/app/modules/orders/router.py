@@ -49,6 +49,8 @@ async def buy_now(
         session=body.session,
         cred_sealer=res.cred_sealer,
         redis=res.redis,
+        half_check_id=body.half_check_id,
+        half_check_confirm=body.half_check_confirm,
     )
     code = getattr(order, "access_code_plain", None)  # shown exactly once
     await service.broadcast_order(res, db, order, [msg])

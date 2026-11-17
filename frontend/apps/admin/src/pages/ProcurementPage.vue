@@ -22,6 +22,7 @@ import {
   type UnreconciledRow,
 } from '../api-procurement'
 import PricingPanel from '../components/PricingPanel.vue'
+import RegionsPanel from '../components/RegionsPanel.vue'
 import { createSuppliersApi, type AdminSupplier } from '../api-suppliers'
 import { usePaged } from '../composables/usePaged'
 import { useAuthStore } from '../stores/auth'
@@ -32,7 +33,7 @@ const suppliersApi = createSuppliersApi(client)
 const auth = useAuthStore()
 const { t, te, locale } = useI18n()
 
-const tab = ref<'jobs' | 'sources' | 'cost' | 'pricing'>('jobs')
+const tab = ref<'jobs' | 'sources' | 'cost' | 'pricing' | 'regions'>('jobs')
 const when = (v: string | null | undefined) => (v ? formatDateTime(v, locale.value) : '—')
 const money = (v: string | null | undefined, cur: string | null | undefined) => (v == null ? '—' : `${v} ${cur ?? ''}`.trim())
 /** Server error codes of the procurement routes, translated when a key exists. */
@@ -579,6 +580,9 @@ onMounted(() => jobs.load())
       <el-tab-pane v-if="auth.isAdmin" name="pricing" :label="t('procurement.tab.pricing')" lazy>
         <PricingPanel />
       </el-tab-pane>
+      <el-tab-pane v-if="auth.isAdmin" name="regions" :label="t('procurement.tab.regions')" lazy>
+        <RegionsPanel />
+      </el-tab-pane>
     </el-tabs>
 
     <!-- job detail -->
@@ -599,6 +603,7 @@ onMounted(() => jobs.load())
             <el-descriptions-item :label="t('procurement.job.state')">
               <el-tag size="small" :type="stateType(detail.state)">{{ stateLabel(detail.state) }}</el-tag>
               <span v-if="detail.error_code" class="mono small"> {{ detail.error_code }}</span>
+              <div v-if="detail.error_code && te(`procurement.reason.${detail.error_code}`)" class="small warn">{{ t(`procurement.reason.${detail.error_code}`) }}</div>
             </el-descriptions-item>
             <el-descriptions-item :label="t('procurement.job.orderStatus')">{{ detail.order.status }} · ×{{ detail.order.qty }}</el-descriptions-item>
             <el-descriptions-item :label="t('procurement.job.supplier')">

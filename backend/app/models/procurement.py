@@ -131,6 +131,36 @@ class ProcurementCredential(Base):
     created_at: Mapped[datetime] = created_at()
 
 
+class HalfPriceCheck(Base):
+    """A buyer's half-price eligibility check (migration 0032, issue #27). The session is sealed
+    like ``ProcurementCredential`` and nulled by procurement after the one call that reads it;
+    ``blob`` / ``kid`` are never readable by the API role. ``detail`` is the quote summary."""
+
+    __tablename__ = "half_price_checks"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
+    product_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("products.id"))
+    variant_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("product_variants.id"))
+    method: Mapped[str] = mapped_column(String(16))
+    vendor_product: Mapped[str] = mapped_column(String(8))
+    plan: Mapped[str] = mapped_column(String(40))
+    country: Mapped[str | None] = mapped_column(String(2))
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    reason: Mapped[str | None] = mapped_column(String(48))
+    detail: Mapped[dict[str, Any] | None]
+    email_masked: Mapped[str | None] = mapped_column(String(64))
+    # keyed HMAC of the checked account's identity (procurement computes and compares it; the API
+    # role cannot read it)
+    account_hmac: Mapped[str | None] = mapped_column(String(64), deferred=True)
+    kid: Mapped[str | None] = mapped_column(String(64), deferred=True)
+    blob: Mapped[bytes | None] = mapped_column(LargeBinary, deferred=True)
+    order_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("orders.id"), unique=True)
+    created_at: Mapped[datetime] = created_at()
+    decided_at: Mapped[datetime | None]
+
+
 class SupplierWebhookEvent(Base):
     """Verified supplier webhook (table ``supplier_events``); card numbers masked, no OTP."""
 

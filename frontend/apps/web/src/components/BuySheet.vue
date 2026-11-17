@@ -8,6 +8,7 @@ import {
   moneyParts,
   multiplyAmount,
   type BuyerInputConfig,
+  type HalfCheckMethod,
   type InstantCredentials,
   type ProductSummary,
 } from '@24goods/shared'
@@ -16,18 +17,21 @@ import { useAuthStore } from '../stores/auth'
 import { useSiteStore } from '../stores/site'
 import BuyerInputSheet from './BuyerInputSheet.vue'
 import DirectSessionSheet from './DirectSessionSheet.vue'
+import HalfCheckSheet from './HalfCheckSheet.vue'
+import VariantPicker from './VariantPicker.vue'
 import FeeLines from './FeeLines.vue'
 import ManualPromise from './ManualPromise.vue'
 import PromoField, { type AppliedPromo } from './PromoField.vue'
 import TurnstileBox from './TurnstileBox.vue'
 import VariantChips from './VariantChips.vue'
 import { defaultVariantId, findVariant, hasVariants, withVariant } from '../lib/variants'
+import { usesOptions } from '../lib/variantOptions'
 import { recalledSrc, stashAccessCode } from '../lib/attribution'
 import { usePow, isPowAbort } from '../composables/usePow'
 import { useTurnstile } from '../composables/useTurnstile'
 import CredentialsSheet from './CredentialsSheet.vue'
 import PowStatus from './PowStatus.vue'
-import { toastError } from '../ui'
+import { showToast, toastError } from '../ui'
 import { isSoldOut, maxOrderQty } from '../lib/stock'
 import { siteAccessCleared } from '../lib/securityChallenge'
 
@@ -51,6 +55,11 @@ const inputValue = ref<string | null>(null)
 /** upstream_direct: the pasted account session, in memory only until the order request is sent */
 const sessionValue = ref<string | null>(null)
 const showSession = ref(false)
+/** issue #27: the passed half-price eligibility check an order of a half-price plan is created with */
+const halfId = ref<string | null>(null)
+const halfConfirmed = ref(false)
+const showHalf = ref(false)
+const halfMethod = ref<HalfCheckMethod | null>(null)
 
 /**
  * The order-information form config. A summary without the field (an older cached list, a chat
@@ -99,6 +108,8 @@ const promoItems = computed(() =>
   p.value ? [{ product_id: p.value.id, qty: qty.value, ...(variant.value ? { variant_id: variant.value.id } : {}) }] : [],
 )
 const needsInput = computed(() => p.value?.buyer_input?.enabled === true)
+/** a half-price plan (the selected variant's, or the product's own) needs the check first */
+const needsHalf = computed(() => (variant.value ? variant.value.half_price === true : !hasVariants(base.value) && p.value?.half_price === true))
 
 watch(
   () => props.show,
@@ -108,9 +119,16 @@ watch(
       qty.value = Math.min(Math.max(1, Math.floor(props.qty ?? 1)), maxQty.value)
       inputValue.value = null
       sessionValue.value = null
+      halfId.value = null
+      halfConfirmed.value = false
       promo.value = null
       void site.loadChannels()
       void resolveConfig()
+    } else {
+      // the sheet closed (ordered or dismissed): the account session and the check are not kept
+      sessionValue.value = null
+      halfId.value = null
+      halfConfirmed.value = false
     }
   },
 )
@@ -119,7 +137,11 @@ watch(maxQty, (m) => {
   if (qty.value > m) qty.value = m
 })
 watch(variantSel, (now, before) => {
-  if (before !== null && now !== before) promo.value = null // previewed on the previous variant's price
+  if (before !== null && now !== before) {
+    promo.value = null // previewed on the previous variant's price
+    halfId.value = null // a check belongs to one plan and region
+    halfConfirmed.value = false
+  }
 })
 
 function buyPath(): string {
@@ -143,7 +165,10 @@ async function placeOrder() {
     // Price is decided by the server; only product id + qty (+ attribution tag) are sent.
     const session = sessionValue.value
     sessionValue.value = null // one use: a failed order asks for it again
-    const order = await api.orders.create(x.id, qty.value, props.src ?? recalledSrc(), inputValue.value, promo.value?.code, variant.value?.id, session)
+    const half = halfId.value
+    const order = await api.orders.create(x.id, qty.value, props.src ?? recalledSrc(), inputValue.value, promo.value?.code, variant.value?.id, session, half, halfConfirmed.value)
+    halfId.value = null // consumed: it can never be used twice
+    halfConfirmed.value = false
     stashAccessCode(order.id, order.access_code)
     emit('update:show', false)
     await router.push(`/orders/${encodeURIComponent(order.id)}`)
@@ -162,12 +187,49 @@ function begin(guest: boolean) {
     showInput.value = true
     return
   }
+  if (needsHalf.value && (guest || auth.user?.is_instant)) {
+    // the check needs a registered account (a guest account would make it an account oracle)
+    showToast(t('halfcheck.registerFirst'))
+    void (guest ? signIn() : router.push('/settings'))
+    return
+  }
+  if (needsHalf.value && halfId.value === null) {
+    void startHalf()
+    return
+  }
   if (isDirect.value && sessionValue.value === null) {
     pendingGuest = guest
     showSession.value = true
     return
   }
   void (guest ? continueAsGuest() : placeOrder())
+}
+/** Half-price plans: ask how the shop checks (it decides whether a session is needed), then check. */
+async function startHalf() {
+  if (submitting.value) return
+  submitting.value = true
+  try {
+    const r = await api.halfChecks.required(p.value?.id ?? '', variant.value?.id)
+    if (!r.required) {
+      halfId.value = ''
+      begin(false) // nothing to check any more (the shop changed): carry on without it
+      return
+    }
+    halfMethod.value = r.method
+    showHalf.value = true
+  } catch (e) {
+    toastError(e)
+  } finally {
+    submitting.value = false
+  }
+}
+function halfPassed(id: string, session: string | null, confirmed: boolean) {
+  halfId.value = id
+  halfConfirmed.value = confirmed
+  showHalf.value = false
+  // a direct order is applied with the very session that was just checked: not asked twice
+  if (isDirect.value && session) sessionValue.value = session
+  begin(false)
 }
 function sessionConfirmed(v: string) {
   sessionValue.value = v
@@ -201,13 +263,14 @@ async function continueAsGuest() {
 async function credsDone() {
   showCreds.value = false
   creds.value = null // plaintext password leaves memory as soon as it was acknowledged
-  await placeOrder()
+  if (needsHalf.value && halfId.value === null) begin(false) // the check comes next
+  else await placeOrder()
 }
 </script>
 
 <template>
   <van-popup
-    :show="show && !showCreds && !showInput && !showSession"
+    :show="show && !showCreds && !showInput && !showSession && !showHalf"
     position="bottom"
     round
     closeable
@@ -225,9 +288,13 @@ async function credsDone() {
         </div>
       </div>
       <div v-if="base?.variants?.length" class="sheet-variants">
-        <div class="sheet-label">{{ t('product.variantLabel') }}</div>
-        <VariantChips v-model="variantSel" :variants="base.variants" />
+        <VariantPicker v-if="usesOptions(base.variants)" v-model="variantSel" :variants="base.variants" :currency="base.currency" />
+        <template v-else>
+          <div class="sheet-label">{{ t('product.variantLabel') }}</div>
+          <VariantChips v-model="variantSel" :variants="base.variants" />
+        </template>
       </div>
+      <p v-if="needsHalf" class="muted small sheet-note">{{ t('halfcheck.sheetNote') }}</p>
       <div class="sheet-row">
         <div>
           <div>{{ t('product.quantity') }}</div>
@@ -280,6 +347,16 @@ async function credsDone() {
       </template>
     </div>
   </van-popup>
+  <HalfCheckSheet
+    v-if="p"
+    v-model:show="showHalf"
+    :product-id="p.id"
+    :variant-id="variant?.id ?? null"
+    :method="halfMethod"
+    :known="p.direct_product"
+    :preset="sessionValue"
+    @passed="halfPassed"
+  />
   <DirectSessionSheet v-model:show="showSession" :product-id="p?.id ?? null" :known="p?.direct_product" @confirm="sessionConfirmed" />
   <BuyerInputSheet v-model:show="showInput" :config="p?.buyer_input ?? null" :initial="inputValue" @confirm="inputConfirmed" />
   <CredentialsSheet :show="showCreds" :credentials="creds" @done="credsDone" />

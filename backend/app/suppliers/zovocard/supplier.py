@@ -32,6 +32,7 @@ from app.suppliers.base import (
     SupplierEvent,
     WebhookRejected,
     card_secret,
+    clean_detail,
     dec,
     job_idempotency_key,
 )
@@ -56,6 +57,18 @@ class RegistryEntry:
     checkout_currency: str | None = None
     checkout_amount_minor: int | None = None
     service_fee_usd_minor: int | None = None
+
+
+@dataclass(frozen=True)
+class HalfCheck:
+    """Outcome of :meth:`ZovoCardSupplier.half_price_check` (no secret in it)."""
+
+    status: str  # eligible | ineligible | session_invalid | unavailable
+    reason: str = ""
+    quote: tuple[int, str, int] | None = None  # (amount minor, currency, exponent)
+    account_mask: str | None = None
+    current_plan: str | None = None
+    promotions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -84,6 +97,19 @@ class CardProduct:
     max_amount: Decimal | None
     enabled: Any  # raw; usable only when it is exactly True
     recharge_fee: Decimal | None = None  # a RATE (vendor 6.1), applied to a top-up
+
+
+def region_offered(catalog: PlanCatalog, country: object) -> bool:
+    """A region the offer names must still be in the vendor's ``payment_regions`` (issue #27: a
+    region the vendor stops offering is shown unavailable, never forced). A catalogue that lists
+    no region at all cannot confirm a pinned country: it is NOT offered (fail closed); a source
+    without a pinned country is unaffected."""
+    if country is None:
+        return True
+    if not catalog.regions:
+        return False  # fail closed: the vendor's region list is empty / unreadable, a pinned
+        # country cannot be shown to be offered
+    return any(c == country for c, _cur in catalog.regions)
 
 
 def is_purchasable(catalog: PlanCatalog, key: str) -> bool:
@@ -297,6 +323,11 @@ class ZovoCardSupplier:
         self._plans[product] = (now, catalog)
         return catalog
 
+    async def payment_regions(self, product: str) -> list[tuple[str, str]]:
+        """The vendor's live ``payment_regions`` ``(country, currency)`` for a product (cached with
+        the plans catalogue). Never hard-coded: the vendor says the list changes."""
+        return list((await self.plans(product)).regions)
+
     async def redemption_cost(self, offer: OfferSpec) -> Money | None:
         """Reserve the breaker holds back per issued CDK (review-v12 §6, §12 second pass): the
         plan's ``expectedAmountMinor`` plus the balance buffer (``balanceBufferBps``, at least
@@ -375,6 +406,8 @@ class ZovoCardSupplier:
             return Availability(False, exc.reason, checked_at=now)
         if not is_purchasable(catalog, key):
             return Availability(False, "not_purchasable", checked_at=now)
+        if not region_offered(catalog, offer.params.get("payment_country")):
+            return Availability(False, "region_not_offered", checked_at=now)
         return Availability(True, checked_at=now)
 
     async def probe(self) -> ProbeReport:
@@ -770,6 +803,8 @@ class ZovoCardSupplier:
             return Availability(False, exc.reason, checked_at=now)
         if not is_purchasable(catalog, spec.plan):
             return Availability(False, "not_purchasable", checked_at=now)
+        if spec.product == "gpt" and not region_offered(catalog, spec.country):
+            return Availability(False, "region_not_offered", checked_at=now)
         try:
             cost = await self._direct_cost(offer)
         except SupplierError:
@@ -829,6 +864,43 @@ class ZovoCardSupplier:
             return Result(Outcome.RETRYABLE, error_code="malformed_preflight")
         return pf
 
+    async def half_price_check(
+        self,
+        product: str,
+        plan: str,
+        country: str | None,
+        currency: str | None,
+        credential: str,
+    ) -> HalfCheck:
+        """Eligibility of the buyer's own account for a half-price plan, read from the vendor's
+        preflight (read-only upstream; obeys the production-write gate like every preflight).
+        Never raises for a vendor answer: the outcome is ``eligible`` / ``ineligible`` /
+        ``session_invalid`` / ``unavailable``."""
+        if product not in dr.DIRECT_PRODUCTS or not dr._PLAN_RE.fullmatch(plan):
+            return HalfCheck("unavailable", "invalid_offer")
+        spec = dr.DirectSpec(product, plan, 1, country, currency)
+        pf = await self._preflight(spec, credential)
+        if isinstance(pf, Result):
+            code = pf.error_code or "preflight_failed"
+            if code in ("GPT_SESSION_INVALID", "CLAUDE_SESSION_INVALID", "SESSION_REQUIRED"):
+                return HalfCheck("session_invalid", "session_rejected")
+            return HalfCheck("unavailable", clean_detail(code))
+        ok, reason = dr.half_eligibility(
+            pf,
+            plan,
+            datetime.now(timezone.utc),
+            quotes_optional=dr.real_sandbox(self.client.config.base_url, self.env),
+        )
+        quote = pf.quotes.get(plan)
+        return HalfCheck(
+            "eligible" if ok else "ineligible",
+            reason,
+            quote=quote,
+            account_mask=pf.account_mask,
+            current_plan=pf.current_plan,
+            promotions=pf.promotions,
+        )
+
     async def _direct_run(self, job: JobSpec) -> Result:
         """Preflight, then ONE order POST under the job's key; afterwards only reads.
 
@@ -859,6 +931,19 @@ class ZovoCardSupplier:
                 return pf
             mask, expires = pf.account_mask or mask, pf.expires_at or expires
             seen: dict[str, Any] = {"account_mask": mask, "preflight_expires_at": expires}
+            if dr.is_half_plan(spec.plan):
+                # second line of defence of issue #27: the vendor refuses a half-price key for an
+                # account that is not eligible BEFORE any charge and never falls back to full
+                # price. It is a definite refusal here too (staff refund), never a retry.
+                ok, _ = dr.half_eligibility(
+                    pf,
+                    spec.plan,
+                    datetime.now(timezone.utc),
+                    quotes_optional=dr.real_sandbox(self.client.config.base_url, self.env),
+                )
+                # EVERY reason the preflight gives (blocked, waiting, subscribed, no quote...)
+                if not ok:
+                    return Result(Outcome.FATAL, error_code="half_price_ineligible", **seen)
             if pf.quote_error:  # the vendor: do not create an order while quote_error is set
                 return Result(Outcome.RETRYABLE, error_code="quote_error", **seen)
             if job.account_mask and pf.account_mask and job.account_mask != pf.account_mask:
