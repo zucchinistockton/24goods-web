@@ -591,7 +591,7 @@ async def test_apply_variant_and_refuses_incomplete(env):
     admin, _ = await env.login("admin")
     await _rate(admin, "10")
     p = await env.product(price=5000, floor=0, title="Var apply")
-    vid = await _variant(env, p)
+    vid = await _variant(env, p, floor=2000)  # the guard needs floor >= cost (2 USD x 10)
     await _offer(env, p, cost="2", variant_id=vid)
     row = await _row(admin, "Var apply")
     r = await admin.post(f"{PRICING}/apply", json=_body(row))

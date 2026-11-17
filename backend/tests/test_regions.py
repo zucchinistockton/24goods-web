@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import uuid
 
+from sqlalchemy import text
+
 from tests.test_procurement_direct import DUp, _vendor
 from tests.test_procurement_vcc import _rows, _zovo
 from tests.test_variants import add_variant
@@ -25,8 +27,17 @@ async def test_variant_options_validation_and_buyer_two_selector_view(env):
     ):
         r = await admin.post(url, json={**base, "options": bad})
         assert r.status_code == 422, (bad, r.text)
-    a = await add_variant(admin, p, "Plus PH", options={"plan": "plus", "region": "PH"})
+    # an options variant cannot be ACTIVE without a costed source (``cost_unknown``)
+    r = await admin.post(url, json={**base, "options": {"plan": "plus", "region": "PH"}})
+    assert r.status_code == 422 and r.json()["error"]["code"] == "cost_unknown"
+    a = await add_variant(
+        admin, p, "Plus PH", status="archived", options={"plan": "plus", "region": "PH"}
+    )
     assert a["options"] == {"plan": "plus", "region": "PH"}
+    async with env.owner_session() as db:  # staff costed a source and activated it
+        await db.execute(text("UPDATE product_variants SET status = 'active' WHERE id = :i"),
+                         {"i": uuid.UUID(a["id"])})  # fmt: skip
+        await db.commit()
     # one variant per (plan, region), any status
     r = await admin.post(url, json={**base, "options": {"plan": "plus", "region": "PH"}})
     assert r.status_code == 409 and r.json()["error"]["code"] == "variant_options_taken"
@@ -38,9 +49,13 @@ async def test_variant_options_validation_and_buyer_two_selector_view(env):
     # a plain variant switches the product back to the existing variant chips
     b = await add_variant(admin, p, "Plain", "6.00")
     assert b["options"] is None
+    # setting options on the ACTIVE plain variant is refused: no costed source
+    r = await admin.patch(f"{url}/{b['id']}", json={"options": {"plan": "plus", "region": "JP"}})
+    assert r.status_code == 422 and r.json()["error"]["code"] == "cost_unknown"
     detail = (await env.client().get(f"{API}/products/{p.id}")).json()
     assert detail["variant_options"] is False
-    # patching: set, conflict, clear
+    # patching: set, conflict, clear (archived: it is not sold while it is being set up)
+    assert (await admin.patch(f"{url}/{b['id']}", json={"status": "archived"})).status_code == 200
     r = await admin.patch(f"{url}/{b['id']}", json={"options": {"plan": "plus", "region": "PH"}})
     assert r.status_code == 409
     r = await admin.patch(f"{url}/{b['id']}", json={"options": {"plan": "plus", "region": "JP"}})
@@ -300,7 +315,12 @@ async def test_generated_variants_cannot_be_activated_at_the_placeholder_price(e
         # 6.50 USD * 7.2 = 46.80 CNY: 30.00 is below cost, 50.00 covers it
         r = await admin.patch(url, json={"status": "active", "price": "30.00"})
         assert r.status_code == 422 and r.json()["error"]["code"] == "price_below_cost"
+        # the price covers it but the FLOOR (quotes use it) is still 0, below cost: refused too
         r = await admin.patch(url, json={"status": "active", "price": "50.00"})
+        assert r.status_code == 422 and r.json()["error"]["code"] == "price_below_cost"
+        r = await admin.patch(
+            url, json={"status": "active", "price": "50.00", "floor_price": "46.80"}
+        )
         assert r.status_code == 200, r.text
         assert r.json()["status"] == "active" and r.json()["price"] == "50.00"
         assert (
@@ -311,3 +331,119 @@ async def test_generated_variants_cannot_be_activated_at_the_placeholder_price(e
         )
     finally:
         await up.close()
+
+
+async def test_generated_variants_get_the_converted_cost_as_floor_and_guards_hold(env):
+    """A generated variant's floor is its cost estimate converted at the staff FX rate (rounded
+    up), so a quote cannot go below cost; creating an ACTIVE variant runs the same guard; enabling
+    a source or raising its cost under an active variant is refused while price / floor is below."""
+    up, sid = await _gen_setup(env)
+    try:
+        admin, _ = await env.login("admin")
+        assert (await admin.put(OPT, json={"region_allowlist": ["PH", "US"]})).status_code == 200
+        r = await admin.put(
+            f"{API}/admin/procurement/pricing/settings",
+            json={"fx": {"currency": "CNY", "per_usd": "7.2"}},
+        )
+        assert r.status_code == 200, r.text
+        r = await admin.post(
+            GEN,
+            json={
+                "product_id": str(up.product.id), "supplier_id": str(sid), "plans": ["plus"],
+                "regions": ["PH"], "cost_estimate": "6.5",
+            },
+        )  # fmt: skip
+        assert r.status_code == 200, r.text
+        (row,) = await _rows(env, "SELECT id, floor_price_minor FROM product_variants")
+        assert row[1] == 4680  # 6.5 USD * 7.2 = 46.80 CNY
+        vurl = f"{API}/admin/products/{up.product.id}/variants"
+        url = f"{vurl}/{row[0]}"
+        r = await admin.patch(url, json={"status": "active", "price": "50.00"})
+        assert r.status_code == 200, r.text  # price 50.00 and the generated floor 46.80 cover it
+        # creating an ACTIVE variant with options is the same guard: no costed source yet
+        r = await admin.post(
+            vurl,
+            json={"name_i18n": {"en": "EG"}, "price": "99.00", "floor_price": "99.00",
+                  "options": {"plan": "plus", "region": "EG"}},
+        )  # fmt: skip
+        assert r.status_code == 422 and r.json()["error"]["code"] == "cost_unknown"
+        # raising the cost of the (enabled) source above the active price is refused
+        src = f"{API}/admin/procurement/sources"
+        (oid,) = (
+            r[0]
+            for r in await _rows(env, "SELECT id FROM supplier_offers WHERE variant_id IS NOT NULL")
+        )
+        r = await admin.patch(f"{src}/{oid}", json={"enabled": True})
+        assert r.status_code == 200, r.text
+        r = await admin.patch(f"{src}/{oid}", json={"cost_estimate": "9"})
+        assert r.status_code == 422 and r.json()["error"]["code"] == "price_below_cost"
+        # a foreign tenant cannot touch it
+        foreign, _ = await env.login("admin", tenant_id=env.other_tenant_id)
+        r = await foreign.patch(f"{src}/{oid}", json={"cost_estimate": "1"})
+        assert r.status_code in (401, 403, 404)
+    finally:
+        await up.close()
+
+
+async def test_options_cannot_change_under_open_orders_or_away_from_enabled_sources(env):
+    from tests.helpers import buy
+
+    admin, _ = await env.login("admin")
+    buyer, _ = await env.login("buyer")
+    p = await env.product(mode="manual", price=1990, floor=100)
+    url = f"{API}/admin/products/{p.id}/variants"
+    v = await add_variant(admin, p, "Plain", "6.00", status="archived", manual_stock=5)
+    async with env.owner_session() as db:
+        await db.execute(text("UPDATE product_variants SET status = 'active'"))
+        await db.commit()
+    order = await buy(buyer, p, 1, variant_id=v["id"])
+    # a paid / unfulfilled order of the variant pins the options the engine reads live
+    r = await admin.patch(f"{url}/{v['id']}", json={"options": {"plan": "plus", "region": "PH"}})
+    assert r.status_code == 409 and r.json()["error"]["code"] == "variant_has_open_orders"
+    async with env.owner_session() as db:
+        await db.execute(text("UPDATE orders SET status = 'delivered'"))
+        await db.execute(text("UPDATE product_variants SET status = 'archived'"))
+        await db.commit()
+    assert order["id"]
+    r = await admin.patch(f"{url}/{v['id']}", json={"options": {"plan": "plus", "region": "PH"}})
+    assert r.status_code == 200, r.text
+    # another tenant's variant is not reachable
+    foreign, _ = await env.login("admin", tenant_id=env.other_tenant_id)
+    r = await foreign.patch(f"{url}/{v['id']}", json={"options": None})
+    assert r.status_code in (401, 403, 404)
+
+
+async def test_options_change_refused_when_an_enabled_source_would_no_longer_match(env):
+    up, sid = await _gen_setup(env)
+    try:
+        admin, _ = await env.login("admin")
+        assert (await admin.put(OPT, json={"region_allowlist": ["PH", "US"]})).status_code == 200
+        r = await admin.post(
+            GEN,
+            json={"product_id": str(up.product.id), "supplier_id": str(sid), "plans": ["plus"],
+                  "regions": ["PH"], "cost_estimate": "6.5"},
+        )  # fmt: skip
+        assert r.status_code == 200, r.text
+        (vid,) = (r[0] for r in await _rows(env, "SELECT id FROM product_variants"))
+        async with env.owner_session() as db:
+            await db.execute(
+                text("UPDATE supplier_offers SET enabled = true WHERE variant_id = :v"), {"v": vid}
+            )
+            await db.commit()
+        url = f"{API}/admin/products/{up.product.id}/variants/{vid}"
+        r = await admin.patch(url, json={"options": {"plan": "plus", "region": "EG"}})
+        assert r.status_code == 422 and r.json()["error"]["code"] == "source_options_mismatch"
+        r = await admin.patch(url, json={"options": {"plan": "plus", "region": "PH"}})
+        assert r.status_code == 200, r.text  # unchanged options are no change
+    finally:
+        await up.close()
+
+
+def test_region_offered_fails_closed_for_a_pinned_country_without_a_vendor_list():
+    from app.suppliers.zovocard.supplier import PlanCatalog, region_offered
+
+    empty = PlanCatalog("gpt", 1, regions=())
+    assert region_offered(empty, "PH") is False  # pinned country, nothing to confirm it
+    assert region_offered(empty, None) is True  # no pinned country: unaffected
+    some = PlanCatalog("gpt", 1, regions=(("PH", "PHP"),))
+    assert region_offered(some, "PH") is True and region_offered(some, "EG") is False

@@ -186,6 +186,7 @@ async def generate_variants(
     import re
 
     from app.modules.admin.procurement_sources import _direct_checks, _valid_params
+    from app.modules.admin.variants import cost_floor_minor
 
     await enforce(res.redis, "procurement:generate", str(admin.id), 20, 3600)
     tid, uid, role = admin.tenant_id, admin.id, admin.role  # plain values: rollback expires ORM
@@ -249,6 +250,9 @@ async def generate_variants(
             )
         )
     )
+    from app.core import costmodel as cm
+
+    cost_settings = cm.from_tenant(await _settings(db, tid))
     have = {(v.options["plan"], v.options["region"]) for v in rows if isinstance(v.options, dict)}
     created: list[dict[str, str]] = []
     kept: list[dict[str, str]] = []
@@ -270,12 +274,21 @@ async def generate_variants(
             if n >= MAX_VARIANTS:
                 raise Validation(f"at most {MAX_VARIANTS} variants per product", code="too_many")
             await _direct_checks(db, res, kind, params, supplier, enabling=False)
+            raw_cost = (body.cost_estimates or {}).get(region) or body.cost_estimate
+            cost = Decimal(raw_cost) if raw_cost else None
+            # floor = the converted cost estimate (rounded up): quotes use the floor, so a quote
+            # can never go below the cost; no FX rate yet = 0 (staff set it before activation)
+            floor = (
+                cost_floor_minor(cost_settings, cost, supplier.currency, product.currency)
+                if cost is not None
+                else None
+            )
             v = ProductVariant(
                 tenant_id=tid,
                 product_id=product.id,
                 name_i18n=_plan_name(plan, region),
                 price_minor=product.price_minor,  # placeholder: archived until staff price it
-                floor_price_minor=0,
+                floor_price_minor=floor or 0,
                 sort=n,
                 status="archived",  # staff set the price, then activate
                 price_set=False,  # activation is refused until a price is set explicitly
@@ -284,8 +297,6 @@ async def generate_variants(
             )
             db.add(v)
             await db.flush()
-            raw_cost = (body.cost_estimates or {}).get(region) or body.cost_estimate
-            cost = Decimal(raw_cost) if raw_cost else None
             offer = SupplierOffer(
                 id=uuid.uuid4(),
                 tenant_id=tid,
