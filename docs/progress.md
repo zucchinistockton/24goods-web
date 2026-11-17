@@ -4,15 +4,15 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 ## Current state — hand-off (read this first in a new session)
 
-**Hand-off 2026-11-17 (updated after PRs #42 and #43 were merged; #42 is on the demo). START HERE.**
+**Hand-off 2026-11-17 (updated after PR #45 was merged and deployed to the demo). START HERE.**
 
 - **Production (c4) runs `55ad99a`** (v12 launch, see the launch block below). Nothing newer is deployed there, by
   owner decision ("develop on the demo, not production"). Waiting for production: #36 (no virtual-card sales /
-  no card reveal), #37 (cost model), #38 (regions + half-price check) and #42 (card modes). Hand deploy procedure +
+  no card reveal), #37 (cost model), #38 (regions + half-price check), #42 (card modes) and #45 (card pool console). Hand deploy procedure +
   `--profile procurement` in the launch block.
-- **Demo (demo.kesiv.com) runs `main` `9b38f1a`**: v12 + #36 + #37 + #38 + #42 (CI images of run 44156763533 loaded
-  as `goods24-{api,web}:m2-demo`, previous `401c401` kept as `:demo-prev`; migrations up to `0033_card_modes`;
-  pre-deploy dump `/root/demo-backups/demo-20261117T191625Z.dump`). Demo redemption page `redeem-demo.kesiv.com` (production page
+- **Demo (demo.kesiv.com) runs `main` `edbf0f9`**: v12 + #36 + #37 + #38 + #42 + #45 (CI images of run 44170085552
+  loaded as `goods24-{api,web}:m2-demo`, previous `9b38f1a` kept as `:demo-prev`; migrations up to `0033_card_modes`;
+  pre-deploy dump `/root/demo-backups/demo-20261117T203059Z.dump`). Demo redemption page `redeem-demo.kesiv.com` (production page
   `redeem.kesiv.com`). Testing guide: `docs/testing-guide.md`. The vendor sandbox expires **2026-11-18 10:57**:
   then run `/opt/24goods-demo/deploy/sandbox-off.sh` on the demo host.
 - **Open work, in order** (tracking issue #33; owner accepted all suggestions; demo only):
@@ -22,14 +22,12 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
      source has no account binding (vendor preflight is the gate); demo has no plan × region variants yet (create
      them with "Generate plan × region variants" on a CDK / direct product to try the buyer flow); e-mail
      verification at registration is off by default (the 24 h account-age gate is the control for `chatgpt_direct`).
-  2. #29 automatic card selection / issuance (owner: yes). **Part 1 done**: PR #42 `9b38f1a` (card mode `fixed` /
-     `auto_existing` = vendor pick, optional vendor switch refused for production suppliers, bounded "waiting for
-     card", conservative switch cost; two audit rounds, review-v12 §21), on the demo, browser-checked (source form in
-     light and dark). Open: confirm the three guessed vendor codes and the schedule `pick` shape on the sandbox;
-     `auto_issue` waits for the vendor (question on #29). **Part 2** on `feat/card-pool` (PR #45): console Cards tab
-     (pool view, schedule preview, rules editor, failed-usage reset, decline monitor with hourly warning,
-     `max_auto_switches` field, hint line height; review §21.8); chargebacks are not exposed by the vendor API
-     (open question). 3. #30 progress display + detailed logs,
+  2. #29 automatic card selection / issuance (owner: yes). **Parts 1 and 2 done** and on the demo: PR #42 `9b38f1a`
+     (card modes, review-v12 §21) and PR #45 `edbf0f9` (console Cards tab: pool, schedule preview, rules editor,
+     failed-usage reset, decline monitor; §21.8), browser-checked against the real vendor sandbox. **Before real
+     money:** sandbox test that the vendor rule `auto_switch_on_fail` cannot override our per-order
+     `no_auto_card_switch=true`; confirm the guessed vendor codes / shapes marked [I]. #29 stays open only for
+     automatic card issuance (waits for the vendor's answer). 3. #30 progress display + detailed logs,
   4. #31 redemption admin (port features from the vendor's `zovo_card_cdk_auto`, do not deploy it — evaluation on
      #31), 5. #35 shop sells codes, redemption on its own platform (both modes kept; direct can be switched off per
      product), 6. #34 OKX Agentic Wallet top-ups (later).
