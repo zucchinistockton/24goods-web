@@ -31,6 +31,7 @@ const form = reactive({
   regions: [] as string[],
   card_id: null as number | null,
   cost: '',
+  costs: {} as Record<string, string>,
 })
 const supported = computed(() => props.deliveryMode === 'upstream_cdk' || props.deliveryMode === 'upstream_direct')
 const isDirect = computed(() => props.deliveryMode === 'upstream_direct')
@@ -60,6 +61,15 @@ async function show() {
 watch(() => form.vendor_product, () => open.value && void loadRegions())
 
 const ready = computed(() => !!form.supplier_id && form.plans.length > 0 && form.regions.length > 0 && (!isDirect.value || !!form.card_id))
+/** per-region costs for the selected regions only; undefined when none is filled in */
+function regionCosts(): Record<string, string> | undefined {
+  const out: Record<string, string> = {}
+  for (const r of form.regions) {
+    const v = (form.costs[r] ?? '').trim()
+    if (v) out[r] = v
+  }
+  return Object.keys(out).length ? out : undefined
+}
 async function run() {
   if (!ready.value || busy.value) return
   busy.value = true
@@ -72,6 +82,7 @@ async function run() {
       regions: form.regions,
       ...(isDirect.value && form.card_id ? { card_id: form.card_id } : {}),
       ...(form.cost.trim() ? { cost_estimate: form.cost.trim() } : {}),
+      ...(regionCosts() ? { cost_estimates: regionCosts() } : {}),
     })
     note.value = t('regions.gen.done', { c: r.created.length, k: r.kept.length, s: r.skipped.length })
     toastOk(note.value)
@@ -116,6 +127,14 @@ async function run() {
       <el-form-item :label="t('regions.gen.cost')">
         <el-input v-model="form.cost" inputmode="decimal" style="width: 160px" />
       </el-form-item>
+      <el-form-item v-if="form.regions.length" :label="t('regions.gen.costPerRegion')">
+        <div class="costs">
+          <label v-for="r in form.regions" :key="r" class="cost">
+            <span>{{ r }}</span>
+            <el-input v-model="form.costs[r]" inputmode="decimal" :placeholder="form.cost" style="width: 120px" />
+          </label>
+        </div>
+      </el-form-item>
     </el-form>
     <p v-if="note" class="small">{{ note }}</p>
     <template #footer>
@@ -123,3 +142,16 @@ async function run() {
     </template>
   </el-dialog>
 </template>
+
+<style scoped>
+.costs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+.cost {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+</style>

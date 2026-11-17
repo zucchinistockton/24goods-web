@@ -191,6 +191,7 @@ const termsText = (v: AdminVariant): string => {
         <template #default="{ row }">
           {{ nameOf(row as AdminVariant) }}
           <el-tag v-if="(row as AdminVariant).status === 'archived'" size="small" type="info">{{ t('variants.archivedTag') }}</el-tag>
+          <el-tag v-if="(row as AdminVariant).price_set === false" size="small" type="warning">{{ t('variants.unpricedTag') }}</el-tag>
           <el-tag v-if="(row as AdminVariant).options" size="small" effect="plain" class="opt">{{ (row as AdminVariant).options?.plan }} · {{ (row as AdminVariant).options?.region }}</el-tag>
         </template>
       </el-table-column>

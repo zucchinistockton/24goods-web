@@ -159,6 +159,8 @@ export interface AdminVariant {
   subscription: Record<string, unknown> | null
   /** issue #27: plan x region attributes (null = a plain variant) */
   options?: VariantOptions | null
+  /** issue #27: false = generated variant without an explicit price; activation is refused */
+  price_set?: boolean
   sold: number
 }
 /** Body for POST/PATCH /admin/products/{id}/variants. */
