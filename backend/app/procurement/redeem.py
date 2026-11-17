@@ -11,7 +11,11 @@ Rules (each has a test in tests/test_redeem.py):
   log line, audit row, Redis key, exception message or response body of ours;
 * strict input: body cap, JSON object only, unknown keys refused, per-field length and charset;
 * upstream answers are reduced to whitelisted fields and a small fixed error-code set;
-* no CORS, no cookies, ``Cache-Control: no-store``; a cross-origin ``Origin`` is refused.
+* no CORS, no cookies, ``Cache-Control: no-store``; a cross-origin ``Origin`` is refused;
+* every attempt is logged to ``redeem_attempts`` (issue #31, §23) with a MASKED code, the keyed
+  code fingerprint and a keyed hash of the client's /24 or /48 only; the console's maintenance
+  switch answers ``maintenance`` before any vendor call, and ``GET /redeem/config`` serves the
+  announcement text. The code -> token link lives in this process's memory for 20 minutes.
 
 Environment selection: the proxy cannot tell cheaply and safely which supplier environment issued
 a code (card rows hold only sealed secrets and the procurement role cannot read them), so it uses
@@ -29,17 +33,23 @@ import json
 import logging
 import re
 import time
+import uuid
+from collections import OrderedDict
 from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
+from sqlalchemy import select
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
+from app.core.db import tenant_session
 from app.core.middleware import client_ip_from
 from app.core.ratelimit import hit
+from app.models import RedeemAttempt, Tenant
+from app.procurement import redeem_log as rl
 from app.procurement import service
 from app.procurement.context import ProcurementContext
 from app.suppliers import direct_progress as dp
@@ -80,6 +90,7 @@ ERRORS: dict[str, tuple[int, str]] = {
     "session_expired": (409, "The redemption session expired; start again"),
     "conflict": (409, "This request id was already used with other parameters"),
     "rate_limited": (429, "Too many requests, try again later"),
+    "maintenance": (503, "Redemption is temporarily unavailable"),
     "unavailable": (503, "The redemption service is unavailable"),
     "timeout": (504, "The redemption service did not answer in time"),
 }
@@ -341,11 +352,91 @@ def create_redeem_app(ctx: ProcurementContext) -> Starlette:
         if p.strip()
     )
     hkey = (cfg.procurement_token or "redeem").encode()
-    state: dict[str, Any] = {"base": None, "at": 0.0, "own": None}
+    state: dict[str, Any] = {"base": None, "at": 0.0, "own": None, "site": None, "site_at": -1e9}
+    # redemption token (keyed hash) -> what the log may know of its code; memory only, 20 minutes,
+    # bounded. A restart only costs the masked code on the later steps of an attempt in flight.
+    memory: OrderedDict[str, dict[str, Any]] = OrderedDict()
+    ipkey = hmac.new(hkey, b"redeem-ip-class", hashlib.sha256).digest()
 
     def ident(kind: str, value: str) -> str:
         # keyed hash: Redis keys never hold a code/token, nor allow an offline dictionary check
         return hmac.new(hkey, f"{kind}:{value}".encode(), hashlib.sha256).hexdigest()[:32]
+
+    def remember(token: str, meta: dict[str, Any]) -> None:
+        now = time.monotonic()
+        for k in [k for k, v in memory.items() if now - v["at"] > 1200][:200]:
+            memory.pop(k, None)
+        while len(memory) >= 5000:
+            memory.popitem(last=False)
+        memory[ident("token", token)] = {**meta, "at": now}
+
+    def recall(token: str | None) -> dict[str, Any] | None:
+        got = memory.get(ident("token", token)) if token else None
+        if got is not None and time.monotonic() - got["at"] > 1200:
+            memory.pop(ident("token", token or ""), None)
+            return None
+        return got
+
+    async def site() -> tuple[uuid.UUID | None, dict[str, Any]]:
+        """``(platform tenant id, normalised console settings)``, cached for a few seconds. A read
+        failure keeps the last known settings (defaults at first); several platform tenants =
+        ambiguous = no logging, defaults."""
+        now = time.monotonic()
+        if state["site"] is not None and now - state["site_at"] < cfg.redeem_settings_ttl_s:
+            return state["site"]
+        try:
+            async with tenant_session(ctx.maker, None) as db:
+                rows = (
+                    await db.execute(
+                        select(Tenant.id, Tenant.redeem_settings).where(Tenant.kind == "platform")
+                    )
+                ).all()
+            got = (
+                (rows[0].id, rl.normalize_settings(rows[0].redeem_settings))
+                if len(rows) == 1
+                else (None, rl.default_settings())
+            )
+        except Exception as exc:
+            log.error("redeem: settings read failed error=%s", type(exc).__name__)
+            got = state["site"] or (None, rl.default_settings())
+        state["site"], state["site_at"] = got, now
+        return got
+
+    async def record(
+        step: str, outcome: str, reason: str | None, meta: dict[str, Any] | None, ip: str | None
+    ) -> None:
+        """Best effort and bounded: a failed insert never changes the buyer's answer, and a client
+        cannot grow the table faster than 30 non-ok rows a minute."""
+        try:
+            tid, _ = await site()
+            if tid is None:
+                return
+            if (
+                outcome != "ok"
+                and not (
+                    await hit(ctx.redis, "proc:redeem-log", ident("ip", ip or "unknown"), 30, 60)
+                )[0]
+            ):
+                return
+            m = meta or {}
+            async with tenant_session(ctx.maker, tid) as db:
+                db.add(
+                    RedeemAttempt(
+                        id=uuid.uuid4(),
+                        tenant_id=tid,
+                        step=step,
+                        outcome=outcome,
+                        reason=reason[:32] if reason else None,
+                        code_head=m.get("head"),
+                        code_tail=m.get("tail"),
+                        code_fp=m.get("fp"),
+                        plan=m.get("plan"),
+                        ip_hash=rl.ip_class_hash(ipkey, ip),
+                    )
+                )
+                await db.commit()
+        except Exception as exc:
+            log.warning("redeem: attempt log failed error=%s", type(exc).__name__)
 
     def http_client() -> httpx.AsyncClient:
         if ctx.http is not None:
@@ -481,18 +572,34 @@ def create_redeem_app(ctx: ProcurementContext) -> Starlette:
             raise RedeemError("invalid_request")
         return body
 
+    def code_meta(code: str, tenant_id: uuid.UUID | None, plan: str | None) -> dict[str, Any]:
+        head, tail = rl.mask_code(code)
+        fp = None
+        if ctx.sealer is not None and tenant_id is not None:
+            # the fingerprint scheme of delivered codes (CardSealer.fingerprint): the console
+            # matches it to what we sold; it does not reveal the code
+            fp = ctx.sealer.fingerprint(str(tenant_id), code)
+        return {"head": head or None, "tail": tail or None, "fp": fp, "plan": plan}
+
     async def handle(request: Request, step: str) -> Response:
+        ip: str | None = None
+        meta: dict[str, Any] | None = None
         try:
             if not origin_ok(request):
                 raise RedeemError("forbidden")
             peer = request.client.host if request.client else None
             ip = client_ip_from(peer, request.headers.get("x-forwarded-for"), trusted) or "unknown"
-            await count(f"proc:redeem-ip-{step}", ident("ip", ip), ip_limits[step], 60)
+            tid, conf = await site()
+            limit = conf["ip_limits"].get(step, ip_limits[step])
+            await count(f"proc:redeem-ip-{step}", ident("ip", ip), limit, 60)
+            if conf["maintenance"]:
+                raise RedeemError("maintenance")  # before any body is read or vendor is called
             # POST only, also for the result: a token never travels in a URL on our side
             parsed = parse_body(step, await read_json(request))
             body: dict[str, Any] | None = parsed
             token = parsed.get("redemption_token")
             if step == "preview":
+                meta = code_meta(parsed["code"], tid, None)
                 await count(
                     "proc:redeem-code",
                     ident("code", parsed["code"]),
@@ -500,6 +607,7 @@ def create_redeem_app(ctx: ProcurementContext) -> Starlette:
                     600,
                 )
             else:
+                meta = recall(token)
                 await count(
                     "proc:redeem-token", ident("token", token), cfg.redeem_token_per_min, 60
                 )
@@ -507,16 +615,51 @@ def create_redeem_app(ctx: ProcurementContext) -> Starlette:
             data = await call_vendor(step, await upstream_base(), body, token)
             shaped = SHAPERS[step](data)
         except RedeemError as exc:
+            outcome = {"rate_limited": "rate_limited", "maintenance": "maintenance"}.get(
+                exc.code,
+                "invalid" if exc.code in ("invalid_request", "payload_too_large") else "error",
+            )
+            # not logged: cross-origin / wrong-method noise, and the normal "no result yet"
+            if exc.code not in ("forbidden", "not_found", "method_not_allowed"):
+                await record(step, outcome, exc.code, meta, ip)
             return _public_error(exc.code, exc.retry_after)
         except Exception as exc:  # never include str(exc): it could echo input
             log.error("redeem step=%s internal_error=%s", step, type(exc).__name__)
+            await record(step, "error", "unavailable", meta, ip)
             return _public_error("unavailable")
+        if step == "preview":
+            assert meta is not None
+            meta["plan"] = shaped.get("plan")
+            remember(shaped["redemption_token"], meta)
+            await record(step, "ok", None, meta, ip)
+        elif step in ("preflight", "redeem"):
+            await record(step, "ok", None, meta, ip)
+        elif shaped["terminal"] and not (meta or {}).get("done"):  # result: log the end once
+            done = shaped["status"] in ("completed", "succeeded")
+            reason = None if done else (shaped["progress"] or {}).get("reason") or "not_completed"
+            if meta is not None:
+                meta["done"] = True
+            await record(step, "completed" if done else "failed", reason, meta, ip)
         log.info("redeem step=%s ok", step)
         return JSONResponse({"data": shaped})
 
+    async def config(request: Request) -> Response:
+        """``GET /redeem/config``: announcement and maintenance state (display text only)."""
+        try:
+            peer = request.client.host if request.client else None
+            ip = client_ip_from(peer, request.headers.get("x-forwarded-for"), trusted) or "unknown"
+            await count("proc:redeem-ip-config", ident("ip", ip), 60, 60)
+            payload = rl.public_config((await site())[1])
+        except RedeemError as exc:
+            return _public_error(exc.code, exc.retry_after)
+        except Exception as exc:
+            log.error("redeem config internal_error=%s", type(exc).__name__)
+            return _public_error("unavailable")
+        return JSONResponse({"data": payload})
+
     def make_route(step: str):
         async def endpoint(request: Request) -> Response:
-            resp = await handle(request, step)
+            resp = await (config(request) if step == "config" else handle(request, step))
             resp.headers["Cache-Control"] = "no-store"
             resp.headers["X-Content-Type-Options"] = "nosniff"
             resp.headers["Referrer-Policy"] = "no-referrer"
@@ -541,6 +684,7 @@ def create_redeem_app(ctx: ProcurementContext) -> Starlette:
         Route("/redeem/preflight", make_route("preflight"), methods=["POST"]),
         Route("/redeem/redeem", make_route("redeem"), methods=["POST"]),
         Route("/redeem/result", make_route("result"), methods=["POST"]),
+        Route("/redeem/config", make_route("config"), methods=["GET"]),
     ]
     app = Starlette(routes=routes, exception_handlers={404: not_allowed, 405: not_allowed})
     app.state.close = close

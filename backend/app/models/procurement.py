@@ -175,6 +175,26 @@ class HalfPriceCheck(Base):
     decided_at: Mapped[datetime | None]
 
 
+class RedeemAttempt(Base):
+    """One attempt through the public redemption proxy (migration 0035, issue #31). Holds a masked
+    code, the keyed code fingerprint and a keyed hash of the client's /24 or /48: never a code, a
+    token, a session or an address."""
+
+    __tablename__ = "redeem_attempts"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    at: Mapped[datetime] = created_at()
+    step: Mapped[str] = mapped_column(String(12))
+    outcome: Mapped[str] = mapped_column(String(16))
+    reason: Mapped[str | None] = mapped_column(String(32))
+    code_head: Mapped[str | None] = mapped_column(String(4))
+    code_tail: Mapped[str | None] = mapped_column(String(4))
+    code_fp: Mapped[str | None] = mapped_column(String(64))
+    plan: Mapped[str | None] = mapped_column(String(40))
+    ip_hash: Mapped[str | None] = mapped_column(String(32))
+
+
 class SupplierWebhookEvent(Base):
     """Verified supplier webhook (table ``supplier_events``); card numbers masked, no OTP."""
 

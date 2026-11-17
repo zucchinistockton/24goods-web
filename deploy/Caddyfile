@@ -152,7 +152,7 @@
 }
 
 # CDK redemption site (review-v12 §8): own host, own strict CSP, NO cookies, NO shared origin with the
-# shop. Serves /srv/redeem and forwards ONLY the four redemption routes to procurement's public
+# shop. Serves /srv/redeem and forwards ONLY the four redemption routes plus /redeem/config to procurement's public
 # listener on the `redeem` network. The procurement internal API (:8004) is not on that network
 # address, so no Caddy route can reach it. REDEEM_HOST defaults to redeem.invalid = site is off.
 (redeem) {
@@ -174,7 +174,7 @@
 		max_size 128KB
 	}
 
-	@redeem_api path /redeem/preview /redeem/preflight /redeem/redeem /redeem/result
+	@redeem_api path /redeem/preview /redeem/preflight /redeem/redeem /redeem/result /redeem/config
 	handle @redeem_api {
 		reverse_proxy procurement:8006 {
 			header_up X-Forwarded-For {client_ip}

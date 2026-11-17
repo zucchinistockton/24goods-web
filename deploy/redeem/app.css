@@ -102,3 +102,6 @@ footer p { margin: 0 auto; max-width: 520px; }
   .steps li, .fill { transition: none; }
   .state.wait .dot { animation: none; }
 }
+
+.notice { margin: 0 0 12px; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--note-line); background: var(--note-bg); color: var(--text); font-size: 14px; line-height: 1.45; white-space: pre-line; overflow-wrap: anywhere; }
+.notice.warn { background: var(--warn-bg); }

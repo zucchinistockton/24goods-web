@@ -41,6 +41,7 @@
       e_session_expired: 'This took too long and has expired. Please start again with your code.',
       e_conflict: 'This redemption was already submitted. Checking its result…',
       e_rate_limited: 'Too many attempts. Wait a minute and try again.',
+      e_maintenance: 'Redemption is temporarily unavailable. Please try again later.',
       e_unavailable: 'The service is busy right now. Try again in a few minutes.',
       e_timeout: 'No answer yet. Try again: nothing is charged twice.',
       e_network: 'No connection. Check your network and try again.'
@@ -83,6 +84,7 @@
       e_session_expired: '操作超时已失效，请从输入兑换码重新开始。',
       e_conflict: '该兑换已提交，正在查询结果…',
       e_rate_limited: '尝试次数过多，请一分钟后再试。',
+      e_maintenance: '兑换服务暂时不可用，请稍后再试。',
       e_unavailable: '服务繁忙，请几分钟后再试。',
       e_timeout: '暂未收到响应，请重试：不会重复扣费。',
       e_network: '网络连接失败，请检查网络后重试。'
@@ -92,6 +94,7 @@
   var $ = function (id) { return document.getElementById(id) }
   var t = function (k) { return T[lang][k] || T.en[k] || k }
   // flow state: memory only, gone on reload
+  var site = { maintenance: false, message: { en: '', zh: '' }, announcement: { en: '', zh: '' } }
   var st = { step: 0, token: null, plan: '', preflight: null, credential: null, requestId: null, busy: false, result: null, progress: null }
   var SECTIONS = ['s-code', 's-account', 's-confirm', 's-result']
 
@@ -103,6 +106,30 @@
     for (var i = 0; i < nodes.length; i++) nodes[i].textContent = t(nodes[i].getAttribute('data-t'))
     if (st.result) showResult(st.result.kind, st.result.order)
     renderProgress(st.progress)
+    renderNotice()
+  }
+  // the operator's announcement / maintenance text: plain text only, always set with textContent
+  function renderNotice() {
+    var key = lang === 'zh' ? 'zh' : 'en'
+    var text = (site.maintenance && site.message[key]) || site.announcement[key] || site.announcement.en || ''
+    var el = $('notice')
+    el.textContent = String(text).slice(0, 400)
+    el.hidden = !text
+    el.className = site.maintenance ? 'notice warn' : 'notice'
+  }
+  function loadSite() {
+    fetch('/redeem/config', { credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer' })
+      .then(function (r) { return r.ok ? r.json() : null })
+      .then(function (j) {
+        var d = j && j.data
+        if (!d) return
+        site.maintenance = d.maintenance === true
+        ;['message', 'announcement'].forEach(function (k) {
+          var v = d[k === 'message' ? 'maintenance_message' : 'announcement'] || {}
+          site[k] = { en: typeof v.en === 'string' ? v.en : '', zh: typeof v.zh === 'string' ? v.zh : '' }
+        })
+        renderNotice()
+      }, function () {})
   }
   function show(step) {
     st.step = step
@@ -147,6 +174,7 @@
   }
   function failed(e) {
     var code = (e && e.code) || 'unavailable'
+    if (code === 'maintenance') { site.maintenance = true; renderNotice() }
     if (code === 'session_expired') { reset(); alertMsg(code); return }
     alertMsg(code)
   }
@@ -319,4 +347,5 @@
   window.addEventListener('pagehide', function () { $('code').value = ''; $('session').value = '' })
   paint()
   show(0)
+  loadSite()
 })()

@@ -1653,6 +1653,12 @@ async def sweep_credentials(ctx: ProcurementContext, *, force: bool = False) -> 
         total += await wipe_stale(ctx)
     except Exception as exc:
         log.error("half-check sweep failed error=%s", type(exc).__name__)
+    try:  # redemption attempt log: rows older than the retention (issue #31)
+        from app.procurement.redeem_admin import sweep_attempts
+
+        await sweep_attempts(ctx)
+    except Exception as exc:
+        log.error("redeem log sweep failed error=%s", type(exc).__name__)
     async with tenant_session(ctx.maker, None) as db:
         res = await db.execute(
             text(
