@@ -296,6 +296,7 @@ const zhCN: WebMessages = {
     state: {
       working: '处理中',
       queued: '处理中',
+      waiting_for_supplier: '等待供应商',
       submitting: '处理中',
       accepted_pending: '正在为你的账号开通',
       fulfilled: '已开通',

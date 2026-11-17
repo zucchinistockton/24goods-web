@@ -237,7 +237,7 @@ const CARD_ID_RE = /^[1-9]\d{0,11}$/
 const CARD_CODE_RE = /^[A-Za-z0-9_-]{2,32}$/
 const AMOUNT_RE = /^\d{1,6}(\.\d{1,2})?$/
 const NAME_RE = /^[A-Za-z]{1,32}$/
-const srcDlg = reactive({ open: false, saving: false, id: null as string | null, supplier_id: '', plan: '', country: '', cost: '', priority: 100, enabled: false, product_code: '', init_amount: '', recharge_amount: '', first_name: '', last_name: '', direct_product: 'gpt', funding_card: '', pay_currency: '' })
+const srcDlg = reactive({ open: false, saving: false, id: null as string | null, supplier_id: '', plan: '', country: '', cost: '', priority: 100, enabled: false, product_code: '', init_amount: '', recharge_amount: '', first_name: '', last_name: '', direct_product: 'gpt', funding_card: '', pay_currency: '', card_mode: 'fixed' as 'fixed' | 'auto_existing', vendor_switch: false })
 const srcErr = ref<Record<string, string>>({})
 function openSource(row: ProcSource | null) {
   Object.assign(srcDlg, {
@@ -258,6 +258,8 @@ function openSource(row: ProcSource | null) {
     direct_product: row?.params.product ?? 'gpt',
     funding_card: row?.params.card_id != null ? String(row.params.card_id) : '',
     pay_currency: row?.params.payment_currency ?? '',
+    card_mode: row?.params.card_mode ?? 'fixed',
+    vendor_switch: row?.params.vendor_switch ?? false,
   })
   srcErr.value = {}
 }
@@ -288,7 +290,7 @@ async function saveSource() {
   const fundingCard = srcDlg.funding_card.trim()
   const payCurrency = srcDlg.pay_currency.trim().toUpperCase()
   if (isDirect.value) {
-    if (!CARD_ID_RE.test(fundingCard)) e.funding_card = t('procurement.err.fundingCard')
+    if (srcDlg.card_mode === 'fixed' && !CARD_ID_RE.test(fundingCard)) e.funding_card = t('procurement.err.fundingCard')
     if (payCurrency && !CURRENCY_RE.test(payCurrency)) e.pay_currency = t('procurement.err.currency')
   }
   if (cost && !COST_RE.test(cost)) e.cost = t('procurement.err.cost')
@@ -301,7 +303,8 @@ async function saveSource() {
       ? {
           product: srcDlg.direct_product,
           plan,
-          card_id: Number(fundingCard),
+          ...(srcDlg.card_mode === 'fixed' ? { card_id: Number(fundingCard) } : { card_mode: 'auto_existing' as const }),
+          ...(srcDlg.vendor_switch ? { vendor_switch: true } : {}),
           ...(country ? { payment_country: country } : {}),
           ...(payCurrency ? { payment_currency: payCurrency } : {}),
         }
@@ -481,6 +484,7 @@ onMounted(() => jobs.load())
                 <template v-else>
                   <span v-if="row.kind === 'direct'" class="mono">{{ row.params.product }}/</span>
                   <span class="mono">{{ row.params.plan }}</span>
+                  <span v-if="row.kind === 'direct' && row.params.card_mode === 'auto_existing'" class="muted small"> · {{ t('procurement.src.cardModeAuto') }}</span>
                   <span v-if="row.kind === 'direct' && row.params.card_id" class="muted small"> · {{ t('procurement.src.fundingCardShort', { id: row.params.card_id }) }}</span>
                   <span v-if="row.params.payment_country" class="muted small"> · {{ row.params.payment_country }}</span>
                 </template>
@@ -700,8 +704,18 @@ onMounted(() => jobs.load())
                 <el-option value="grok" label="Grok" />
               </el-select>
             </el-form-item>
-            <el-form-item v-if="isDirect" :label="t('procurement.src.fundingCard')" :error="srcErr.funding_card">
+            <el-form-item v-if="isDirect" :label="t('procurement.src.cardMode')">
+              <el-select v-model="srcDlg.card_mode">
+                <el-option value="fixed" :label="t('procurement.src.cardModeFixed')" />
+                <el-option value="auto_existing" :label="t('procurement.src.cardModeAuto')" />
+              </el-select>
+            </el-form-item>
+            <el-form-item v-if="isDirect && srcDlg.card_mode === 'fixed'" :label="t('procurement.src.fundingCard')" :error="srcErr.funding_card">
               <el-input v-model="srcDlg.funding_card" maxlength="12" inputmode="numeric" class="mono" autocomplete="off" />
+            </el-form-item>
+            <el-form-item v-if="isDirect" :label="t('procurement.src.vendorSwitch')">
+              <el-switch v-model="srcDlg.vendor_switch" />
+              <div class="muted small">{{ t('procurement.src.vendorSwitchHint') }}</div>
             </el-form-item>
             <el-form-item v-if="isDirect" :label="t('procurement.src.payCurrency')" :error="srcErr.pay_currency">
               <el-input v-model="srcDlg.pay_currency" maxlength="3" class="mono" placeholder="USD" />
