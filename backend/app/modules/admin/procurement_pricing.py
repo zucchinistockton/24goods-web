@@ -312,7 +312,7 @@ def _row(
             "amount": cm.q(to_decimal(price_minor), cm.CENT),
             "currency": cur,
             "usd": cm.q(price_usd),
-        },  # fmt: skip
+        },
         "cost_usd": {
             "supplier_price": cm.q(est.supplier_price),
             "service_fee": cm.q(est.service_fee),

@@ -98,10 +98,10 @@ def normalize(raw: dict[str, Any] | None) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for k, (default, hi) in _MONEY_FIELDS.items():
         v = _dec(raw.get(k))
-        out[k] = _s(v) if v is not None and v <= Decimal(hi) else default
+        out[k] = _s(v) if v is not None and v <= Decimal(hi) else _s(Decimal(default))
     for k, default in _RATE_FIELDS.items():
         v = _dec(raw.get(k))
-        out[k] = _s(v) if v is not None and v <= 1 else default
+        out[k] = _s(v) if v is not None and v <= 1 else _s(Decimal(default))
     for k, (default, lo, hi) in _INT_FIELDS.items():
         v = raw.get(k)
         ok = isinstance(v, int) and not isinstance(v, bool) and lo <= v <= hi
@@ -112,7 +112,7 @@ def normalize(raw: dict[str, Any] | None) -> dict[str, Any]:
     for p in DIRECT_PRODUCTS:
         v = _dec(sf.get(p))
         out["service_fee_direct"][p] = (
-            _s(v) if v is not None and v <= 1000 else DEFAULT_SERVICE_FEE[p]
+            _s(v) if v is not None and v <= 1000 else _s(Decimal(DEFAULT_SERVICE_FEE[p]))
         )
     up = raw.get("uses_per_card")
     up = up if isinstance(up, dict) else {}
@@ -199,7 +199,7 @@ def validate_patch(patch: dict[str, Any]) -> None:
 
 
 def merged(cur: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
-    """Settings after a partial patch (nested maps merge key by key; ``fx``/``targets`` untouched)."""
+    """Settings after a partial patch (nested maps merge; ``fx``, ``targets`` untouched)."""
     new = copy.deepcopy(cur)
     for k, v in patch.items():
         if v is None or k in ("fx", "targets") or k not in DEFAULTS:
