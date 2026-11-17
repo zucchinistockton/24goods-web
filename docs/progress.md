@@ -29,7 +29,8 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
      `no_auto_card_switch=true`; confirm the guessed vendor codes / shapes marked [I]. #29 stays open only for
      automatic card issuance (waits for the vendor's answer). 3. #30 progress display + detailed logs,
   4. #31 redemption admin (port features from the vendor's `zovo_card_cdk_auto`, do not deploy it — evaluation on
-     #31), 5. #35 shop sells codes, redemption on its own platform (both modes kept; direct can be switched off per
+     #31): **built on `feat/redeem-admin`** (attempt log with masked data, code lookup, stats, settings, disable / enable;
+     review-v12 §23, ADR-044), not yet merged; `GET /redeem/config` needs the Caddyfile reload, vendor list shape is [I], 5. #35 shop sells codes, redemption on its own platform (both modes kept; direct can be switched off per
      product), 6. #34 OKX Agentic Wallet top-ups (later).
 - **Audit exception (owner-approved 2026-11-17, temporary):** `pnpm audit` ignores GHSA-fc5q-39xc-vjpf (picomatch
   ReDoS, no patched release) only; not reachable at runtime or from untrusted input. **Mandatory review
