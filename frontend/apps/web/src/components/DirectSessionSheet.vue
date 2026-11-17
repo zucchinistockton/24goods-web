@@ -89,6 +89,7 @@ function confirm() {
 .how {
   margin: 0 0 16px;
   padding-left: 20px;
+  list-style: decimal;
   font-size: 14px;
   line-height: 1.6;
   color: var(--c-text-2);
