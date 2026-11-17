@@ -1283,3 +1283,101 @@ reasons for the three new `error_code`s.
 * The half-price promotion key of the account-check document and the vendor's `promotions` shape are inferred [I];
   confirm against a real eligible / ineligible account before production.
 * The generator does not read the vendor quote for a cost estimate (staff enter it or use the §19 estimate).
+
+
+## 21. Card modes for direct orders (issue #29, part 1: the procurement engine)
+
+Owner decision 2026-11-17: let ZovoCard choose cards automatically and issue a new card when none is available,
+count the extra cost in the cost model (§19) and watch the decline / chargeback thresholds (15 % / 30 %). Part 1 is
+the engine; the console card-pool view, the card-rules editor and the risk monitor are part 2.
+Legend: [V] documented by the vendor (`docs/research/zovocard/zovocard-openapi.md` §6.18.3-§6.18.8a), [I] inferred.
+
+### 21.1 Card mode per direct source (`params.card_mode`)
+
+* `fixed` (default, not stored): `card_id` required, exactly as before (`DirectSpec.card_id`, usage / busy / cooling /
+  in-flight checks, `no_auto_card_switch: true`).
+* `auto_existing`: `card_id` is optional and **never stored or used** (the console drops it). Pre-check (`engine`
+  `precheck` mode, `ZovoCardSupplier._auto_card_availability`) asks `GET /gpt-direct/card-pool/schedule`
+  (`product`, `plan`, `card_mode=auto_existing`) [V]: `data.pick` first, then `data.candidates[]` with **no**
+  `skip_reason`, at most 3 cards in all (the id spelling `card_id` | `id` is [I]). Each card runs through our
+  existing funding checks (`_funding_card_problem`: ours, ACTIVE, balance, usage cap, busy / cooling). The usable
+  ones go to the job (`procurement_jobs.card_candidates`, `"id:last4,..."`). The lease that sends the order then
+  takes the first one that is not a buyer's card and has no order in flight (`direct_card_inflight_max`, the same
+  advisory lock per card, locks taken in id order), writes it to `procurement_jobs.card_id` / `card_last4` and the
+  engine injects it as `picked_card_id` into the spec (the offer row and the pinned `request_hash` never carry it).
+* `auto_issue` (a NEW card per order): reserved, see §21.4. Validation: `card_mode_unavailable`; any other unknown
+  value is `bad_params`. `direct_spec` also refuses both, so a stray database value is never sent.
+* The card used is recorded as **id + last four only** (`card_id`, `card_last4`, CHECK `^[0-9]{4}$`); the number
+  never reaches a row, a log, an audit row or an API answer (test: PAN sweep). The card of a fixed job is recorded
+  from the vendor order as well (`order.card_id` / `card_last_four`, [V] §6.18.8a).
+
+### 21.2 Optional vendor switch (`params.vendor_switch`, default false)
+
+`true` sends `no_auto_card_switch: false` [V]: after a refused payment the vendor retries on another card (default at
+most 2 switches, `max_auto_switches`). The card the vendor finally used is read from every order read
+(`card_id` + `card_last_four`) and replaces the recorded one. Consequences, stated in the console hint:
+it **weakens "one order in flight per card"** (the vendor, not we, picks the retry card), and every extra failed
+attempt can cost `failed_fee` once the card's `failed_free_count` is used up. Platform admins only (the source
+routes); every change is in the `procurement.offer_updated` before / after audit, and a flip of the flag writes a
+warning `procurement.vendor_switch_changed` row.
+
+### 21.3 Parked state "waiting for card"
+
+No new job state (the 0023 CHECK is unchanged): a parked job is `queued`, step `submit`, `error_code
+waiting_for_card`, with `card_id` / `card_candidates` cleared and `maybe_sent` false. It parks when
+* the vendor made no pick, or none of the candidates passed our checks (`no_card_pick`),
+* the candidates are busy / cooling / in flight (`card_pool_busy`),
+* the order POST is refused with a "no card" code (nothing was created). Codes (`CARD_WAIT_CODES`, mapped to
+  UNAVAILABLE in `errors.TABLE`): `CARD_FUNDING_BUSY`, `CARD_IN_USE`, `CARD_CAPACITY_REACHED`,
+  `CARD_CAPACITY_PRO20`, `CARD_COOLING_DOWN` [V: the vendor's owner-card refusals, §6.18.8a, applied to direct orders
+  by analogy [I]], and **`NO_CARD_AVAILABLE`, `CARD_POOL_EMPTY`, `SUPPLIER_BUSY` [I]** (our guesses at "no card /
+  pool empty / supplier busy"; not in the documentation). Only for `auto_existing` sources; `fixed` keeps today's
+  UNAVAILABLE handling.
+
+The wait is bounded: backoff retries (5 s doubling, capped at 15 min and at the deadline) up to
+`APP_DIRECT_CARD_WAIT_MAX_S` (default 1800 s = 30 min) in total from the first park (`card_wait_since`), then
+`needs_manual` / `card_wait_exhausted` (the usual `procure.failed` path: order to manual review, buyer message).
+One staff warning audit row `procurement.waiting_for_card` (state before / after, reason, max wait) is written at the
+first park of a job; later parks write none. No vendor spend while parked: nothing is sent, and a refused POST created
+no order. **No double submit:** the job keeps its idempotency key and `client_request_id`; the vendor caches 2xx
+answers only (and returns the original order for a repeated request id), a refusal is definite, and a job with an
+order or `maybe_sent` is never parked (it reconciles as before).
+Buyer: `GET /orders/{ref}/direct` adds `waiting_for_supplier` (true while the job is parked); the order page shows
+"Waiting for the supplier" (en / zh-CN). No card, reason or timing leaves the server.
+
+### 21.4 Automatic card issuance: open vendor question
+
+The documented OpenAPI has **no field to issue a new card on a direct order** (`POST /gpt-direct/orders` requires
+`card_id`; the CDK owner path says an explicit card is locked, "no auto-open"). We do **not** invent one. Reserved:
+a third card mode `auto_issue`, refused by validation with `card_mode_unavailable`. **Question for ZovoCard:** is
+there a documented parameter (or a rule such as `card-rules` / the card-pool schedule with `card_mode=auto_issue`)
+that makes the vendor open a card for a direct order, and what does it return (card id and last four on the order)?
+How it would plug in once answered: `CARD_MODES` gets `auto_issue`; `_auto_card_availability` asks the schedule with
+that mode (or the order omits `card_id`); the order read already records `card_id` / `card_last_four`; costs
+(card open fee 1.50 USD, 2 % top-up) enter §21.5 as another component; nothing else in the engine changes. Until
+then, pre-issue cards by hand and use `auto_existing`.
+
+### 21.5 Cost model
+
+`vendor_switch` sources add `switch_cost = expected_failure_rate x 2 (max switches) x failed_fee / (failed_free_count
++ 1)` per sale (`core/costmodel.switch_cost`; `Estimate.switch_cost`, included in `fees` / `total_cost` and the
+price recommendation; `cost_usd.switch_cost` in the cost rows). The `1 / (free + 1)` billed share is an assumption
+[I] (the vendor bills failures after the card's free count); with no free count every extra attempt is billed. It is an
+estimate only: it never changes a price by itself (a recommendation still needs staff to apply it). `auto_existing`
+without a switch adds nothing (no new card is opened). The decline / chargeback thresholds are watched in part 2.
+
+### 21.6 Simulator
+
+`app/devtools/mock_zovocard.py`: `GET /gpt-direct/card-pool/schedule` (`pick` + `candidates` with `skip_reason`;
+`card_pool`, `schedule_skip`, `schedule_none` = no card available), `GET` / `PUT /gpt-direct/card-rules`,
+`POST /gpt-direct/cards/reset-usage`, `direct_no_card_next` / `direct_no_card_code` (refused order POSTs),
+`direct_switch_to` (the vendor switches card when `no_auto_card_switch` is false), `card_last_four` on orders.
+
+### 21.7 Left open
+
+* The exact JSON of `card-pool/schedule` (`pick` as an object or an id, the candidate id key) and the "no card" error
+  codes marked [I] are unverified: confirm against the sandbox.
+* Part 2: card pool view, card-rules editor (`GET/PUT card-rules`, `reset-usage`), decline / chargeback risk monitor.
+* The console shows a source's card mode in the list but not yet the card a job used (the job API returns the
+  columns' absence; part 2).
+
