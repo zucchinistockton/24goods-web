@@ -68,6 +68,7 @@ from app.procurement.funding import (
     funding_mask_clash,
     lock_card,
 )
+from app.procurement.risk import DECLINE_CODES
 from app.procurement.service import SupplierRef, make_supplier, refresh_balance
 from app.suppliers.base import (
     JobSpec,
@@ -2187,7 +2188,7 @@ async def _card_mismatch(db: AsyncSession, job: ProcurementJob, other: str) -> N
     await _needs_manual(db, job, "card_mismatch")
 
 
-DECLINES = ("order_declined", "order_failed_precharge")
+DECLINES = DECLINE_CODES  # one list: the console risk monitor counts the same outcomes
 
 
 async def _direct_fatal(db: AsyncSession, job: ProcurementJob, res: Result, limit: int = 3) -> None:
