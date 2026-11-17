@@ -24,7 +24,7 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
      verification at registration is off by default (the 24 h account-age gate is the control for `chatgpt_direct`).
   2. #29 automatic card selection / issuance (owner: yes; part 1 = procurement engine on `feat/card-modes`: `auto_existing`
      card mode, optional vendor switch, bounded "waiting for card", cost estimate; issuance `auto_issue` reserved, open vendor
-     question in review §21.4; part 2 = card pool view, rules editor, risk monitor), 3. #30 progress display + detailed logs,
+     question in review §21.4; part 2 on `feat/card-pool` = console Cards tab: pool view, schedule preview, rules editor, failed-usage reset, decline monitor with hourly warning, review §21.8; chargebacks are not exposed by the vendor API: open question), 3. #30 progress display + detailed logs,
   4. #31 redemption admin (port features from the vendor's `zovo_card_cdk_auto`, do not deploy it — evaluation on
      #31), 5. #35 shop sells codes, redemption on its own platform (both modes kept; direct can be switched off per
      product), 6. #34 OKX Agentic Wallet top-ups (later).
