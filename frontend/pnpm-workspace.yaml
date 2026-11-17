@@ -22,3 +22,15 @@ trustPolicy: no-downgrade
 # trusted publishing; later versions have provenance, hence the "downgrade". Not a takeover.
 trustPolicyExclude:
   - undici-types@6.21.0
+
+# --- audit exceptions: ONE advisory each, with a risk assessment and a review date -------
+# Owner-approved 2026-11-17 (temporary). `pnpm audit --prod --audit-level high` stays blocking
+# in CI for every other advisory. Full assessment: docs/security-exceptions.md.
+auditConfig:
+  ignoreGhsas:
+    # picomatch <= 4.0.7: ReDoS through repeated extglobs; no patched release (2026-11-17).
+    # Reached only via vue-router 5.4.0's file-routing plugin chunk, which only the
+    # vue-router/vite|unplugin|rollup|rolldown|webpack|esbuild entries load. We import the main
+    # entry only and use no vue-router build plugin, so it is never loaded, not even at build
+    # time; the shipped SPA bundles do not contain it. MANDATORY REVIEW: 2026-12-17.
+    - GHSA-fc5q-39xc-vjpf
