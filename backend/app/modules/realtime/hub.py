@@ -24,7 +24,10 @@ MAX_SUBSCRIBERS = 256
 MAX_TENANT_SUBSCRIBERS = 64
 MAX_ACCOUNT_SUBSCRIBERS = 4
 MAX_IP_SUBSCRIBERS = 16
-MAX_RELAYS = 32  # in-flight procurement progress relays; more are dropped (the page refetches)
+# In-flight procurement progress relays; more are dropped (the page refetches). Each relay opens a
+# DB session, so keep this far below the API pool (db_pool_size + db_max_overflow = 8): a flood on
+# rt:procprogress must never starve real API requests (re-check of #47).
+MAX_RELAYS = 2
 
 
 class Subscription:
