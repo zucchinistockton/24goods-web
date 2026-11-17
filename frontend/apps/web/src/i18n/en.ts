@@ -274,7 +274,7 @@ export default {
     since: 'Turned on',
     codesLeft: 'Recovery codes left',
     start: 'Set up',
-    passwordHint: 'Leave empty if you only sign in with Google',
+    passwordHint: 'If you only ever sign in with Google, leave the password empty.',
     scanTitle: 'Scan with your authenticator app',
     scanLead:
       'Open an authenticator app (Google Authenticator, Microsoft Authenticator, 1Password, Aegis…), scan this code, then enter the six digits it shows.',

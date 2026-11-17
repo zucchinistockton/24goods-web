@@ -4,6 +4,11 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 ## Current state — hand-off (read this first in a new session)
 
+**v12 released to `main` (2026-11-17, owner decision).** The owner stated on 2026-11-17 that the independent
+security review (M1 exit gate, AGENTS.md §1.11) has been passed and approved merging v12 procurement to `main`,
+deploying it to production and selling with real money. The review report itself is not in the repository yet:
+file it under `docs/research/` or link it here. Production deploy record: see the block below once done.
+
 **Hand-off 2026-11-16 (this block supersedes the ones below).**
 
 - **v12 M2 is merged into `feat/v12-procurement`** (PR #2, squash `bfbd21c`, CI green incl. E2E on the same
