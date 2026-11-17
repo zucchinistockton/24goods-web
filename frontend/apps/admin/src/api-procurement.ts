@@ -527,3 +527,77 @@ export function createCardsApi(c: ApiClient) {
       c.post<{ scope: 'failed'; card_ids: number[]; reset: number | null }>(`${base}/reset-failed`, { card_ids, confirm: true, ...sup(supplier_id) }),
   }
 }
+
+// ------------------------------------------------------------------ redemption admin (issue #31)
+export type RedeemStep = 'preview' | 'preflight' | 'redeem' | 'result'
+export type RedeemOutcome = 'ok' | 'completed' | 'failed' | 'error' | 'rate_limited' | 'invalid' | 'maintenance'
+export interface RedeemAttempt {
+  id: string
+  at: string
+  step: RedeemStep
+  outcome: RedeemOutcome
+  reason: string | null
+  /** masked: head + "…" + tail, never the code */
+  code: string | null
+  plan: string | null
+  order_no: string | null
+  /** first characters of a keyed hash of the client's /24 or /48 (never an address) */
+  ip_class: string | null
+}
+export interface RedeemAttemptFilter {
+  q?: string
+  outcome?: RedeemOutcome
+  step?: RedeemStep
+  date_from?: string
+  date_to?: string
+  order_ref?: string
+}
+export interface RedeemStatsDay {
+  day: string
+  attempts: number
+  completed: number
+  failed: number
+  /** 4-decimal fraction string or null */
+  success_rate: string | null
+}
+export interface RedeemStats {
+  days: RedeemStatsDay[]
+  totals: { attempts: number; completed: number; failed: number; success_rate: string | null }
+  top_reasons: { reason: string; count: number }[]
+}
+export interface RedeemLookup {
+  code: string | null
+  sold_by_us: boolean
+  ours: { order_no: string; status: string; paid_at: string | null; delivered_at: string | null; buyer: string | null } | null
+  attempts: RedeemAttempt[]
+  vendor: { available: true; found: boolean; status: string | null; plan: string | null; env: string | null } | { available: false; reason: string } | null
+}
+export type RedeemLimitStep = 'preview' | 'preflight' | 'redeem' | 'result'
+export interface RedeemSettings {
+  maintenance: boolean
+  maintenance_en: string
+  maintenance_zh: string
+  announcement_en: string
+  announcement_zh: string
+  ip_limits: Partial<Record<RedeemLimitStep, number>>
+  defaults: Record<RedeemLimitStep, number>
+  bounds: Record<RedeemLimitStep, { min: number; max: number }>
+  caps: { announcement: number; maintenance: number }
+}
+export type RedeemSettingsPatch = Partial<Pick<RedeemSettings, 'maintenance' | 'maintenance_en' | 'maintenance_zh' | 'announcement_en' | 'announcement_zh'>> & {
+  ip_limits?: Partial<Record<RedeemLimitStep, number | null>>
+}
+
+export function createRedeemApi(c: ApiClient) {
+  const base = '/admin/procurement/redeem'
+  return {
+    attempts: (f: RedeemAttemptFilter, page: number, page_size: number) =>
+      c.get<Paginated<RedeemAttempt> & { retention_days: number }>(`${base}/attempts`, { ...f, page, page_size }),
+    stats: (days = 30) => c.get<RedeemStats>(`${base}/stats`, { days }),
+    lookup: (b: { code?: string; order_ref?: string }) => c.post<RedeemLookup>(`${base}/lookup`, b),
+    setCdk: (action: 'disable' | 'enable', code: string) =>
+      c.post<{ action: string; before: { status: string | null }; after: { status: string | null } }>(`${base}/cdk/${seg(action)}`, { code, confirm: true }),
+    settings: () => c.get<RedeemSettings>(`${base}/settings`),
+    saveSettings: (patch: RedeemSettingsPatch) => c.put<RedeemSettings>(`${base}/settings`, patch),
+  }
+}
