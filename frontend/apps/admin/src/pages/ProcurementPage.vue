@@ -594,7 +594,8 @@ onMounted(() => {
       <el-tab-pane name="cards" lazy>
         <template #label>
           {{ t('procurement.tab.cards') }}
-          <el-badge v-if="riskLevel !== 'ok'" is-dot :type="riskLevel === 'critical' ? 'danger' : 'warning'" class="tab-dot" />
+          <el-badge v-if="riskLevel !== 'ok'" is-dot :type="riskLevel === 'critical' ? 'danger' : 'warning'" class="tab-dot" :title="t(`cardPool.riskDot.${riskLevel}`)" />
+          <span v-if="riskLevel !== 'ok'" class="sr-only">{{ t(`cardPool.riskDot.${riskLevel}`) }}</span>
         </template>
         <CardsPanel @risk="(l) => (riskLevel = l)" />
       </el-tab-pane>
@@ -761,6 +762,14 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
 .bar {
   margin-bottom: 12px;
 }

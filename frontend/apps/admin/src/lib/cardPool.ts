@@ -72,3 +72,22 @@ export function switchMismatch(rule: { auto_switch_on_fail: boolean | null; max_
 export function cardLabel(id: number, last4: string | null): string {
   return /^[0-9]{4}$/.test(last4 ?? '') ? `#${id} ····${last4}` : `#${id}`
 }
+
+/** A vendor code as an i18n key segment: lower case, anything outside [a-z0-9_] becomes "_" (a dot
+ *  would walk into a nested message path). */
+export const codeKey = (code: string): string => code.toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '')
+
+/** A vendor code through a message group (`cardPool.skip`, `cardPool.cardStatus`); an unknown code
+ *  becomes "Other (code)" through `cardPool.other`, never the raw code alone. */
+export function codeText(
+  group: string,
+  code: string,
+  t: (k: string, p?: Record<string, unknown>) => string,
+  te: (k: string) => boolean,
+): string {
+  const key = `${group}.${codeKey(code)}`
+  return codeKey(code) && te(key) ? t(key) : t('cardPool.other', { code })
+}
+
+/** The plan key the schedule preview accepts (mirrors the server). */
+export const planValid = (plan: string): boolean => /^[A-Za-z0-9_.-]{1,48}$/.test(plan.trim())

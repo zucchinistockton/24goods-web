@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cardLabel, levelTag, ratePct, ruleDiff, ruleErrors, switchMismatch, usageText, type RuleForm } from '../src/lib/cardPool'
+import { cardLabel, codeKey, codeText, planValid, levelTag, ratePct, ruleDiff, ruleErrors, switchMismatch, usageText, type RuleForm } from '../src/lib/cardPool'
 
 const t = (k: string, p?: Record<string, unknown>) => `${k}${p ? JSON.stringify(p) : ''}`
 const base: RuleForm = { count_failures: true, light_max_uses: 5, pro20_max_uses: 3, select_mode: 'default', auto_switch_on_fail: true, max_auto_switches: 2, strict_select: false }
@@ -49,5 +49,29 @@ describe('card pool helpers', () => {
     expect(cardLabel(4242, '4242')).toBe('#4242 ····4242')
     expect(cardLabel(7, null)).toBe('#7')
     expect(cardLabel(7, '5378000000004242')).toBe('#7') // anything longer is dropped
+  })
+})
+
+describe('card pool code labels and plan check', () => {
+  const msgs: Record<string, string> = { 'cardPool.skip.cooling_down': 'Cooling down', 'cardPool.cardStatus.active': 'Active' }
+  const tt = (k: string, p?: Record<string, unknown>) => (k === 'cardPool.other' ? `Other (${p?.code})` : (msgs[k] ?? k))
+  const te = (k: string) => k in msgs
+  it('codeKey makes a safe key segment', () => {
+    expect(codeKey('Cooling-Down')).toBe('cooling_down')
+    expect(codeKey('a.b:c')).toBe('a_b_c')
+    expect(codeKey('..')).toBe('')
+  })
+  it('codeText translates known codes and labels unknown ones', () => {
+    expect(codeText('cardPool.skip', 'cooling_down', tt, te)).toBe('Cooling down')
+    expect(codeText('cardPool.skip', 'Cooling-Down', tt, te)).toBe('Cooling down')
+    expect(codeText('cardPool.cardStatus', 'ACTIVE', tt, te)).toBe('Active')
+    expect(codeText('cardPool.skip', 'weird_code', tt, te)).toBe('Other (weird_code)')
+    expect(codeText('cardPool.skip', '..', tt, te)).toBe('Other (..)')
+  })
+  it('planValid mirrors the server pattern', () => {
+    expect(planValid(' pro_20x ')).toBe(true)
+    expect(planValid('')).toBe(false)
+    expect(planValid('a b')).toBe(false)
+    expect(planValid('x'.repeat(49))).toBe(false)
   })
 })

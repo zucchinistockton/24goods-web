@@ -18,7 +18,7 @@ import {
   type RiskReport,
   type SchedulePreview,
 } from '../api-procurement'
-import { cardLabel, levelTag, ratePct, ruleDiff, ruleErrors, switchMismatch, usageText, type RuleForm } from '../lib/cardPool'
+import { cardLabel, codeText, levelTag, planValid, ratePct, ruleDiff, ruleErrors, switchMismatch, usageText, type RuleForm } from '../lib/cardPool'
 import { useAuthStore } from '../stores/auth'
 import { confirmBox, toastError, toastOk } from '../ui'
 
@@ -35,6 +35,9 @@ const pool = ref<CardPool | null>(null)
 const risk = ref<RiskReport | null>(null)
 const loading = ref(false)
 const poolError = ref(false)
+const suppliersError = ref(false)
+const suppliersLoaded = ref(false)
+const riskError = ref(false)
 const selected = ref<number[]>([])
 
 function fail(e: unknown) {
@@ -44,10 +47,13 @@ function fail(e: unknown) {
 const sid = () => supplierId.value || undefined
 
 async function loadRisk() {
+  riskError.value = false
   try {
     risk.value = await api.risk(sid())
     emit('risk', risk.value.level)
   } catch (e) {
+    risk.value = null
+    riskError.value = true
     fail(e)
   }
 }
@@ -72,7 +78,9 @@ onMounted(async () => {
   try {
     suppliers.value = (await api.suppliers()).items
     if (suppliers.value.length === 1) supplierId.value = suppliers.value[0].id
+    suppliersLoaded.value = true
   } catch (e) {
+    suppliersError.value = true
     fail(e)
   }
   await reload()
@@ -89,10 +97,12 @@ const flags = (c: CardPool['cards'][number]) =>
 
 // ------------------------------------------------------------------ schedule preview
 const plan = ref('')
+const planError = ref(false)
 const preview = ref<SchedulePreview | null>(null)
 const previewing = ref(false)
 async function runPreview() {
-  if (!/^[A-Za-z0-9_.-]{1,48}$/.test(plan.value.trim())) return ElMessage.error(t('cardPool.planBad'))
+  planError.value = !planValid(plan.value)
+  if (planError.value) return
   previewing.value = true
   try {
     preview.value = await api.schedule(product.value, plan.value.trim(), sid())
@@ -103,7 +113,10 @@ async function runPreview() {
     previewing.value = false
   }
 }
-const skipText = (r: string | null) => (r ? (te(`cardPool.skip.${r}`) ? t(`cardPool.skip.${r}`) : r) : t('cardPool.candidateOk'))
+const skipText = (r: string | null) => (r ? codeText('cardPool.skip', r, t, te) : t('cardPool.candidateOk'))
+const envText = (env: string) => (te(`cardPool.envLabel.${env}`) ? t(`cardPool.envLabel.${env}`) : env)
+const statusText = (s: string) => codeText('cardPool.cardStatus', s, t, te)
+const levelWord = (l: string) => t(`cardPool.risk.st.${l}`)
 
 // ------------------------------------------------------------------ rules (admins)
 const rules = ref<Partial<Record<CardProduct, CardRule>>>({})
@@ -183,19 +196,21 @@ const onSelect = (rows: unknown[]) => (selected.value = rows.map((r) => asCard(r
 <template>
   <div v-loading="loading" class="panel">
     <div class="bar">
-      <el-select v-if="suppliers.length > 1" v-model="supplierId" :placeholder="t('cardPool.supplier')" clearable style="width: 220px">
-        <el-option v-for="s in suppliers" :key="s.id" :value="s.id" :label="`${s.label} (${s.env})`" />
+      <el-select v-if="suppliers.length > 1" v-model="supplierId" :placeholder="t('cardPool.supplier')" :aria-label="t('cardPool.supplier')" clearable style="width: 220px">
+        <el-option v-for="s in suppliers" :key="s.id" :value="s.id" :label="`${s.label} (${envText(s.env)})`" />
       </el-select>
-      <el-select v-model="product" style="width: 150px">
+      <el-select v-model="product" :aria-label="t('cardPool.productLabel')" style="width: 150px">
         <el-option v-for="p in PRODUCTS" :key="p" :value="p" :label="t(`cardPool.product.${p}`)" />
       </el-select>
       <el-button :icon="Refresh" @click="reload">{{ t('cardPool.refresh') }}</el-button>
     </div>
-    <el-alert v-if="!suppliers.length" type="info" :closable="false" show-icon :title="t('cardPool.noSupplier')" />
+    <el-alert v-if="suppliersError" type="error" :closable="false" show-icon :title="t('cardPool.loadFailed')" />
+    <el-alert v-else-if="suppliersLoaded && !suppliers.length" type="info" :closable="false" show-icon :title="t('cardPool.noSupplier')" />
 
     <!-- ===================================================== risk monitor -->
     <h2 class="h">{{ t('cardPool.risk.title') }}</h2>
     <p class="muted small hint">{{ t('cardPool.risk.hint') }}</p>
+    <el-alert v-if="riskError" type="error" :closable="false" show-icon :title="t('cardPool.loadFailed')" class="gap" role="alert" />
     <template v-if="risk">
       <el-alert
         v-if="risk.level !== 'ok'"
@@ -239,7 +254,7 @@ const onSelect = (rows: unknown[]) => (selected.value = rows.map((r) => asCard(r
       <el-table :data="pool.cards" row-key="id" size="small" :empty-text="t('cardPool.pool.empty')" @selection-change="onSelect">
         <el-table-column v-if="auth.isAdmin" type="selection" width="44" />
         <el-table-column :label="t('cardPool.card')" min-width="130"><template #default="{ row }"><span class="mono">{{ cardLabel(asCard(row).id, asCard(row).last4) }}</span></template></el-table-column>
-        <el-table-column :label="t('cardPool.status')" width="100"><template #default="{ row }">{{ row.status }}</template></el-table-column>
+        <el-table-column :label="t('cardPool.status')" width="100"><template #default="{ row }"><el-tag size="small" :type="row.status === 'ACTIVE' ? 'success' : 'warning'">{{ statusText(row.status) }}</el-tag></template></el-table-column>
         <el-table-column :label="t('cardPool.balance')" width="110" align="right"><template #default="{ row }">{{ row.balance ?? '—' }}</template></el-table-column>
         <el-table-column :label="t('cardPool.light')" min-width="120"><template #default="{ row }">{{ usageText(asCard(row).usage.light, t) }}</template></el-table-column>
         <el-table-column :label="t('cardPool.pro20')" min-width="120"><template #default="{ row }">{{ usageText(asCard(row).usage.pro20, t) }}</template></el-table-column>
@@ -254,7 +269,7 @@ const onSelect = (rows: unknown[]) => (selected.value = rows.map((r) => asCard(r
         <el-table-column :label="t('cardPool.ours')" min-width="170">
           <template #default="{ row }">
             <span class="num">{{ asCard(row).ours_30d.sent }} / {{ asCard(row).ours_30d.declined }} / {{ asCard(row).ours_30d.in_flight }}</span>
-            <el-tag v-if="asCard(row).ours_30d.level !== 'ok'" size="small" :type="levelTag(asCard(row).ours_30d.level)" class="tag">{{ ratePct(asCard(row).ours_30d.rate) }}</el-tag>
+            <el-tag v-if="asCard(row).ours_30d.level !== 'ok'" size="small" :type="levelTag(asCard(row).ours_30d.level)" class="tag" :title="t('cardPool.oursLevel', { level: levelWord(asCard(row).ours_30d.level) })">{{ ratePct(asCard(row).ours_30d.rate) }}<span class="sr-only"> {{ t('cardPool.oursLevel', { level: levelWord(asCard(row).ours_30d.level) }) }}</span></el-tag>
           </template>
         </el-table-column>
       </el-table>
@@ -271,9 +286,10 @@ const onSelect = (rows: unknown[]) => (selected.value = rows.map((r) => asCard(r
     <h2 class="h gap">{{ t('cardPool.schedule.title') }}</h2>
     <p class="muted small hint">{{ t('cardPool.schedule.hint') }}</p>
     <div class="bar">
-      <el-input v-model="plan" maxlength="48" class="mono" style="width: 220px" :placeholder="t('cardPool.schedule.plan')" @keyup.enter="runPreview" />
+      <el-input v-model="plan" maxlength="48" class="mono" style="width: 220px" :placeholder="t('cardPool.schedule.plan')" :aria-label="t('cardPool.schedule.plan')" :aria-invalid="planError" @input="planError = false" @keyup.enter="runPreview" />
       <el-button :loading="previewing" @click="runPreview">{{ t('cardPool.schedule.run') }}</el-button>
     </div>
+    <p v-if="planError" class="warn small" role="alert">{{ t('cardPool.planInvalid') }}</p>
     <template v-if="preview">
       <p>
         <strong>{{ t('cardPool.schedule.pick') }}:</strong>
@@ -348,6 +364,14 @@ const onSelect = (rows: unknown[]) => (selected.value = rows.map((r) => asCard(r
 }
 .warn {
   color: var(--el-color-danger);
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
 }
 .rule {
   margin-top: 12px;
