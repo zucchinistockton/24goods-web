@@ -116,6 +116,11 @@ export const API_ERROR_CODES = [
   'price_below_cost',
   'fx_rate_missing',
   'source_options_mismatch',
+  'source_plan_mixed',
+  'variant_has_open_orders',
+  'cost_unknown',
+  'half_check_unsupported',
+  'half_check_account_new',
 ] as const
 export const CLIENT_ERROR_CODES = ['network', 'server_error', 'timeout', 'unknown'] as const
 export type ContractErrorCode = (typeof API_ERROR_CODES)[number]
