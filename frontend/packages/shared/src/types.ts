@@ -976,6 +976,48 @@ export interface DirectOrderInfo {
   state: string | null
   /** issue #29: the supplier has no card to pay with yet; the order keeps waiting (no detail) */
   waiting_for_supplier?: boolean
+  /** issue #30: the coarse step list (never a vendor code or message) */
+  progress?: DirectProgress | null
+}
+
+/** Issue #30: buyer-facing progress of a direct order or a redemption (same step model). */
+export type ProgressStepKey =
+  | 'paid'
+  | 'half_check'
+  | 'waiting_supplier'
+  | 'sent'
+  | 'queued'
+  | 'funding'
+  | 'processing'
+  | 'payment_submitted'
+  | 'completed'
+  | 'failed'
+  | 'refunded'
+  | 'attention'
+export type ProgressStepState = 'done' | 'current' | 'todo' | 'failed' | 'attention'
+export interface DirectProgressStep {
+  key: ProgressStepKey | string
+  state: ProgressStepState
+  /** ISO time (or epoch seconds for a redemption) the step was reached */
+  at: string | number | null
+}
+export interface DirectProgress {
+  step: ProgressStepKey | string
+  percent: number
+  outcome: 'active' | 'completed' | 'failed' | 'attention'
+  terminal: boolean
+  /** coarse reason KEY (declined, cancelled, refunded, expired, not_completed, review, account) */
+  reason: string | null
+  steps: DirectProgressStep[]
+  completed_at: string | number | null
+}
+/** SSE `order_progress`: the buyer's page refetches the direct info on it. */
+export interface OrderProgressEvent {
+  order_id: string
+  step: string
+  percent: number
+  outcome: string
+  reason: string | null
 }
 
 /** issue #27: the half-price eligibility check (`POST /half-checks`). Never carries the session. */

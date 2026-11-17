@@ -1,4 +1,13 @@
-import type { AfterSales, AgentStatus, CardOtpEvent, Conversation, Order, StreamMessageEvent, TypingEvent } from '../types'
+import type {
+  AfterSales,
+  AgentStatus,
+  CardOtpEvent,
+  Conversation,
+  Order,
+  OrderProgressEvent,
+  StreamMessageEvent,
+  TypingEvent,
+} from '../types'
 
 /** Minimal surface of EventSource we rely on (lets tests inject a fake). */
 export interface EventSourceLike {
@@ -22,6 +31,8 @@ export interface RealtimeHandlers {
   typing?: (e: TypingEvent) => void
   /** v12 M3: a 3DS one-time code for one of the buyer's own cards (ephemeral, never stored). */
   card_otp?: (e: CardOtpEvent) => void
+  /** issue #30: a direct order's progress step changed (coarse; refetch the direct info). */
+  order_progress?: (e: OrderProgressEvent) => void
   /** Called every `pollIntervalMs` while SSE is unavailable (fallback), first call immediately. */
   poll?: () => void | Promise<void>
   /** Called when SSE (re)opens after a disconnect: catch up anything missed (e.g. messages?after_id). */
@@ -44,7 +55,7 @@ export interface RealtimeOptions {
   random?: () => number
 }
 
-const EVENTS = ['message', 'conversation', 'order', 'agent_status', 'after_sales', 'typing', 'card_otp'] as const
+const EVENTS = ['message', 'conversation', 'order', 'agent_status', 'after_sales', 'typing', 'card_otp', 'order_progress'] as const
 
 function defaultFactory(): EventSourceFactory | null {
   const ES = (globalThis as { EventSource?: typeof EventSource }).EventSource
@@ -184,6 +195,9 @@ export class RealtimeClient {
         break
       case 'card_otp':
         h.card_otp?.(data as CardOtpEvent)
+        break
+      case 'order_progress':
+        h.order_progress?.(data as OrderProgressEvent)
         break
     }
   }
