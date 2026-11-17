@@ -103,8 +103,9 @@ async def create_product(
     request: Request,
     admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
+    res: Resources = Depends(get_res),
 ) -> dict:
-    p = await product_svc.create(db, body, admin, client_ip(request))
+    p = await product_svc.create(db, body, admin, client_ip(request), res.settings)
     return await product_svc.view(db, p)
 
 
@@ -115,8 +116,9 @@ async def patch_product(
     request: Request,
     admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
+    res: Resources = Depends(get_res),
 ) -> dict:
-    p = await product_svc.patch(db, product_id, body, admin, client_ip(request))
+    p = await product_svc.patch(db, product_id, body, admin, client_ip(request), res.settings)
     return await product_svc.view(db, p)
 
 
@@ -180,8 +182,9 @@ async def bulk_products(
     request: Request,
     admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
+    res: Resources = Depends(get_res),
 ) -> dict:
-    return {"updated": await product_svc.bulk(db, body, admin, client_ip(request))}
+    return {"updated": await product_svc.bulk(db, body, admin, client_ip(request), res.settings)}
 
 
 @router.delete(

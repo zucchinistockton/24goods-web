@@ -104,7 +104,11 @@ def create_delivery_app(ctx: DeliveryContext) -> Starlette:
                 return _err(404, "not_found", "Order not found")
             tenant_id = order.tenant_id
             await set_tenant(db, tenant_id)
-            if order.delivery_mode not in CODE_MODES or order.status not in REVEALABLE:
+            if (
+                order.delivery_mode not in CODE_MODES
+                or order.delivery_mode == "upstream_vcc"  # owner decision 2026-11-17: never shown
+                or order.status not in REVEALABLE
+            ):
                 log.warning("reveal refused: order %s in state %s", order.id, order.status)
                 await audit(
                     db,

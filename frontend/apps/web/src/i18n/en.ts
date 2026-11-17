@@ -255,15 +255,6 @@ export default {
     resupply: 'Supply a fresh session',
     resupplied: 'Received. We will continue with your order.',
   },
-  cardOtp: {
-    title: 'Verification codes for this card',
-    none: 'When a shop asks for a one-time code (3-D Secure) while you pay with this card, it appears here within a few seconds. Keep this page open while you pay.',
-    check: 'Check for a code',
-    expiresIn: 'Disappears in {time}',
-    copy: 'Copy the code',
-    copied: 'Copied',
-    copyFailed: 'Could not copy. Type the code by hand.',
-  },
   twoFactor: {
     title: 'Two-factor login',
     cellHint: 'Ask for a code from your phone when signing in',

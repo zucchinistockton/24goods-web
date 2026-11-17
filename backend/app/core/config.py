@@ -67,6 +67,11 @@ class Settings(BaseSettings):
     session_ttl_buyer_s: int = 7 * 24 * 3600
     session_ttl_staff_s: int = 12 * 3600
 
+    # --- virtual cards (owner decision 2026-11-17): keep false ---
+    # False = no new upstream_vcc sales anywhere (admin create/activate, storefront, every order
+    # path). Card data is never revealed to buyers regardless of this flag. Dormant engine only.
+    vcc_sales_enabled: bool = False
+
     # --- tenancy ---
     default_tenant_slug: str = "platform"
 

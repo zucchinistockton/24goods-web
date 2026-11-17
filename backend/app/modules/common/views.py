@@ -321,7 +321,10 @@ def order_view(
         "delivery_info": delivery_info(product, lang),
         "manual_delivery": manual,
         "can_reveal": bool(
-            viewer_is_owner and o.delivery_mode in CODE_MODES and o.status in REVEALABLE
+            viewer_is_owner
+            and o.delivery_mode in CODE_MODES
+            and o.delivery_mode != "upstream_vcc"  # owner decision 2026-11-17: never shown
+            and o.status in REVEALABLE
         ),
     }
 

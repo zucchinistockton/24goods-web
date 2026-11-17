@@ -33,7 +33,6 @@ import PayChannelPicker from '../components/PayChannelPicker.vue'
 import { cancelPending, payCheckout, payOrder } from '../lib/orderActions'
 import { dropAccessCode, readAccessCode } from '../lib/attribution'
 import { openSupport as support } from '../lib/support'
-import CardOtpPanel from '../components/CardOtpPanel.vue'
 import DirectOrderPanel from '../components/DirectOrderPanel.vue'
 import { useRealtimeStore } from '../stores/realtime'
 import { useSiteStore } from '../stores/site'
@@ -488,7 +487,6 @@ function gotCode() {
           @hide="secrets = []"
           @confirm="confirmReceived"
         />
-        <CardOtpPanel v-if="order.delivery_mode === 'upstream_vcc' && ['delivered', 'completed'].includes(order.status)" :order-id="order.id" />
         <template v-if="order.manual_delivery?.attachment && attachmentUrl">
           <button
             v-if="order.manual_delivery.attachment.kind === 'image'"

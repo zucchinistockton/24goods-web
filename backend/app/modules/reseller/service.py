@@ -40,6 +40,7 @@ from app.models import (
 )
 from app.modules.catalog.service import apply_search, escape_like, prepare_search
 from app.modules.chat import service as chat
+from app.modules.common.vcc import sellable
 from app.modules.common.views import iso
 from app.modules.content.site import tenant_settings
 from app.modules.orders import cancel as cancel_svc
@@ -448,7 +449,9 @@ async def patch_me(
 async def list_products(
     db: AsyncSession, r: Reseller, rcfg: dict[str, Any], page: Page, q: str | None, lang: str
 ) -> dict[str, Any]:
-    stmt = select(Product).where(Product.tenant_id == r.tenant_id, Product.status == "active")
+    stmt = select(Product).where(
+        Product.tenant_id == r.tenant_id, Product.status == "active", sellable()
+    )
     stmt = apply_search(stmt, q)
     await prepare_search(db, q)
     total = await db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
@@ -526,7 +529,10 @@ async def put_product(
 ) -> None:
     p = await db.scalar(
         select(Product.id).where(
-            Product.id == product_id, Product.tenant_id == r.tenant_id, Product.status == "active"
+            Product.id == product_id,
+            Product.tenant_id == r.tenant_id,
+            Product.status == "active",
+            sellable(),
         )
     )
     if p is None:

@@ -451,3 +451,14 @@ Decision:
 
 Consequences: a stolen password alone no longer opens an enrolled account. A lost phone is covered by recovery codes, then by an admin reset; an admin who loses both needs a database-level reset (`DELETE FROM user_totp WHERE user_id = …` as the owner role). Accepted residual risks: (1) one-tap and Google-linked accounts enrol without a password, so a stolen session of such an account can enrol the thief's device and lock the owner out until an admin reset; (2) a person who knows the password can use up the account's ten wrong codes per hour and so block its second step for that hour; (3) rotating `APP_SETTINGS_KEY` invalidates every sealed secret and recovery hash (no key id in the blob): rotation needs a reset of all enrolments; (4) the account's API tokens stay valid when 2FA is turned on (they are admin-issued and scope-limited). "Require 2FA for staff" is not built (it needs a forced-enrolment flow). The migration id sorts before the v12 chain: when v12 reaches `main`, `0023_procurement` must revise `0022a_user_totp`.
 
+### ADR-040: Virtual cards are not sold and card data is never shown (owner decision 2026-11-17)
+
+Context: buyers used the cards sold under `upstream_vcc` (review-v12 §17) for $0 authorisations and card-binding checks, which costs vendor fees and carries risk; the owner does not want full card details shown to buyers at all.
+
+Decision:
+- New setting `vcc_sales_enabled` (default false, env `APP_VCC_SALES_ENABLED`) gates every sale: admin create/activate, storefront visibility and all order-creating paths answer 422 `vcc_not_sellable`.
+- Independently of the setting, a buyer can never reveal a card: `reveal_for`, `can_reveal` and the delivery worker's internal reveal each refuse `upstream_vcc` (defence in depth). 3DS codes are dropped on arrival and `GET /orders/{ref}/card-otp` returns an empty list.
+- The engine, the sealed vault path and staff views (mask only) stay, so the dormant code remains testable and existing jobs can be voided or refunded.
+
+Consequences: no new card revenue; an existing paid card order is delivered to the vault but the buyer must be refunded or served by staff outside the app. Turning sales back on is a config change but would still show nothing to the buyer until the reveal refusal is removed in code and re-reviewed (§1.1).
+

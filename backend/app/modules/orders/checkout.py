@@ -39,6 +39,7 @@ from app.modules.chat.messages import post_system
 from app.modules.common.buyerinput import is_enabled, normalize_value
 from app.modules.common.modes import STOCKED_MODES
 from app.modules.common.orderviews import channel_totals_view, order_views
+from app.modules.common.vcc import ensure_sellable, vcc_sales_enabled
 from app.modules.common.views import iso
 from app.modules.content.site import tenant_settings
 from app.modules.orders.service import (
@@ -151,6 +152,8 @@ async def quote_cart(
         max_qty = MAX_QTY if s is None else min(MAX_QTY, s)
         if p.delivery_mode == "upstream_direct" and not variant_reason:
             variant_reason = "direct_buy_now_only"  # needs the buyer's session: buy-now only
+        if p.delivery_mode == "upstream_vcc" and not vcc_sales_enabled():
+            variant_reason = "not_sellable"  # owner decision 2026-11-17
         if p.status != "active" or variant_reason:
             max_qty = 0
         reason = (
@@ -347,6 +350,8 @@ async def create_checkout(
     }
     if len(products) != len(ids):
         raise NotFound("Product not found")
+    for p in products.values():
+        ensure_sellable(settings, p.delivery_mode)
     if len({p.currency for p in products.values()}) > 1:
         raise Validation("All items must use the same currency")
     # variants: a product with an active variant needs one per line (422), foreign ids are 404
@@ -585,6 +590,8 @@ async def pay_checkout(
         raise InvalidState("Checkout is not awaiting payment")
     if co.expires_at is not None and co.expires_at <= utcnow():
         raise InvalidState("Checkout has expired")
+    for o in orders:  # no virtual card is paid for any more (owner decision 2026-11-17)
+        ensure_sellable(res.settings, o.delivery_mode)
     usdt = is_usdt(channel)
     if usdt and not res.bepusdt.configured:
         raise Unavailable("Payment channel not configured")

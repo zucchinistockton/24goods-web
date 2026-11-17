@@ -23,6 +23,7 @@ from app.modules.catalog import variants as variants_svc
 from app.modules.chat.messages import insert_message, post_system
 from app.modules.chat.schemas import QuoteIn
 from app.modules.common.modes import MAX_UPSTREAM_QTY, UPSTREAM_MODES
+from app.modules.common.vcc import ensure_sellable
 from app.modules.common.views import iso
 from app.modules.orders import service as orders
 
@@ -96,6 +97,7 @@ async def create_quote(
         product = await get_scoped(db, Product, body.product_id, conv.tenant_id)
         if product is None:
             raise NotFound("Product not found")
+        ensure_sellable(settings, product.delivery_mode)
         if product.delivery_mode == "upstream_direct":
             raise Validation(
                 "A product that needs the buyer's account session cannot be quoted",

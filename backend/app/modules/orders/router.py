@@ -11,11 +11,10 @@ from app.core.resources import Resources
 from app.core.storefront import Storefront, get_storefront
 from app.models import User
 from app.modules.challenges import service as challenge_service
-from app.modules.common.views import REVEALABLE
 from app.modules.orders import cancel as cancel_svc
-from app.modules.orders import card_otp, service
 from app.modules.orders import direct as direct_svc
 from app.modules.orders import expedite as expedite_svc
+from app.modules.orders import service
 from app.modules.orders.riskctl import guard_order_create
 from app.modules.orders.schemas import BuyerCancelIn, BuyNowIn, DirectSessionIn, InputIn, PayIn
 
@@ -141,21 +140,16 @@ async def card_otp_codes(
     db: AsyncSession = Depends(get_db),
     res: Resources = Depends(get_res),
 ) -> JSONResponse:
-    """Live 3DS / one-time codes of the buyer's own virtual card(s), at most 5 minutes old. The
-    same codes are pushed on the buyer's SSE stream as ``card_otp``; this is for a page opened
-    late. Never cached, never stored in the database."""
+    """Always empty (owner decision 2026-11-17: no 3DS code reaches a buyer). Kept so old clients
+    do not break."""
     await enforce(res.redis, "order:card-otp", str(user.id), 60, 60)
     order = await service.get_owned(db, ref, user)
     await db.commit()
     if order.delivery_mode != "upstream_vcc":
         raise NotFound("Order not found")
-    if order.status not in REVEALABLE:  # a code is only ever shown once the card is the buyer's
-        items: list = []
-    else:
-        items = await card_otp.pending_for(res.redis, order.id)
-    return JSONResponse(
-        {"items": items}, headers={"Cache-Control": "no-store", "Pragma": "no-cache"}
-    )
+    # owner decision 2026-11-17: no 3DS code ever reaches a buyer; the route stays (empty) so old
+    # clients do not break
+    return JSONResponse({"items": []}, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
 
 
 @router.get("/{ref}/direct", response_model=None)

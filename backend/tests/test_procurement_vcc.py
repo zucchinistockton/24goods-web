@@ -25,9 +25,16 @@ WITH_RECHARGE = {**OPEN, "recharge_amount": "10"}
 async def vup(env):
     u = Up(env)
     u.mode, u.kind = "upstream_vcc", "vcc"
+    # the dormant engine stays testable (owner decision 2026-11-17): storefront reads use the
+    # process-wide settings, order paths the app's; switch both on and restore afterwards
+    from app.core.config import get_settings
+
+    g = get_settings()
+    env.res.settings.vcc_sales_enabled = g.vcc_sales_enabled = True
     await u.start()
     yield u
     await u.close()
+    env.res.settings.vcc_sales_enabled = g.vcc_sales_enabled = False
 
 
 async def _zovo(up: Up, vendor: MockZovo, params: dict, code: str = "zovocard", priority: int = 10):
@@ -100,14 +107,18 @@ async def test_card_is_bought_sealed_and_revealed(env, vup):
     assert job.card_mask == f"{card['card_number'][:6]}****{card['card_number'][-4:]}"
     assert job.cost == Decimal("21.5") and job.currency == "USD"  # 20 + the 1.50 open fee
     assert vendor.card_opens == 1 and _posts(vendor, "/cards/recharge") == []
-    # delivery reveals the one sealed secret: pan----expiry----cvv (buyer API unchanged)
-    cards = (await buyer.post(f"/api/v1/orders/{order['id']}/reveal")).json()["cards"]
-    assert [c["code"] for c in cards] == ["----".join(
-        (card["card_number"], card["expire"], card["cvv"])
-    )]  # fmt: skip
-    # a second reveal answers the same (idempotent for the owner), and nobody else can reveal
+    # owner decision 2026-11-17: the card is fulfilled and sealed, but NEVER revealed to a buyer
+    rev = await buyer.post(f"/api/v1/orders/{order['id']}/reveal")
+    assert rev.status_code == 409 and "cards" not in rev.json()
+    pan, cvv = card["card_number"], card["cvv"]
+    assert pan not in rev.text and cvv not in rev.text
+    view = (await buyer.get(f"/api/v1/orders/{order['id']}")).json()
+    assert view["can_reveal"] is False and pan not in str(view)
     other, _ = await env.login("buyer")
     assert (await other.post(f"/api/v1/orders/{order['id']}/reveal")).status_code in (403, 404)
+    # the secret exists only sealed in the vault
+    assert await env.scalar("SELECT count(*) FROM card_stock WHERE product_id = :p",
+                            p=vup.product.id) >= 1  # fmt: skip
 
 
 # ------------------------------------------------------------------ ambiguity (same key)
@@ -429,7 +440,7 @@ def _otp_event(card_id: str, otp: str = OTP, matrix: str = "MI1") -> dict:
             "masked_card_no": "411111******1111", "merchant_name": f"Shop {otp}"}  # fmt: skip
 
 
-async def test_3ds_code_reaches_only_the_card_owner_and_is_never_stored(env, vup, caplog):
+async def test_3ds_code_is_never_forwarded_stored_or_published(env, vup, caplog):
     from app.modules.realtime.publish import user_channel
 
     caplog.set_level(logging.DEBUG)
@@ -439,43 +450,29 @@ async def test_3ds_code_reaches_only_the_card_owner_and_is_never_stored(env, vup
     vendor = MockZovo()
     await _zovo(vup, vendor, OPEN)
     buyer, user, order = await _deliver_card(env, vup, vendor)
-    # not delivered yet: a code for a card the buyer does not hold yet is dropped
-    await vup.run()
-    job = await _job(vup, order)
-    c = env.client(csrf=False)
-    raw, h = _signed(_otp_event(job.upstream_ref, matrix="MI0"))
-    assert (await c.post("/api/v1/webhooks/zovocard", content=raw, headers=h)).status_code == 200
-    assert (await buyer.get(f"/api/v1/orders/{order['id']}/card-otp")).json()["items"] == []
     await _deliver(env, vup, order, buyer)
+    job = await _job(vup, order)
     pubsub = env.s.redis.pubsub()
     await pubsub.subscribe(user_channel(user.id))
     await pubsub.get_message(timeout=1)  # the subscribe ack
+    c = env.client(csrf=False)
     raw, h = _signed(_otp_event(job.upstream_ref))
-    for _ in range(2):  # at-least-once delivery: forwarded once
+    for _ in range(2):
         assert (
             await c.post("/api/v1/webhooks/zovocard", content=raw, headers=h)
         ).status_code == 200
     r = await buyer.get(f"/api/v1/orders/{order['id']}/card-otp")
-    assert r.headers["cache-control"].startswith("no-store")
-    (item,) = r.json()["items"]
-    assert item["otp"] == OTP and 0 < item["expires_in"] <= 300 and "****" in item["card"]
-    msg = await pubsub.get_message(timeout=2)
-    assert msg is not None and OTP in msg["data"].decode() and "card_otp" in msg["data"].decode()
-    assert (
-        await env.scalar("SELECT count(*) FROM audit_log WHERE action = 'card.otp_forwarded'") == 1
-    )
+    assert r.status_code == 200 and r.json()["items"] == []  # route kept, always empty
+    assert await pubsub.get_message(timeout=1) is None  # nothing published
     await pubsub.aclose()
-    # another buyer cannot read it, and an unknown order is a 404
-    other, _ = await env.login("buyer")
-    assert (await other.get(f"/api/v1/orders/{order['id']}/card-otp")).status_code == 404
-    # the code is in no table, no log line, no outbox payload
+    assert (
+        await env.scalar("SELECT count(*) FROM audit_log WHERE action = 'card.otp_forwarded'") == 0
+    )
     for table in ("supplier_events", "audit_log", "outbox", "procurement_jobs", "messages"):
         sql = f"SELECT count(*) FROM {table} WHERE row_to_json({table})::text LIKE :c"  # noqa: S608
         assert await env.scalar(sql, c=f"%{OTP}%") == 0, table
     assert OTP not in caplog.text
-    # Redis keeps it only briefly (TTL <= 5 min)
-    (key,) = [k async for k in env.s.redis.scan_iter(match="otp3ds:*")]
-    assert 0 < await env.s.redis.ttl(key) <= 300
+    assert [k async for k in env.s.redis.scan_iter(match="otp3ds:*")] == []  # nothing stored
 
 
 async def test_3ds_code_for_an_unknown_card_is_dropped(env, vup):
@@ -517,8 +514,8 @@ async def test_manual_fulfil_seals_a_card_like_an_automatic_one(env, vup):
     assert r.json()["card_mask"] == "411111****1111" and pan not in r.text
     await env.drain()
     assert await _status(buyer, order) == "delivered"
-    cards = (await buyer.post(f"/api/v1/orders/{order['id']}/reveal")).json()["cards"]
-    assert [c["code"] for c in cards] == [f"{pan}----08/31----123"]
+    rev = await buyer.post(f"/api/v1/orders/{order['id']}/reveal")  # never shown (2026-11-17)
+    assert rev.status_code == 409 and pan not in rev.text
     for table in ("audit_log", "outbox", "procurement_jobs"):
         sql = f"SELECT count(*) FROM {table} WHERE row_to_json({table})::text LIKE :c"  # noqa: S608
         assert await env.scalar(sql, c=f"%{pan}%") == 0, table
@@ -528,6 +525,7 @@ async def test_card_sources_and_products_are_validated_server_side(env):
     from tests.test_procurement_v12 import _create
 
     admin, _ = await env.login("admin")
+    env.res.settings.vcc_sales_enabled = True  # dormant engine under test (2026-11-17)
     sid = (await _create(admin))["id"]
     # a virtual-card product: the separator is fixed and a label set is always present
     r = await admin.post(

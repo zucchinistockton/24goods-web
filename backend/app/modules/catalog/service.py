@@ -19,6 +19,7 @@ from app.models import AgentStatus, CardStock, Product, User
 from app.modules.catalog import sorting, upstream, variants
 from app.modules.catalog.categories import disabled_slugs
 from app.modules.common.modes import UPSTREAM_MODES
+from app.modules.common.vcc import sellable, vcc_sales_enabled
 from app.modules.common.views import iso, product_summary, product_view
 from app.modules.content.site import tenant_settings
 from app.modules.reseller.pricing import Pricer, reprice
@@ -101,7 +102,7 @@ async def list_products(
     storefront: Storefront | None = None,
     sort: str | None = None,
 ) -> dict:
-    stmt = select(Product).where(Product.status == "active")
+    stmt = select(Product).where(Product.status == "active", sellable())
     ts = await tenant_settings(db, tenant_id)
     pricer = await Pricer.load(db, storefront)
     if pricer is not None and pricer.hidden_ids():  # products this reseller hides
@@ -139,6 +140,8 @@ async def product_detail(
     storefront: Storefront | None = None,
 ) -> dict:
     p = await get_active_product(db, product_id)
+    if p.delivery_mode == "upstream_vcc" and not vcc_sales_enabled():
+        raise NotFound("Product not found")
     pricer = await Pricer.load(db, storefront)
     if pricer is not None and pricer.is_hidden(p.id):
         raise NotFound("Product not found")
@@ -175,6 +178,7 @@ SELECT p.id FROM products p
 LEFT JOIN co ON co.product_id = p.id
 LEFT JOIN s30 ON s30.product_id = p.id
 WHERE p.tenant_id = :tid AND p.status = 'active'
+  AND (:vcc_ok OR p.delivery_mode <> 'upstream_vcc')
   AND NOT (p.id = ANY(:excl))
   AND NOT (p.category = ANY(:dis))
   AND (p.delivery_mode = 'manual' OR EXISTS (
@@ -228,7 +232,7 @@ async def products_by_ids(
     """Active products in the order of ``ids`` (unknown / draft / archived ids are skipped)."""
     if not ids:
         return []
-    stmt = select(Product).where(Product.id.in_(ids), Product.status == "active")
+    stmt = select(Product).where(Product.id.in_(ids), Product.status == "active", sellable())
     if hide_disabled and (hidden := await disabled_slugs(db, tenant_id)):
         stmt = stmt.where(Product.category.not_in(hidden))
     rows = {p.id: p for p in await db.scalars(stmt)}
@@ -276,6 +280,7 @@ async def recommended(
                 "ctx": ctx,
                 "excl": [for_id] if for_id else [],
                 "dis": await disabled_slugs(db, tenant_id),
+                "vcc_ok": vcc_sales_enabled(),
                 "lim": limit,
             },
         )

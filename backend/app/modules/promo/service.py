@@ -185,13 +185,17 @@ async def lines_for(
     """Lines (product_id, base/variant price*qty) for ``POST /promo/validate``;
     unknown/inactive -> 404."""
     from app.modules.catalog import variants as variants_svc
+    from app.modules.common.vcc import sellable
 
     ids = list({pid for pid, _q, _v in items})
     prods = {
         p.id: p
         for p in await db.scalars(
             select(Product).where(
-                Product.id.in_(ids), Product.tenant_id == tenant_id, Product.status == "active"
+                Product.id.in_(ids),
+                Product.tenant_id == tenant_id,
+                Product.status == "active",
+                sellable(),
             )
         )
     }
