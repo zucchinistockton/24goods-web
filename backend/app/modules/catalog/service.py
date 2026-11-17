@@ -16,8 +16,9 @@ from app.core.deps import Page
 from app.core.errors import NotFound, Validation
 from app.core.storefront import Storefront
 from app.models import AgentStatus, CardStock, Product, User
-from app.modules.catalog import sorting, variants
+from app.modules.catalog import sorting, upstream, variants
 from app.modules.catalog.categories import disabled_slugs
+from app.modules.common.modes import UPSTREAM_MODES
 from app.modules.common.views import iso, product_summary, product_view
 from app.modules.content.site import tenant_settings
 from app.modules.reseller.pricing import Pricer, reprice
@@ -41,6 +42,17 @@ async def stock_counts(db: AsyncSession, product_ids: Iterable[uuid.UUID]) -> di
     counts = {pid: 0 for pid in ids}
     counts.update({pid: int(n) for pid, n in rows.all()})
     return counts
+
+
+async def product_stock(db: AsyncSession, products: Iterable[Product]) -> dict[uuid.UUID, int]:
+    """Numeric stock per product: pool cards for auto_card, the supplier availability cap for
+    upstream_cdk (review-v12); manual products are not in the result (manual_stock applies)."""
+    ps = list(products)
+    out = await stock_counts(db, [p.id for p in ps if p.delivery_mode == "auto_card"])
+    up = [p.id for p in ps if p.delivery_mode in UPSTREAM_MODES]
+    if up:
+        out.update(await upstream.product_stock(db, up))
+    return out
 
 
 def claimable() -> tuple:
@@ -106,7 +118,7 @@ async def list_products(
     if q and q.strip():
         order.insert(0, func.word_similarity(q.strip().lower(), Product.search_text).desc())
     rows = (await db.scalars(stmt.order_by(*order).offset(page.offset).limit(page.page_size))).all()
-    stock = await stock_counts(db, [p.id for p in rows if p.delivery_mode == "auto_card"])
+    stock = await product_stock(db, rows)
     outs = [reprice(product_summary(p, lang, stock.get(p.id), ts), p, pricer) for p in rows]
     await variants.decorate(db, tenant_id, list(zip(rows, outs, strict=True)), lang, ts, pricer)
     return page.wrap(outs, int(total))
@@ -130,7 +142,7 @@ async def product_detail(
     pricer = await Pricer.load(db, storefront)
     if pricer is not None and pricer.is_hidden(p.id):
         raise NotFound("Product not found")
-    stock = (await stock_counts(db, [p.id])).get(p.id) if p.delivery_mode == "auto_card" else None
+    stock = (await product_stock(db, [p])).get(p.id)
     ts = await tenant_settings(db, tenant_id)
     out = reprice(product_view(p, lang, stock, ts), p, pricer)
     await variants.decorate(db, tenant_id, [(p, out)], lang, ts, pricer)
@@ -167,7 +179,12 @@ WHERE p.tenant_id = :tid AND p.status = 'active'
   AND NOT (p.category = ANY(:dis))
   AND (p.delivery_mode = 'manual' OR EXISTS (
         SELECT 1 FROM card_stock cs WHERE cs.product_id = p.id AND cs.status = 'available'
-          AND (cs.expires_at IS NULL OR cs.expires_at > now())))
+          AND (cs.expires_at IS NULL OR cs.expires_at > now()))
+       OR (p.delivery_mode IN ('upstream_cdk', 'upstream_vcc', 'upstream_direct') AND EXISTS (
+        SELECT 1 FROM supplier_offers so JOIN suppliers su ON su.id = so.supplier_id
+        WHERE so.product_id = p.id AND so.enabled AND so.last_check_ok
+          AND so.kind IN ('cdk', 'vcc', 'direct')
+          AND su.enabled AND NOT su.breaker_open)))
 ORDER BY (3 * (p.category IN (SELECT category FROM ctx))::int
           + 2 * coalesce(co.n, 0)
           + ln(1 + coalesce(s30.n, 0))
@@ -218,7 +235,7 @@ async def products_by_ids(
     pricer = await Pricer.load(db, storefront)
     if pricer is not None:
         rows = {i: p for i, p in rows.items() if not pricer.is_hidden(i)}
-    stock = await stock_counts(db, [p.id for p in rows.values() if p.delivery_mode == "auto_card"])
+    stock = await product_stock(db, rows.values())
     ts = await tenant_settings(db, tenant_id)
     kept = [i for i in ids if i in rows]
     outs = [

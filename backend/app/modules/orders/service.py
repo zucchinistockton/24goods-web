@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.core import accesscode
 from app.core.audit import audit
 from app.core.config import Settings
+from app.core.credvault import CredentialSealer
 from app.core.db import tenant_session
 from app.core.deps import Page
 from app.core.errors import (
@@ -48,7 +49,7 @@ from app.models import (
     Tenant,
     User,
 )
-from app.modules.catalog import variants
+from app.modules.catalog import upstream, variants
 from app.modules.catalog.service import claimable, get_active_product
 from app.modules.chat import service as chat
 from app.modules.chat.messages import (
@@ -58,9 +59,11 @@ from app.modules.chat.messages import (
     post_system,
 )
 from app.modules.common.buyerinput import normalize_value
+from app.modules.common.modes import CODE_MODES, UPSTREAM_MODES
 from app.modules.common.orderviews import latest_tickets, one_view, order_views  # noqa: F401
 from app.modules.common.views import REVEALABLE, order_card_payload
 from app.modules.content.site import tenant_settings
+from app.modules.orders import direct as direct_svc
 from app.modules.orders.events import add_event, snapshot
 from app.modules.payments import usdt as usdt_svc
 from app.modules.payments.channels import channel_cfg, entry_cfg, is_usdt, split_amount
@@ -297,12 +300,22 @@ async def create_order(
     reseller_id: uuid.UUID | None = None,
     reseller_markup_minor: int = 0,
     variant: ProductVariant | None = None,
+    direct: direct_svc.DirectSeal | None = None,
+    cred_sealer: CredentialSealer | None = None,
 ) -> tuple[Order, Message | None]:
     """Create a pending order. ``amount_minor`` is the SUBTOTAL (storefront markup included):
     the promo discount is subtracted and the channel fee added here, server-side
     (``fee = ceil((subtotal - discount) * permille / 1000)``); the order stores the applied
     rate. The one-time plaintext access code is left on ``order.access_code_plain``
     (never persisted, never logged)."""
+    if (
+        delivery_mode == "upstream_direct"
+        and kind == "goods"
+        and (direct is None or cred_sealer is None or qty != 1)
+    ):
+        # an order for a supplier-performed subscription is never created without the buyer's
+        # sealed session (every caller other than buy-now has none)
+        raise Validation("This product needs the account session", code="session_required")
     if enforce_cap:
         await enforce_payables_cap(db, settings, buyer)
     stock_reserved = 0
@@ -313,6 +326,10 @@ async def create_order(
             )
         else:
             stock_reserved = await reserve_manual_stock(db, buyer.tenant_id, product_id, qty)
+    elif product_id is not None and delivery_mode in UPSTREAM_MODES and kind == "goods":
+        # bought per unit from a supplier: no local stock to lock or reserve (review-v12);
+        # only the cached availability and the per-order cap are checked
+        await upstream.require_upstream_stock(db, product_id, variant.id if variant else None, qty)
     elif product_id is not None and delivery_mode == "auto_card" and kind == "goods":
         # lock order: buyer row (above) -> product row -> promo; same-row relock is a no-op
         await lock_manual_products(db, buyer.tenant_id, [product_id])
@@ -366,6 +383,8 @@ async def create_order(
     )
     db.add(order)
     await db.flush()
+    if direct is not None and cred_sealer is not None:
+        await direct_svc.store(db, cred_sealer, order, direct)  # sealed, never plaintext
     order.access_code_plain = code  # type: ignore[attr-defined]
     await add_event(db, order, None, "pending_payment", actor_id=buyer.id, reason="created")
     await audit(
@@ -392,6 +411,7 @@ async def create_order(
                 else {}
             ),
             **({"buyer_input": True} if buyer_input else {}),  # never the value
+            **({"direct_session": True} if direct is not None else {}),  # never the value
         },
     )
     msg = None
@@ -420,8 +440,17 @@ async def buy_now(
     promo_code: str | None = None,
     storefront: Storefront | None = None,
     variant_id: uuid.UUID | None = None,
+    session: str | None = None,
+    cred_sealer: CredentialSealer | None = None,
+    redis: Any = None,
 ) -> tuple[Order, Message | None]:
     product = await get_active_product(db, product_id)
+    if product.delivery_mode == "upstream_direct" and storefront is not None:
+        # a reseller storefront never takes a buyer's account session: the supplier secrets and
+        # the funding card belong to the platform
+        raise Validation(
+            "This product is not sold on reseller storefronts", code="direct_not_on_storefront"
+        )
     pricer = await Pricer.load(db, storefront)
     if pricer is not None and pricer.is_hidden(product.id):
         raise NotFound("Product not found")
@@ -432,6 +461,20 @@ async def buy_now(
     markup = pricer.markup(product, base) * qty if pricer else 0
     subtotal = unit * qty
     value = normalize_value(product.buyer_input, buyer_input)
+    direct = None
+    if product.delivery_mode == "upstream_direct":
+        # the buyer's account session: validated and sealed here, kept OUT of buyer_input
+        direct = await direct_svc.prepare(
+            db,
+            cred_sealer,
+            redis,
+            settings.env == "prod",
+            product_id=product.id,
+            variant_id=variant.id if variant else None,
+            qty=qty,
+            session=session,
+        )
+    del session
     if (
         product.delivery_mode == "auto_card"
         and await available_stock(db, product.id, variant.id if variant else None) < qty
@@ -481,6 +524,8 @@ async def buy_now(
         reseller_markup_minor=markup,
         enforce_cap=False,  # done above, before the promo lock
         variant=variant,
+        direct=direct,
+        cred_sealer=cred_sealer,
     )
     if ev is not None:
         await promo_svc.reserve(db, ev, buyer, order_id=order.id, ip=ip)
@@ -806,7 +851,7 @@ async def reveal_for(res: Resources, order: Order, buyer_id: uuid.UUID) -> list[
     user = SimpleNamespace(id=buyer_id)
     if not (
         order.buyer_id == buyer_id
-        and order.delivery_mode == "auto_card"
+        and order.delivery_mode in CODE_MODES
         and order.status in REVEALABLE
     ):
         raise InvalidState("Nothing to reveal for this order")

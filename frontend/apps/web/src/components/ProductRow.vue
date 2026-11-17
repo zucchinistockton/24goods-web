@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ProductThumb } from '@24goods/shared/ui'
-import { formatNumber, moneyParts, type ProductSummary } from '@24goods/shared'
+import { formatNumber, isInstantMode, moneyParts, type ProductSummary } from '@24goods/shared'
 import { afterSalesLabel } from '../lib/afterSales'
 import { isSoldOut } from '../lib/stock'
 
@@ -21,7 +21,7 @@ const as = computed(() => afterSalesLabel(props.product?.after_sales_hours, prop
       <div class="prow-body">
         <div class="prow-title">{{ product.title }}</div>
         <div class="prow-badges">
-          <span :class="product.delivery_mode === 'auto_card' ? 'badge-instant' : 'badge-manual'">{{
+          <span :class="isInstantMode(product.delivery_mode) ? 'badge-instant' : 'badge-manual'">{{
             t(`deliveryMode.${product.delivery_mode}`)
           }}</span>
           <span v-if="as" class="badge-as">{{ t(as.key, { n: as.n }) }}</span>

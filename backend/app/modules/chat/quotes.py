@@ -22,6 +22,7 @@ from app.models import Conversation, Message, Order, Product, ProductVariant, Qu
 from app.modules.catalog import variants as variants_svc
 from app.modules.chat.messages import insert_message, post_system
 from app.modules.chat.schemas import QuoteIn
+from app.modules.common.modes import MAX_UPSTREAM_QTY, UPSTREAM_MODES
 from app.modules.common.views import iso
 from app.modules.orders import service as orders
 
@@ -95,6 +96,13 @@ async def create_quote(
         product = await get_scoped(db, Product, body.product_id, conv.tenant_id)
         if product is None:
             raise NotFound("Product not found")
+        if product.delivery_mode == "upstream_direct":
+            raise Validation(
+                "A product that needs the buyer's account session cannot be quoted",
+                code="direct_not_quotable",
+            )
+        if product.delivery_mode in UPSTREAM_MODES and body.qty > MAX_UPSTREAM_QTY:
+            raise Validation(f"qty must be at most {MAX_UPSTREAM_QTY} for this product")
         if product.delivery_mode == "auto_card" and body.qty > MAX_AUTO_CARD_QTY:
             # same cap as buy-now: every delivered order must stay revealable in one go
             raise Validation(f"qty must be at most {MAX_AUTO_CARD_QTY} for auto_card products")

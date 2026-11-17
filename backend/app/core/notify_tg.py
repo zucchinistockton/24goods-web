@@ -76,6 +76,21 @@ TEXTS: dict[str, dict[str, str]] = {
         "job.maybe_undelivered": "Order {order} may be undelivered",
         "pay.stale": "Payment attempt for {no} has been unresolved for 24 h",
         "pay.check_gateway": "Check the gateway console",
+        "proc.job_stuck": "Procurement job {job} is {state} ({code})",
+        "proc.order_waits": "Order {order} waits for a supplier code",
+        "proc.void_failed": "Job {job}: the supplier code/card of order {order} could not be "
+        "voided and may still be live. Delete it at the supplier or retry the void",
+        "proc.direct_done": "Job {job}: order {order} was refunded or closed after the supplier "
+        "completed the subscription on the buyer's account. It cannot be undone through the "
+        "API: decide how to recover it with the supplier",
+        "proc.sessions_overdue": "{n} sealed buyer session(s) outlived their maximum age: the "
+        "procurement is not cleaning up. Direct-order checkout is paused; check procurement",
+        "proc.offer_off": "Direct source ...{offer} was switched OFF after repeated declined "
+        "orders (check the funding card); re-enable it in the console when fixed",
+        "proc.cost_over": "Direct job ...{offer}: a completed order cost MORE than its budget; "
+        "check the supplier's price and the offer's cost estimate",
+        "proc.supplier_paused": "Supplier {code} ({env}) is paused for new orders",
+        "proc.pause_reason": "Reason: {reason} ({kind})",
         "reminder.title": "Service expiry reminder",
         "reminder.id": "Notification",
         "reminder.service": "Service",
@@ -110,6 +125,18 @@ TEXTS: dict[str, dict[str, str]] = {
         "job.maybe_undelivered": "订单 {order} 可能未发货",
         "pay.stale": "订单 {no} 的付款已超过 24 小时未确认",
         "pay.check_gateway": "请在支付网关后台核对",
+        "proc.job_stuck": "采购任务 {job} 状态为 {state}（{code}）",
+        "proc.order_waits": "订单 {order} 正在等待供应商发码",
+        "proc.void_failed": "任务 {job}：订单 {order} 的供应商码/卡未能作废，可能仍然有效。"
+        "请在供应商处删除或重试作废",
+        "proc.direct_done": "任务 {job}：订单 {order} 在供应商已为买家账号完成订阅后被退款或关闭，"
+        "无法通过接口撤销，请决定如何与供应商追偿",
+        "proc.sessions_overdue": "{n} 份买家会话密文超过最长保存时间：采购进程未在清理。"
+        "直充下单已暂停，请检查采购进程",
+        "proc.offer_off": "直充货源 ...{offer} 因连续拒付被关闭，请检查付款卡后重新启用",
+        "proc.cost_over": "直充任务 ...{offer}：已完成订单成本超出预算，请核对供应商价格与成本估算",
+        "proc.supplier_paused": "供应商 {code}（{env}）已暂停接收新订单",
+        "proc.pause_reason": "原因：{reason}（{kind}）",
         "reminder.title": "服务到期提醒",
         "reminder.id": "通知编号",
         "reminder.service": "服务",
@@ -369,7 +396,7 @@ def _outcome_events(res: Resources, orders: list[Any]) -> None:
             else:
                 mode = T("order.manual" if o.delivery_mode == "manual" else "order.auto")
                 order_event(res, o, "order_paid", [mode] if o.kind == "goods" else [o.kind])
-            if o.delivery_mode != "manual" and o.product_id is not None:
+            if o.delivery_mode == "auto_card" and o.product_id is not None:  # pool only
                 spawn(low_stock_check(res, o.tenant_id, o.product_id, o.qty, o.title))
         elif o.status == "manual_review":
             order_event(res, o, "payment_review")

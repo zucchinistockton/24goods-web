@@ -53,6 +53,9 @@ def install_error_handlers(app: FastAPI) -> None:
                 "buyer_input is too long",
                 extra={"max_len": str(mx)} if mx else None,
             )
+        if "session" in first.get("loc", ()) and first.get("type") == "string_too_long":
+            # never echo the field: it can be a live account credential
+            return error_response(422, "session_too_large", "The session text is too large")
         loc = ".".join(str(p) for p in first.get("loc", ()) if p not in ("body", "query"))
         msg = f"{loc}: {first.get('msg', 'invalid')}" if loc else "Invalid request"
         return error_response(422, "validation", msg[:200])

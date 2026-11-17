@@ -64,11 +64,7 @@ async def admin_views(
     db: AsyncSession, tenant_id: uuid.UUID, products: list[Product]
 ) -> dict[uuid.UUID, list[dict[str, Any]]]:
     rows = await svc.variants_for(db, tenant_id, [p.id for p in products], include_archived=True)
-    cards = await svc.card_counts(
-        db,
-        tenant_id,
-        [v.id for p in products if p.delivery_mode == "auto_card" for v in rows[p.id]],
-    )
+    cards = await svc.stocked_counts(db, tenant_id, [(p, rows[p.id]) for p in products])
     by_id = {p.id: p for p in products}
     return {
         pid: [svc.admin_variant_view(v, by_id[pid], cards) for v in vs] for pid, vs in rows.items()

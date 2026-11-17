@@ -1,4 +1,11 @@
-"""Outbox consumer: ``order.paid`` -> claim stock (FOR UPDATE SKIP LOCKED) -> delivered."""
+"""Outbox consumer: ``order.paid`` -> claim stock (FOR UPDATE SKIP LOCKED) -> delivered.
+
+review-v12 M2: an ``upstream_cdk`` order never claims local stock. ``order.paid`` hands it to the
+procurement process (``procure.requested``); procurement seals the bought code into
+``card_stock`` (already ``sold`` for this order) and answers ``procure.fulfilled``, which is
+delivered here exactly like an auto_card order, or ``procure.failed`` (-> ``manual_review``).
+Delivery stays the only writer of ``paid -> delivered``.
+"""
 
 from __future__ import annotations
 
@@ -23,7 +30,9 @@ from app.models import (
     Delivery,
     Message,
     Order,
+    OrderEvent,
     Outbox,
+    ProcurementJob,
     Product,
     Tenant,
     User,
@@ -43,7 +52,11 @@ log = logging.getLogger("app.delivery.worker")
 
 TOPIC = "order.paid"
 REPLACE_TOPIC = "delivery.replace"
-TOPICS = (TOPIC, REPLACE_TOPIC)
+PROCURE_REQUESTED = "procure.requested"
+PROCURE_FULFILLED = "procure.fulfilled"
+PROCURE_FAILED = "procure.failed"
+TOPICS = (TOPIC, REPLACE_TOPIC, PROCURE_FULFILLED, PROCURE_FAILED)
+UPSTREAM_MODES = ("upstream_cdk", "upstream_vcc", "upstream_direct")
 MAX_ATTEMPTS = 8
 
 
@@ -80,6 +93,25 @@ async def handle_order_paid(db: AsyncSession, order_id: uuid.UUID) -> JobResult:
         # The notify pipeline already posted `paid` {awaiting_delivery: true}; staff deliver.
         result.order = None  # nothing changed: nothing to publish
         return result
+    if order.delivery_mode in UPSTREAM_MODES:
+        # bought from a supplier, never from the local pool (no card_stock claim here)
+        db.add(
+            Outbox(
+                tenant_id=order.tenant_id,
+                topic=PROCURE_REQUESTED,
+                key=f"{order.id}:procure:{order.version}",
+                payload={"order_id": str(order.id), "tenant_id": str(order.tenant_id)},
+            )
+        )
+        await audit(
+            db,
+            tenant_id=order.tenant_id,
+            action="delivery.procurement_requested",
+            target=f"order:{order.id}",
+            detail={"mode": order.delivery_mode, "qty": order.qty},
+        )
+        result.order = None  # still paid: nothing to publish yet
+        return result
 
     card_ids: list[uuid.UUID] = []
     if order.product_id is not None:
@@ -92,12 +124,26 @@ async def handle_order_paid(db: AsyncSession, order_id: uuid.UUID) -> JobResult:
                 .with_for_update(skip_locked=True)
             )
         )
+    return await _deliver_cards(db, order, card_ids, result, mode="auto_card")
+
+
+async def _deliver_cards(
+    db: AsyncSession,
+    order: Order,
+    card_ids: list[uuid.UUID],
+    result: JobResult,
+    *,
+    mode: str,
+    from_status: str = "paid",
+) -> JobResult:
+    """Bind ``card_ids`` to the order and deliver it (or hold it when they do not cover qty).
+    Shared by the local pool (auto_card) and procured codes (upstream_cdk)."""
     before = snapshot(order)
     if len(card_ids) < order.qty:
         order.status = "manual_review"
         order.version += 1
         await add_event(
-            db, order, "paid", "manual_review", actor_kind="system", reason="out_of_stock"
+            db, order, from_status, "manual_review", actor_kind="system", reason="out_of_stock"
         )
         await audit(
             db,
@@ -111,11 +157,12 @@ async def handle_order_paid(db: AsyncSession, order_id: uuid.UUID) -> JobResult:
         )
         event = "manual_review"
     else:
-        await db.execute(
-            update(CardStock)
-            .where(CardStock.id.in_(card_ids))
-            .values(status="sold", order_id=order.id)
-        )
+        if mode == "auto_card":
+            await db.execute(
+                update(CardStock)
+                .where(CardStock.id.in_(card_ids))
+                .values(status="sold", order_id=order.id)
+            )
         db.add_all(
             Delivery(tenant_id=order.tenant_id, order_id=order.id, card_stock_id=cid, kind="card")
             for cid in card_ids
@@ -139,7 +186,7 @@ async def handle_order_paid(db: AsyncSession, order_id: uuid.UUID) -> JobResult:
         order.status = "delivered"
         order.delivered_at = now
         order.version += 1
-        await add_event(db, order, "paid", "delivered", actor_kind="system", reason="auto_card")
+        await add_event(db, order, from_status, "delivered", actor_kind="system", reason=mode)
         await audit(
             db,
             tenant_id=order.tenant_id,
@@ -147,7 +194,7 @@ async def handle_order_paid(db: AsyncSession, order_id: uuid.UUID) -> JobResult:
             target=f"order:{order.id}",
             before=before,
             after=snapshot(order),
-            detail={"mode": "auto_card", "cards": len(card_ids)},
+            detail={"mode": mode, "cards": len(card_ids)},
         )
         event = "delivered"
     msg = await post_system(
@@ -157,6 +204,135 @@ async def handle_order_paid(db: AsyncSession, order_id: uuid.UUID) -> JobResult:
         event=event,
         order_id=str(order.id),
     )
+    result.messages = [msg] if msg else []
+    result.cards = await order_card_messages(db, order.conversation_id, order.id)
+    return result
+
+
+async def _held_by_procurement(db: AsyncSession, order: Order) -> bool:
+    """The latest transition into ``manual_review`` was procurement's own hold."""
+    reason = await db.scalar(
+        select(OrderEvent.reason)
+        .where(
+            OrderEvent.order_id == order.id,
+            OrderEvent.tenant_id == order.tenant_id,
+            OrderEvent.to_status == "manual_review",
+        )
+        .order_by(OrderEvent.id.desc())
+        .limit(1)
+    )
+    return reason == "procurement_failed"
+
+
+async def handle_procured(db: AsyncSession, payload: dict) -> JobResult:
+    """``procure.fulfilled``: deliver the codes procurement sealed for this order. Only rows that
+    are ``sold`` to THIS order, not yet delivered, of this product/variant count; anything short
+    of ``qty`` holds the order for staff (never a partial delivery)."""
+    order = await db.scalar(
+        select(Order).where(Order.id == uuid.UUID(str(payload["order_id"]))).with_for_update()
+    )
+    if order is None or order.delivery_mode not in UPSTREAM_MODES:
+        return JobResult()
+    held = order.status == "manual_review" and await _held_by_procurement(db, order)
+    if order.status != "paid" and not held:  # refunded / held / delivered meanwhile
+        await audit(
+            db,
+            tenant_id=order.tenant_id,
+            action="delivery.procured_ignored",
+            target=f"order:{order.id}",
+            detail={"status": order.status},
+            severity="warning",
+        )
+        return JobResult()
+    wanted = [uuid.UUID(str(c)) for c in payload.get("card_stock_ids") or []]
+    delivered = select(Delivery.card_stock_id).where(Delivery.card_stock_id.is_not(None))
+    card_ids = list(
+        await db.scalars(
+            select(CardStock.id)
+            .where(
+                CardStock.id.in_(wanted),
+                CardStock.order_id == order.id,
+                CardStock.product_id == order.product_id,
+                CardStock.status == "sold",
+                *_variant(order),
+                CardStock.id.not_in(delivered),
+            )
+            .order_by(CardStock.created_at, CardStock.id)
+            .with_for_update()
+        )
+    )
+    if len(card_ids) != order.qty:
+        if held:  # still short: the hold stands, nothing changes
+            return JobResult()
+        card_ids = []  # hold, do not deliver a part
+    if held:
+        # a stale procure.failed held the order although every unit ended up bound: release it
+        await audit(
+            db,
+            tenant_id=order.tenant_id,
+            action="delivery.procured_after_hold",
+            target=f"order:{order.id}",
+            detail={"cards": len(card_ids)},
+            severity="warning",
+        )
+    return await _deliver_cards(
+        db,
+        order,
+        card_ids,
+        JobResult(order),
+        mode=order.delivery_mode,
+        from_status="manual_review" if held else "paid",
+    )
+
+
+async def handle_procure_failed(db: AsyncSession, payload: dict) -> JobResult:
+    """``procure.failed``: the supplier side needs staff -> ``manual_review`` + buyer message."""
+    order = await db.scalar(
+        select(Order).where(Order.id == uuid.UUID(str(payload["order_id"]))).with_for_update()
+    )
+    if order is None or order.delivery_mode not in UPSTREAM_MODES or order.status != "paid":
+        return JobResult()
+    # a stale event (the job was retried, fulfilled or voided since) must not hold the order
+    unresolved = select(func.count(ProcurementJob.id)).where(
+        ProcurementJob.tenant_id == order.tenant_id,
+        ProcurementJob.order_id == order.id,
+        ProcurementJob.state.in_(("needs_manual", "failed")),
+    )
+    if payload.get("job_id"):
+        unresolved = unresolved.where(ProcurementJob.id == uuid.UUID(str(payload["job_id"])))
+    if not await db.scalar(unresolved):
+        await audit(
+            db,
+            tenant_id=order.tenant_id,
+            action="delivery.procurement_failed_stale",
+            target=f"order:{order.id}",
+            detail={"reason": str(payload.get("reason") or "")[:64]},
+        )
+        return JobResult()
+    reason = "procurement_failed"
+    detail = str(payload.get("reason") or "")[:64]
+    before = snapshot(order)
+    order.status = "manual_review"
+    order.version += 1
+    await add_event(db, order, "paid", "manual_review", actor_kind="system", reason=reason)
+    await audit(
+        db,
+        tenant_id=order.tenant_id,
+        action="delivery.procurement_failed",
+        target=f"order:{order.id}",
+        before=before,
+        after=snapshot(order),
+        detail={"reason": detail},
+        severity="warning",
+    )
+    msg = await post_system(
+        db,
+        tenant_id=order.tenant_id,
+        conversation_id=order.conversation_id,
+        event="manual_review",
+        order_id=str(order.id),
+    )
+    result = JobResult(order)
     result.messages = [msg] if msg else []
     result.cards = await order_card_messages(db, order.conversation_id, order.id)
     return result
@@ -293,6 +469,10 @@ async def handle_replace(db: AsyncSession, payload: dict) -> JobResult:
 async def _dispatch(db: AsyncSession, row: Outbox) -> JobResult:
     if row.topic == REPLACE_TOPIC:
         return await handle_replace(db, row.payload)
+    if row.topic == PROCURE_FULFILLED:
+        return await handle_procured(db, row.payload)
+    if row.topic == PROCURE_FAILED:
+        return await handle_procure_failed(db, row.payload)
     return await handle_order_paid(db, uuid.UUID(str(row.payload["order_id"])))
 
 

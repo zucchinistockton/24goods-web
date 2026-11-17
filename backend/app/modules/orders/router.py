@@ -5,16 +5,19 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import Page, client_ip, current_user, get_db, get_lang, get_page, get_res
+from app.core.errors import NotFound
 from app.core.ratelimit import enforce
 from app.core.resources import Resources
 from app.core.storefront import Storefront, get_storefront
 from app.models import User
 from app.modules.challenges import service as challenge_service
+from app.modules.common.views import REVEALABLE
 from app.modules.orders import cancel as cancel_svc
+from app.modules.orders import card_otp, service
+from app.modules.orders import direct as direct_svc
 from app.modules.orders import expedite as expedite_svc
-from app.modules.orders import service
 from app.modules.orders.riskctl import guard_order_create
-from app.modules.orders.schemas import BuyerCancelIn, BuyNowIn, InputIn, PayIn
+from app.modules.orders.schemas import BuyerCancelIn, BuyNowIn, DirectSessionIn, InputIn, PayIn
 
 router = APIRouter(prefix="/orders", tags=["orders"])
 
@@ -44,6 +47,9 @@ async def buy_now(
         promo_code=body.promo_code,
         storefront=sf,
         variant_id=body.variant_id,
+        session=body.session,
+        cred_sealer=res.cred_sealer,
+        redis=res.redis,
     )
     code = getattr(order, "access_code_plain", None)  # shown exactly once
     await service.broadcast_order(res, db, order, [msg])
@@ -126,6 +132,66 @@ async def reveal(
         {"secrets": [c["code"] for c in cards], "cards": cards},
         headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
     )
+
+
+@router.get("/{ref}/card-otp", response_model=None)
+async def card_otp_codes(
+    ref: str,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+    res: Resources = Depends(get_res),
+) -> JSONResponse:
+    """Live 3DS / one-time codes of the buyer's own virtual card(s), at most 5 minutes old. The
+    same codes are pushed on the buyer's SSE stream as ``card_otp``; this is for a page opened
+    late. Never cached, never stored in the database."""
+    await enforce(res.redis, "order:card-otp", str(user.id), 60, 60)
+    order = await service.get_owned(db, ref, user)
+    await db.commit()
+    if order.delivery_mode != "upstream_vcc":
+        raise NotFound("Order not found")
+    if order.status not in REVEALABLE:  # a code is only ever shown once the card is the buyer's
+        items: list = []
+    else:
+        items = await card_otp.pending_for(res.redis, order.id)
+    return JSONResponse(
+        {"items": items}, headers={"Cache-Control": "no-store", "Pragma": "no-cache"}
+    )
+
+
+@router.get("/{ref}/direct", response_model=None)
+async def direct_info(
+    ref: str,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+    res: Resources = Depends(get_res),
+) -> JSONResponse:
+    """The buyer's own ``upstream_direct`` order: the masked account and the plan only (never the
+    session). 404 for anyone else's order and for any other delivery mode."""
+    await enforce(res.redis, "order:direct-info", str(user.id), 60, 60)
+    order = await service.get_owned(db, ref, user)
+    view = await direct_svc.owner_info(db, order)
+    await db.commit()
+    return JSONResponse(view, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
+
+
+@router.post("/{ref}/direct-session")
+async def direct_session(
+    ref: str,
+    body: DirectSessionIn,
+    request: Request,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+    res: Resources = Depends(get_res),
+) -> dict:
+    """Replace an account session that expired or was rejected (owner only; the order must be
+    ``paid`` / ``manual_review`` and hold no session). Staff then retry the procurement job."""
+    await enforce(res.redis, "order:direct-session", str(user.id), 5, 3600)
+    order = await service.get_owned(db, ref, user)
+    await direct_svc.resupply(
+        db, res.cred_sealer, order, body.session, actor_id=user.id, ip=client_ip(request)
+    )
+    await db.commit()
+    return {"ok": True}
 
 
 @router.post("/{ref}/confirm")

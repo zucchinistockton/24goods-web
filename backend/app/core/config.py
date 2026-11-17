@@ -14,7 +14,7 @@ import hmac
 import ipaddress
 from functools import cached_property, lru_cache
 
-from pydantic import field_validator, model_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Network = ipaddress.IPv4Network | ipaddress.IPv6Network
@@ -75,6 +75,11 @@ class Settings(BaseSettings):
     vault_public_keys_file: str = ""
     vault_active_kid: str = ""
     vault_fingerprint_key: str = ""  # base64, >= 32 bytes
+    # --- buyer-credential keypair for upstream_direct (PUBLIC half only; review-v12 §18) ---
+    # a DIFFERENT keypair from the card vault's: only the procurement process holds the private key
+    cred_public_keys: str = ""  # JSON {kid: base64 raw X25519 public key}
+    cred_public_keys_file: str = ""
+    cred_active_kid: str = ""
     quote_hmac_key: str = ""  # base64, >= 32 bytes
     pow_key: str = ""  # base64, >= 32 bytes: signs proof-of-work challenges
     settings_key: str = ""  # base64, 32 bytes: AES-256-GCM key for tenant_secrets (api only)
@@ -85,6 +90,27 @@ class Settings(BaseSettings):
     # --- internal services ---
     internal_token: str = ""  # shared secret API -> delivery, >= 32 chars
     delivery_url: str = "http://127.0.0.1:8001"
+    # review-v12: API -> procurement internal API (supplier "Test connection"). Distinct token;
+    # the API never holds supplier secrets.
+    procurement_token: str = ""
+    procurement_url: str = "http://127.0.0.1:8004"
+    # owner rule (review-v12 §0): production suppliers stay disabled until the security review
+    procurement_allow_production: bool = False
+    # review-v12 §6: supplier webhook signing secrets (API side; never the supplier API secret).
+    # Read as ZOVOCARD_WEBHOOK_SECRET / ZOVOCARD_SANDBOX_WEBHOOK_SECRET (or with the APP_ prefix).
+    # Several keys per environment: comma-separated (general callback + API-key subscription).
+    zovocard_webhook_secret: str = Field(
+        default="",
+        repr=False,
+        validation_alias=AliasChoices("APP_ZOVOCARD_WEBHOOK_SECRET", "ZOVOCARD_WEBHOOK_SECRET"),
+    )
+    zovocard_sandbox_webhook_secret: str = Field(
+        default="",
+        repr=False,
+        validation_alias=AliasChoices(
+            "APP_ZOVOCARD_SANDBOX_WEBHOOK_SECRET", "ZOVOCARD_SANDBOX_WEBHOOK_SECRET"
+        ),
+    )
 
     # --- orders ---
     order_ttl_minutes: int = 30
@@ -164,6 +190,14 @@ class Settings(BaseSettings):
                 raise ValueError("APP_ZPAY_API_BASE must be https:// in prod (it carries the key)")
             if not self.cookie_secure:
                 raise ValueError("APP_COOKIE_SECURE must be true in prod")
+        # a key shared by both environments would book sandbox events on the production account
+        split = lambda v: {x.strip() for x in v.split(",") if x.strip()}  # noqa: E731
+        prod_keys = split(self.zovocard_webhook_secret)
+        sandbox_keys = split(self.zovocard_sandbox_webhook_secret)
+        if prod_keys & sandbox_keys:
+            raise ValueError("ZovoCard production and sandbox webhook secrets must differ")
+        if self.env == "prod" and any(len(k) < 32 for k in prod_keys | sandbox_keys):
+            raise ValueError("ZovoCard webhook secrets must be at least 32 characters in prod")
 
         return self
 

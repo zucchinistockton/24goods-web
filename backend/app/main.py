@@ -33,8 +33,12 @@ from app.modules.admin.importer import router as admin_import_router
 from app.modules.admin.ordering import router as admin_ordering_router
 from app.modules.admin.payment_gateways import router as payment_gateways_router
 from app.modules.admin.payment_ops import router as payment_ops_router
+from app.modules.admin.procurement_cost import router as admin_procurement_cost_router
+from app.modules.admin.procurement_jobs import router as admin_procurement_jobs_router
+from app.modules.admin.procurement_sources import router as admin_procurement_sources_router
 from app.modules.admin.router import router as admin_router
 from app.modules.admin.settings import router as admin_settings_router
+from app.modules.admin.suppliers import router as admin_suppliers_router
 from app.modules.admin.tokens import router as admin_tokens_router
 from app.modules.admin.v3 import router as admin_v3_router
 from app.modules.aftersales.router import router as aftersales_router
@@ -67,6 +71,8 @@ from app.modules.reseller.router import admin as reseller_admin_router
 from app.modules.reseller.router import router as reseller_router
 from app.modules.seo.router import router as seo_router
 from app.modules.uploads.router import router as uploads_router
+from app.modules.webhooks import ZOVOCARD_PATH
+from app.modules.webhooks import router as webhooks_router
 
 log = logging.getLogger("app.main")
 
@@ -200,6 +206,11 @@ def api_router() -> APIRouter:
         admin_settings_router,
         admin_blocking_router,
         admin_tokens_router,
+        admin_suppliers_router,
+        admin_procurement_sources_router,
+        admin_procurement_jobs_router,
+        admin_procurement_cost_router,
+        webhooks_router,
         challenges_router,
     ):
         r.include_router(sub)
@@ -264,7 +275,7 @@ def create_app(res: Resources | None = None, *, background: bool = True) -> Fast
     # Added inner-most first:
     # Core (outermost) -> IPBlock -> GlobalRateLimit -> BodyLimit -> CSRF -> SiteVisit -> routes.
     app.add_middleware(SiteVisitMiddleware)
-    app.add_middleware(CSRFMiddleware, exempt=[NOTIFY_PATH, NOTIFY_BEPUSDT_PATH])
+    app.add_middleware(CSRFMiddleware, exempt=[NOTIFY_PATH, NOTIFY_BEPUSDT_PATH, ZOVOCARD_PATH])
     app.add_middleware(
         BodyLimitMiddleware,
         default_limit=JSON_BODY_LIMIT,

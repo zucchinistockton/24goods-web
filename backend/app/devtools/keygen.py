@@ -3,8 +3,15 @@
 Writes:
   vault_public_keys.json   {kid: base64 raw X25519 public key}   -> API (APP_VAULT_PUBLIC_KEYS_FILE)
   vault_private_keys.json  {kid: base64 raw X25519 private key}  -> delivery ONLY (chmod 600)
+  cred_public_keys.json    {kid: base64 raw X25519 public key}   -> API (APP_CRED_PUBLIC_KEYS_FILE)
+  cred_private_keys.json   {kid: base64 raw X25519 private key}  -> procurement ONLY (chmod 600)
   secrets.env              APP_VAULT_ACTIVE_KID, APP_VAULT_FINGERPRINT_KEY, APP_QUOTE_HMAC_KEY,
-                           APP_INTERNAL_TOKEN (chmod 600)
+                           APP_INTERNAL_TOKEN, APP_CRED_ACTIVE_KID (chmod 600)
+
+The second keypair (``cred_*``) seals a buyer's account session for ``upstream_direct`` (review-v12
+§18). It is deliberately NOT the card vault's: delivery cannot open it, the API cannot open either.
+``--cred-only`` writes just that pair (and prints ``APP_CRED_ACTIVE_KID``) for a stack that was
+bootstrapped before upstream_direct existed.
 """
 
 from __future__ import annotations
@@ -39,6 +46,27 @@ def _write(path: Path, content: str, mode: int, force: bool) -> None:
     os.chmod(path, mode)
 
 
+def _keypair(prefix: str) -> tuple[str, str, str]:
+    kid = prefix + datetime.now(timezone.utc).strftime("%Y%m%d") + "-" + secrets.token_hex(2)
+    priv = X25519PrivateKey.generate()
+    priv_raw = priv.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())
+    pub_raw = priv.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+    return kid, _b64(pub_raw), _b64(priv_raw)
+
+
+def generate_cred(out_dir: Path, *, force: bool = False) -> tuple[str, dict[str, Path]]:
+    """The buyer-credential keypair only. Returns ``(kid, paths)``."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    kid, pub, priv = _keypair("c")
+    paths = {
+        "cred_public": out_dir / "cred_public_keys.json",
+        "cred_private": out_dir / "cred_private_keys.json",
+    }
+    _write(paths["cred_public"], json.dumps({kid: pub}, indent=2) + "\n", 0o644, force)
+    _write(paths["cred_private"], json.dumps({kid: priv}, indent=2) + "\n", 0o600, force)
+    return kid, paths
+
+
 def generate(out_dir: Path, *, force: bool = False) -> dict[str, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     kid = "k" + datetime.now(timezone.utc).strftime("%Y%m%d") + "-" + secrets.token_hex(2)
@@ -62,7 +90,9 @@ def generate(out_dir: Path, *, force: bool = False) -> dict[str, Path]:
             "",
         ]
     )
-    _write(paths["env"], env, 0o600, force)
+    cred_kid, cred_paths = generate_cred(out_dir, force=force)
+    paths.update(cred_paths)
+    _write(paths["env"], env.rstrip("\n") + f"\nAPP_CRED_ACTIVE_KID={cred_kid}\n", 0o600, force)
     return paths
 
 
@@ -70,8 +100,19 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Generate vault keys and app secrets")
     parser.add_argument("--out-dir", required=True, type=Path)
     parser.add_argument("--force", action="store_true", help="overwrite existing files")
+    parser.add_argument(
+        "--cred-only",
+        action="store_true",
+        help="only the buyer-credential keypair (a stack bootstrapped before upstream_direct)",
+    )
     args = parser.parse_args(argv)
     try:
+        if args.cred_only:
+            kid, paths = generate_cred(args.out_dir, force=args.force)
+            for name, path in paths.items():
+                print(f"wrote {name}: {path}")
+            print(f"APP_CRED_ACTIVE_KID={kid}")
+            return 0
         paths = generate(args.out_dir, force=args.force)
     except FileExistsError:
         print("refusing to overwrite existing key files (use --force)", file=sys.stderr)

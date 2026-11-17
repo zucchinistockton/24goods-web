@@ -66,6 +66,8 @@ import type {
   ResellerProduct,
   ResellerStats,
   I18nText,
+  CardOtp,
+  DirectOrderInfo,
   TwoFactorChallenge,
   TwoFactorSetup,
   TwoFactorStatus,
@@ -237,10 +239,13 @@ export function createBuyerApi(c: ApiClient) {
         buyer_input?: string | null,
         promo_code?: string | null,
         variant_id?: string | null,
+        /** upstream_direct only: the buyer's account session text; sealed by the server at once */
+        session?: string | null,
       ) =>
         c.post<Order>('/orders', {
           product_id,
           qty,
+          ...(session ? { session } : {}),
           ...(variant_id ? { variant_id } : {}),
           ...(promo_code ? { promo_code } : {}),
           ...(src ? { src } : {}),
@@ -257,6 +262,12 @@ export function createBuyerApi(c: ApiClient) {
       pay: (id: string, channel: string = DEFAULT_PAY_CHANNEL) =>
         c.post<{ pay_url: string }>(`/orders/${seg(id)}/pay`, { channel }),
       reveal: (id: string) => c.post<{ secrets: string[]; cards: { id: string; code: string }[] }>(`/orders/${seg(id)}/reveal`),
+      /** v12 M3: live 3DS one-time codes of the order's own cards (owner only; empty when none). */
+      cardOtp: (id: string) => c.get<{ items: CardOtp[] }>(`/orders/${seg(id)}/card-otp`),
+      /** v12 M3: masked account, plan and state of a direct order (owner only). */
+      direct: (id: string) => c.get<DirectOrderInfo>(`/orders/${seg(id)}/direct`),
+      /** v12 M3: supply a fresh session for a paid direct order whose first one expired or was refused. */
+      directSession: (id: string, session: string) => c.post<unknown>(`/orders/${seg(id)}/direct-session`, { session }),
       confirm: (id: string) => c.post<Order>(`/orders/${seg(id)}/confirm`),
       /** v9 §6: remind the seller about a paid manual order (30 min cooldown, max 3). */
       expedite: (id: string) => c.post<Order>(`/orders/${seg(id)}/expedite`),

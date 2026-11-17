@@ -12,6 +12,13 @@
 #   backend  10.89.11.0/24 – internal:true (no internet egress): postgres, redis, api, delivery, mockpay, mockusdt
 #   usdt     10.89.12.0/24 – api <-> bepusdt only (profile "usdt"); bepusdt needs chain-RPC egress,
 #                            has NO published port and NO Caddy route (admin via SSH tunnel)
+#   redeem   10.89.15.0/24 – internal:true: web (.10) <-> procurement (.30) ONLY, for the public CDK
+#                            redemption proxy (:8006). The internal API (:8004) listens on procurement's
+#                            backend address (10.89.11.30) only, so Caddy cannot reach it.
+#   procurement_egress 10.89.14.0/24 – procurement's own network with GENERAL internet egress
+#                            (profile "procurement", review-v12). NOT an allowlist: restricting it to
+#                            the supplier hosts is an open item before go-live (spec §14). api reaches
+#                            procurement:8004 over backend.
 # NOTE: Docker-published ports bypass UFW. Never add `ports:` to anything but `web`.
 
 name: goods24
@@ -96,7 +103,8 @@ services:
     command: ["python", "-m", "app.serve"]
     env_file: [env/api.env]
     volumes: [uploads:/data/uploads]
-    secrets: [vault_public_keys]          # public key only: can seal, cannot open
+    # public keys only: can seal, cannot open (card vault + the buyer-credential keypair)
+    secrets: [vault_public_keys, cred_public_keys]
     networks:
       edge: {}
       backend: {}
@@ -115,6 +123,31 @@ services:
     depends_on:
       seed: { condition: service_completed_successfully }
 
+  procurement:                            # supplier adapters (review-v12, ADR-038); opt-in profile
+    <<: *app
+    profiles: [procurement, demo]         # demo/CI: runs against the mockzovo simulator below
+    command: ["python", "-m", "app.procurement"]
+    env_file: [env/procurement.env]       # supplier API secrets live ONLY here
+    # card vault: public key only (seals). Buyer credentials (upstream_direct): the PRIVATE half,
+    # a different keypair from the card vault's; only this container can open a buyer's session
+    secrets: [vault_public_keys, cred_private_keys]
+    networks:
+      backend:
+        ipv4_address: 10.89.11.30         # == APP_PROCUREMENT_HOST: the internal API binds here only
+      redeem:
+        ipv4_address: 10.89.15.30         # == APP_REDEEM_HOST: the public proxy binds here
+      procurement_egress: {}
+    mem_limit: 96m
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://'+os.environ.get('APP_PROCUREMENT_HOST','127.0.0.1')+':8004/healthz', timeout=2).status == 200 else 1)"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+
   mockpay:                                # ZPay simulator — demo/CI only (profile "demo")
     <<: *app
     profiles: [demo]
@@ -126,6 +159,14 @@ services:
     mem_limit: 96m
     depends_on:
       redis: { condition: service_healthy }
+
+  mockzovo:                               # ZovoCard simulator — demo/CI only (profile "demo")
+    <<: *app                              # never in the "procurement" (production) profile
+    profiles: [demo]
+    command: ["python", "-m", "app.devtools.mock_zovocard"]
+    env_file: [env/mockzovo.env]
+    networks: [backend]                   # reached by procurement only; no edge, no egress
+    mem_limit: 64m
 
   mockusdt:                               # BEpusdt simulator — demo/CI only (profile "demo")
     <<: *app
@@ -162,12 +203,15 @@ services:
     security_opt: [no-new-privileges:true]
     environment:
       SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+      REDEEM_HOST: ${REDEEM_HOST:-redeem.invalid}   # never resolves: the redeem site is off until configured
     ports:
       - "${PUBLISH_HTTP:-80}:80"
     volumes: [caddy_data:/data, caddy_config:/config]
     networks:
       edge:
         ipv4_address: 10.89.10.10         # == APP_TRUSTED_PROXIES in env/api.env
+      redeem:
+        ipv4_address: 10.89.15.10         # == APP_REDEEM_TRUSTED_PROXIES (procurement.env)
     mem_limit: 64m
     depends_on: [api]
     healthcheck:
@@ -194,6 +238,13 @@ networks:
   usdt_egress:                             # bepusdt's own route to chain RPC endpoints
     ipam:
       config: [{ subnet: 10.89.13.0/24 }]
+  redeem:                                  # web <-> procurement public proxy only; never attach others
+    internal: true
+    ipam:
+      config: [{ subnet: 10.89.15.0/24 }]
+  procurement_egress:                      # procurement only; general egress (no allowlist yet)
+    ipam:
+      config: [{ subnet: 10.89.14.0/24 }]
 
 volumes:
   pgdata: {}
@@ -208,5 +259,9 @@ secrets:
     file: ./secrets/vault_public_keys.json
   vault_private_keys:
     file: ./secrets/vault_private_keys.json
+  cred_public_keys:
+    file: ./secrets/cred_public_keys.json
+  cred_private_keys:
+    file: ./secrets/cred_private_keys.json
   redis_acl:
     file: ./secrets/users.acl

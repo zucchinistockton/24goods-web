@@ -40,6 +40,16 @@ VAULT_PUB_JSON = json.dumps(
         ).decode()
     }
 )
+# the buyer-credential keypair (upstream_direct): a DIFFERENT pair from the card vault's
+CRED_PRIV = X25519PrivateKey.generate()
+CRED_KID = "ctest"
+CRED_PUB_JSON = json.dumps(
+    {
+        CRED_KID: base64.b64encode(
+            CRED_PRIV.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+        ).decode()
+    }
+)
 FP_KEY = base64.b64encode(secrets.token_bytes(32)).decode()
 QUOTE_KEY = base64.b64encode(secrets.token_bytes(32)).decode()
 POW_KEY = base64.b64encode(secrets.token_bytes(32)).decode()
@@ -52,6 +62,7 @@ PASSWORD = "correct horse battery"
 OWNER_PW = "owner-test-password"
 API_PW = "api-test-password"
 DELIVERY_PW = "delivery-test-password"
+PROCUREMENT_PW = "procurement-test-password"
 TEST_DB = "g24_test"
 ALEMBIC_INI = Path(__file__).resolve().parent.parent / "alembic.ini"
 
@@ -80,6 +91,7 @@ class Services:
     delivery_url: str
     redis_url: str
     upload_dir: Path
+    procurement_url: str = ""
     owner_engine: object = None
     api_engine: object = None
     delivery_engine: object = None
@@ -128,11 +140,13 @@ async def services(tmp_path_factory: pytest.TempPathFactory) -> AsyncIterator[Se
         delivery_url=_with_db(dsn, "app_delivery", DELIVERY_PW, TEST_DB),
         redis_url=redis_url,
         upload_dir=tmp_path_factory.mktemp("uploads"),
+        procurement_url=_with_db(dsn, "app_procurement", PROCUREMENT_PW, TEST_DB),
     )
     os.environ.update(
         APP_MIGRATE_DATABASE_URL=s.owner_url,
         APP_DB_API_PASSWORD=API_PW,
         APP_DB_DELIVERY_PASSWORD=DELIVERY_PW,
+        APP_DB_PROCUREMENT_PASSWORD=PROCUREMENT_PW,
     )
     cfg = Config(str(ALEMBIC_INI))
     await asyncio.to_thread(command.upgrade, cfg, "head")
@@ -170,6 +184,8 @@ def make_settings(s: Services, **over):
         vault_public_keys=VAULT_PUB_JSON,
         vault_active_kid=VAULT_KID,
         vault_fingerprint_key=FP_KEY,
+        cred_public_keys=CRED_PUB_JSON,
+        cred_active_kid=CRED_KID,
         quote_hmac_key=QUOTE_KEY,
         pow_key=POW_KEY,
         settings_key=SETTINGS_KEY,
@@ -404,6 +420,7 @@ async def env(services: Services) -> AsyncIterator[Env]:
         await c.aclose()
     await mock_http.aclose()
     await res.delivery.aclose()
+    await res.procurement.aclose()
     await res.http.aclose()
     await res.hub.stop()
 

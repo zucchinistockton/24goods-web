@@ -8,8 +8,8 @@ NULL means the enrolment was started but no code has been verified yet: login ig
 RLS: ENABLE + FORCE + ``tenant_isolation``. Only app_api gets access; the delivery worker and the
 other roles never see the table.
 
-The revision id sorts between 0022 and the v12 procurement chain (0023..), which also revises
-0022 on its own branch: when both are on ``main``, ``0023_procurement`` must revise this one.
+The revision id sorts between 0022 and the v12 procurement chain: ``0023_procurement`` revises
+this one.
 
 Revision ID: 0022a_user_totp
 Revises: 0022_v11_content_ops

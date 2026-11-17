@@ -19,6 +19,14 @@ from app.models.inventory import CardBatch, CardStock, Delivery
 from app.models.ledger import LedgerEntry
 from app.models.orders import Checkout, Order, OrderEvent, Payment
 from app.models.payment_config import LegacyPayUrl, PaymentAttempt, PaymentGateway, PaymentTest
+from app.models.procurement import (
+    ProcurementCredential,
+    ProcurementJob,
+    SupplierAccount,
+    SupplierLedgerEntry,
+    SupplierOffer,
+    SupplierWebhookEvent,
+)
 from app.models.system import AuditLog, Outbox
 from app.models.tenancy import CustomDomain, Tenant
 from app.models.users import AgentStatus, User, UserTotp
@@ -52,6 +60,8 @@ __all__ = [
     "PaymentAttempt",
     "PaymentGateway",
     "PaymentTest",
+    "ProcurementCredential",
+    "ProcurementJob",
     "Product",
     "ProductVariant",
     "PromoCode",
@@ -64,6 +74,10 @@ __all__ = [
     "ServiceEntitlement",
     "ServiceReminder",
     "ServiceRenewal",
+    "SupplierAccount",
+    "SupplierLedgerEntry",
+    "SupplierOffer",
+    "SupplierWebhookEvent",
     "Tenant",
     "TenantSecret",
     "User",

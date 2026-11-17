@@ -41,3 +41,6 @@ deploy/env/
 deploy/certs/*.pem
 deploy/certs/*.key
 .vitest/
+
+# vendor docs obtained behind a login: keep out of the public repo
+docs/research/zovocard/

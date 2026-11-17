@@ -10,11 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.core.cardvault import CardSealer
 from app.core.config import Settings
+from app.core.credvault import CredentialSealer
 from app.core.db import make_engine, make_sessionmaker
 from app.core.redis import make_redis
 from app.core.security import SessionStore
 from app.core.tenancy import TenantResolver
-from app.core.vaultkeys import build_sealer
+from app.core.vaultkeys import build_credential_sealer, build_sealer
 from app.modules.realtime.hub import RealtimeHub
 from app.payments.bepusdt import BepusdtClient, BepusdtConfig
 from app.payments.zpay import ZPayClient, ZPayConfig
@@ -34,10 +35,14 @@ class Resources:
     delivery: httpx.AsyncClient
     http: httpx.AsyncClient
     hub: RealtimeHub
+    procurement: httpx.AsyncClient
+    # buyer-credential sealer (upstream_direct); None = not configured
+    cred_sealer: CredentialSealer | None = None
 
     async def close(self) -> None:
         await self.hub.stop()
         await self.delivery.aclose()
+        await self.procurement.aclose()
         await self.http.aclose()
         await self.redis.aclose()
         await self.engine.dispose()
@@ -70,6 +75,7 @@ def build_resources(
     redis: Redis | None = None,
     delivery: httpx.AsyncClient | None = None,
     http: httpx.AsyncClient | None = None,
+    procurement: httpx.AsyncClient | None = None,
 ) -> Resources:
     engine = engine or make_engine(
         settings.database_url,
@@ -83,6 +89,10 @@ def build_resources(
     redis = redis or make_redis(settings.redis_url)
     http = http or httpx.AsyncClient(timeout=10.0, follow_redirects=False)
     delivery = delivery or httpx.AsyncClient(base_url=settings.delivery_url, timeout=10.0)
+    # a probe makes a handful of supplier calls (procurement caps it at 45 s)
+    procurement = procurement or httpx.AsyncClient(
+        base_url=settings.procurement_url, timeout=60.0, trust_env=False
+    )
     return Resources(
         settings=settings,
         engine=engine,
@@ -96,4 +106,6 @@ def build_resources(
         delivery=delivery,
         http=http,
         hub=RealtimeHub(redis),
+        procurement=procurement,
+        cred_sealer=build_credential_sealer(settings),
     )

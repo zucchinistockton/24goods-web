@@ -25,6 +25,9 @@ API_IMAGE="${API_IMAGE:-ghcr.io/zucchinistockton/goods24-api:main}"
 WEB_IMAGE="${WEB_IMAGE:-ghcr.io/zucchinistockton/goods24-web:main}"
 PUBLISH_HTTP="${PUBLISH_HTTP:-80}"
 SITE_ADDRESS="${SITE_ADDRESS:-:80}"
+# CDK redemption site (review-v12 §8). Host name only. Demo default: redeem.localhost (reachable with a
+# Host header, as the e2e smoke does). Prod: OFF unless REDEEM_HOST is given (e.g. redeem.example.com).
+if [[ "${MODE:-demo}" == "demo" ]]; then REDEEM_HOST="${REDEEM_HOST:-redeem.localhost}"; else REDEEM_HOST="${REDEEM_HOST:-}"; fi
 PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-http://127.0.0.1:${PUBLISH_HTTP}}"
 COOKIE_SECURE="${COOKIE_SECURE:-false}"
 MODE="${MODE:-demo}"             # demo | prod
@@ -65,17 +68,23 @@ chmod 700 secrets
 docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/secrets:/keys" --entrypoint python \
   "$API_IMAGE" -m app.devtools.keygen --out-dir /keys >/dev/null
 # shellcheck disable=SC1091
-source secrets/secrets.env   # APP_VAULT_ACTIVE_KID, APP_VAULT_FINGERPRINT_KEY, APP_QUOTE_HMAC_KEY, APP_INTERNAL_TOKEN
+source secrets/secrets.env   # APP_VAULT_ACTIVE_KID, APP_VAULT_FINGERPRINT_KEY, APP_QUOTE_HMAC_KEY, APP_INTERNAL_TOKEN, APP_CRED_ACTIVE_KID
 # private key: readable only by the container user of `delivery`
 as_root chown "$APP_UID:$APP_GID" secrets/vault_private_keys.json
 as_root chmod 0400 secrets/vault_private_keys.json
 chmod 0444 secrets/vault_public_keys.json
+# buyer-credential keypair (upstream_direct): the private half belongs to `procurement` only
+as_root chown "$APP_UID:$APP_GID" secrets/cred_private_keys.json
+as_root chmod 0400 secrets/cred_private_keys.json
+chmod 0444 secrets/cred_public_keys.json
 
 # ---- passwords ------------------------------------------------------------------
 PG_SUPERUSER_PASSWORD=$(rnd); APP_OWNER_PASSWORD=$(rnd)
-DB_API_PW=$(rnd); DB_DELIVERY_PW=$(rnd)
-R_API=$(rnd); R_DELIVERY=$(rnd); R_MOCK=$(rnd); R_HEALTH=$(rnd)
+DB_API_PW=$(rnd); DB_DELIVERY_PW=$(rnd); DB_PROCUREMENT_PW=$(rnd)
+R_API=$(rnd); R_DELIVERY=$(rnd); R_MOCK=$(rnd); R_HEALTH=$(rnd); R_PROCUREMENT=$(rnd)
+PROCUREMENT_TOKEN=$(rnd 32)   # api -> procurement internal API (distinct from the delivery token)
 ZPAY_KEY=$(rnd 16)
+ZOVO_WEBHOOK_SECRET="whsec_demo_$(rnd 24)"   # demo/CI only: the E2E smoke signs mock-supplier events with it
 BEPUSDT_TOKEN=$(rnd 16)   # demo: shared with the simulator; prod: copy the real token from the BEpusdt console
 # proof-of-work signing key + order access-code HMAC key (base64, 32 random bytes each)
 APP_POW_KEY=$(head -c 32 /dev/urandom | base64 | tr -d '\n')
@@ -91,6 +100,7 @@ user default off
 user health on #$(sha "$R_HEALTH") resetkeys resetchannels -@all +@connection
 user api on #$(sha "$R_API") ~* &* +@all -@dangerous
 user delivery on #$(sha "$R_DELIVERY") ~rl:* ~reveal:* resetchannels &rt:* -@all +@connection +get +set +incr +incrby +decrby +expire +ttl +multi +exec +discard +publish +eval +evalsha
+user procurement on #$(sha "$R_PROCUREMENT") ~rl:proc:* resetchannels -@all +@connection +get +incr +incrby +expire +ttl +multi +exec +discard
 EOF
 if [[ "$MODE" == "demo" ]]; then
   echo "user mockpay on #$(sha "$R_MOCK") ~mockpay:* resetchannels -@all +@connection +get +set +del +expire +exists +ttl" >> secrets/users.acl
@@ -107,6 +117,7 @@ API_IMAGE=$API_IMAGE
 WEB_IMAGE=$WEB_IMAGE
 PUBLISH_HTTP=$PUBLISH_HTTP
 SITE_ADDRESS=$SITE_ADDRESS
+REDEEM_HOST=${REDEEM_HOST:-redeem.invalid}
 ADMIN_ALLOW_IPS="$ADMIN_ALLOW_IPS"
 PG_SUPERUSER_PASSWORD=$PG_SUPERUSER_PASSWORD
 APP_OWNER_PASSWORD=$APP_OWNER_PASSWORD
@@ -119,6 +130,7 @@ APP_ENV=$APP_ENV_NAME
 APP_MIGRATE_DATABASE_URL=postgresql+asyncpg://app_owner:$APP_OWNER_PASSWORD@$PG
 APP_DB_API_PASSWORD=$DB_API_PW
 APP_DB_DELIVERY_PASSWORD=$DB_DELIVERY_PW
+APP_DB_PROCUREMENT_PASSWORD=$DB_PROCUREMENT_PW
 EOF
 
 cat > env/seed.env <<EOF
@@ -136,6 +148,8 @@ APP_SEED_ADMIN_EMAIL=$ADMIN_EMAIL
 EOF
 if [[ "$MODE" == "demo" ]]; then
   printf 'APP_SEED_AGENT_PASSWORD=%s\nAPP_SEED_BUYER_PASSWORD=%s\n' "$AGENT_PW" "$BUYER_PW" >> env/seed.env
+  # read by e2e/smoke.py to sign mock-supplier webhook events (same value as in api.env)
+  echo "APP_ZOVOCARD_SANDBOX_WEBHOOK_SECRET=$ZOVO_WEBHOOK_SECRET" >> env/seed.env
 fi
 
 cat > env/api.env <<EOF
@@ -150,12 +164,16 @@ APP_UPLOAD_DIR=/data/uploads
 APP_VAULT_PUBLIC_KEYS_FILE=/run/secrets/vault_public_keys
 APP_VAULT_ACTIVE_KID=$APP_VAULT_ACTIVE_KID
 APP_VAULT_FINGERPRINT_KEY=$APP_VAULT_FINGERPRINT_KEY
+APP_CRED_PUBLIC_KEYS_FILE=/run/secrets/cred_public_keys
+APP_CRED_ACTIVE_KID=$APP_CRED_ACTIVE_KID
 APP_QUOTE_HMAC_KEY=$APP_QUOTE_HMAC_KEY
 APP_INTERNAL_TOKEN=$APP_INTERNAL_TOKEN
 APP_POW_KEY=$APP_POW_KEY
 APP_LOOKUP_KEY=$APP_LOOKUP_KEY
 APP_SETTINGS_KEY=$APP_SETTINGS_KEY
 APP_DELIVERY_URL=http://delivery:8001
+APP_PROCUREMENT_URL=http://procurement:8004
+APP_PROCUREMENT_TOKEN=$PROCUREMENT_TOKEN
 EOF
 if [[ "$MODE" == "prod" ]]; then
   {
@@ -173,6 +191,7 @@ APP_ZPAY_API_BASE=http://mockpay:8002
 APP_BEPUSDT_URL=http://mockusdt:8003
 APP_BEPUSDT_API_TOKEN=$BEPUSDT_TOKEN
 APP_BEPUSDT_SIM_URL=/mockusdt/pay
+APP_ZOVOCARD_SANDBOX_WEBHOOK_SECRET=$ZOVO_WEBHOOK_SECRET
 # demo/CI: mock money, one shared address for testers and the E2E smoke -> looser order throttles
 APP_ORDER_CREATE_PER_USER=30
 APP_ORDER_CREATE_PER_IP=300
@@ -200,6 +219,44 @@ APP_HEALTH_PORT=8001
 APP_REVEAL_MAX_PER_MIN=60
 EOF
 
+# Procurement (profile "procurement", review-v12): supplier secrets are added by hand, e.g.
+#   ZOVOCARD_SANDBOX_APP_SECRET=sk_...   (key from the vendor's sandbox portal)
+# Production supplier keys stay out until the security review (AGENTS.md §1.11), and
+# APP_PROCUREMENT_ALLOW_PRODUCTION_WRITES is never set here.
+ZOVO_SANDBOX_ID=""; ZOVO_SANDBOX_SECRET=""
+if [[ "$MODE" == "demo" ]]; then ZOVO_SANDBOX_ID=mock; ZOVO_SANDBOX_SECRET=sk_mock_ok; fi
+cat > env/procurement.env <<EOF
+APP_ENV=$APP_ENV_NAME
+APP_PROCUREMENT_DATABASE_URL=postgresql+asyncpg://app_procurement:$DB_PROCUREMENT_PW@$PG
+APP_REDIS_URL=$(redis_url procurement "$R_PROCUREMENT")
+APP_PROCUREMENT_TOKEN=$PROCUREMENT_TOKEN
+APP_PROCUREMENT_HOST=10.89.11.30
+APP_PROCUREMENT_PORT=8004
+APP_HEALTH_PORT=8004
+APP_VAULT_PUBLIC_KEYS_FILE=/run/secrets/vault_public_keys
+APP_VAULT_ACTIVE_KID=$APP_VAULT_ACTIVE_KID
+APP_VAULT_FINGERPRINT_KEY=$APP_VAULT_FINGERPRINT_KEY
+APP_CRED_PRIVATE_KEYS_FILE=/run/secrets/cred_private_keys
+ZOVOCARD_SANDBOX_APP_ID=$ZOVO_SANDBOX_ID
+ZOVOCARD_SANDBOX_APP_SECRET=$ZOVO_SANDBOX_SECRET
+EOF
+if [[ -n "$REDEEM_HOST" ]]; then
+  # public redemption proxy: its own listener on the redeem network (never the internal API port)
+  {
+    echo "APP_REDEEM_ENABLED=1"
+    echo "APP_REDEEM_HOST=10.89.15.30"
+    echo "APP_REDEEM_PORT=8006"
+    echo "APP_REDEEM_DEVICE=24g-$(rnd 12)"   # constant per deployment
+    echo "APP_REDEEM_TRUSTED_PROXIES=10.89.15.10/32"
+    # which supplier environment receives buyers' credentials: explicit, never inferred (prod refuses to start without it)
+    if [[ "$MODE" == "demo" ]]; then echo "APP_REDEEM_SUPPLIER_ENV=sandbox"; else echo "APP_REDEEM_SUPPLIER_ENV=production"; fi
+  } >> env/procurement.env
+fi
+if [[ "$MODE" == "demo" ]]; then
+  # demo/CI only: the "sandbox" supplier is the simulator (prod mode never writes these)
+  echo "ZOVOCARD_SANDBOX_BASE_URL=http://mockzovo:8005/openapi/v1" >> env/procurement.env
+fi
+
 if [[ "$MODE" == "prod" ]]; then
   # Settings' prod guard applies to every process that loads app.core.config
   for f in migrate seed delivery; do echo "APP_COOKIE_SECURE=true" >> "env/$f.env"; done
@@ -215,6 +272,13 @@ APP_MOCKPAY_HOST=0.0.0.0
 APP_MOCKPAY_PORT=8002
 APP_MOCKPAY_NOTIFY_BASE=http://api:8000
 APP_HEALTH_PORT=8002
+EOF
+cat > env/mockzovo.env <<EOF
+APP_ENV=$APP_ENV_NAME
+APP_MOCKZOVO_HOST=0.0.0.0
+APP_MOCKZOVO_PORT=8005
+APP_MOCKZOVO_SCENARIOS=$([[ "$MODE" == "demo" ]] && echo 1 || echo 0)
+APP_HEALTH_PORT=8005
 EOF
 cat > env/mockusdt.env <<EOF
 APP_ENV=$APP_ENV_NAME

@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="light dark">
+<title>Redeem your code</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<header class="top">
+  <span class="mark" aria-hidden="true">K</span>
+  <span class="brand" data-t="brand">Redeem</span>
+  <button type="button" class="lang" id="lang" aria-label="Language">中文</button>
+</header>
+<main>
+  <ol class="steps" id="steps" aria-hidden="true"><li></li><li></li><li></li><li></li></ol>
+  <p class="alert" id="alert" role="alert" hidden></p>
+
+  <section id="s-code">
+    <h1 data-t="codeTitle">Enter your code</h1>
+    <p class="lead" data-t="codeLead">The code you received with your order. It is checked before anything else happens.</p>
+    <form id="f-code" novalidate>
+      <label for="code" data-t="codeLabel">Redemption code</label>
+      <input id="code" class="focal" name="code" autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false" maxlength="128" required>
+      <button class="primary" type="submit" data-t="check">Check code</button>
+    </form>
+  </section>
+
+  <section id="s-account" hidden>
+    <h1 data-t="accountTitle">Connect your account</h1>
+    <dl class="facts"><div><dt data-t="plan">Plan</dt><dd id="plan"></dd></div></dl>
+    <ol class="how">
+      <li data-t="how1">In this browser, sign in to the account that should receive the plan.</li>
+      <li id="how-link"><span data-t="how2">Open this page in a new tab and copy everything it shows:</span> <a id="sess-link" href="https://chatgpt.com/api/auth/session" target="_blank" rel="noopener noreferrer">chatgpt.com/api/auth/session</a></li>
+      <li data-t="how3">Paste it below.</li>
+    </ol>
+    <form id="f-account" novalidate>
+      <label for="session" data-t="sessionLabel">Session text</label>
+      <textarea id="session" name="session" rows="5" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="65536" required></textarea>
+      <p class="note" data-t="sessionNote">This text gives access to your account. Paste it only here. It is used once for this redemption and is not stored or logged by us.</p>
+      <button class="primary" type="submit" data-t="continue">Continue</button>
+      <button class="quiet" type="button" id="back-code" data-t="otherCode">Use a different code</button>
+    </form>
+  </section>
+
+  <section id="s-confirm" hidden>
+    <h1 data-t="confirmTitle">Confirm</h1>
+    <dl class="facts">
+      <div><dt data-t="plan">Plan</dt><dd id="plan2"></dd></div>
+      <div id="row-region"><dt data-t="region">Billing region</dt><dd id="region"></dd></div>
+    </dl>
+    <p class="note" id="recovery-note" data-t="recoveryNote" hidden>This account has a subscription that needs to be restored first. The redemption may ask you to try again later.</p>
+    <p class="lead" data-t="confirmLead">The code is used up when you confirm. This cannot be undone.</p>
+    <button class="primary" type="button" id="go" data-t="redeem">Redeem now</button>
+    <button class="quiet" type="button" id="back-account" data-t="back">Back</button>
+  </section>
+
+  <section id="s-result" hidden>
+    <p class="state" id="state"><span class="dot" aria-hidden="true"></span><span id="state-text"></span></p>
+    <p class="lead" id="state-lead" aria-live="polite"></p>
+    <dl class="facts"><div id="row-order" hidden><dt data-t="order">Reference</dt><dd id="order"></dd></div></dl>
+    <button class="primary" type="button" id="again" data-t="checkAgain" hidden>Check again</button>
+    <button class="quiet" type="button" id="restart" data-t="another" hidden>Redeem another code</button>
+  </section>
+</main>
+<footer><p data-t="foot">Your code and your session text are sent only to complete this redemption.</p></footer>
+<noscript><p class="alert">This page needs JavaScript.</p></noscript>
+<script src="/app.js" defer></script>
+</body>
+</html>

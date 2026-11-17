@@ -21,6 +21,7 @@ import {
   type BuyerInputConfig,
   type CheckoutView,
   type Order,
+  isInstantMode,
 } from '@24goods/shared'
 import { api } from '../api'
 import AfterSalesSheet from '../components/AfterSalesSheet.vue'
@@ -32,6 +33,8 @@ import PayChannelPicker from '../components/PayChannelPicker.vue'
 import { cancelPending, payCheckout, payOrder } from '../lib/orderActions'
 import { dropAccessCode, readAccessCode } from '../lib/attribution'
 import { openSupport as support } from '../lib/support'
+import CardOtpPanel from '../components/CardOtpPanel.vue'
+import DirectOrderPanel from '../components/DirectOrderPanel.vue'
 import { useRealtimeStore } from '../stores/realtime'
 import { useSiteStore } from '../stores/site'
 import { confirm, showImagePreview, showSuccessToast, showToast, toastError } from '../ui'
@@ -391,7 +394,7 @@ function gotCode() {
       <section class="section card pad">
         <div class="o-title">{{ order.title }}</div>
         <div class="o-line">
-          <span v-if="order.delivery_mode === 'auto_card'" class="badge-instant">
+          <span v-if="isInstantMode(order.delivery_mode)" class="badge-instant">
             {{ t(`deliveryMode.${order.delivery_mode}`) }}
           </span>
           <ManualPromise v-else :eta="order.delivery_eta_hours" compact />
@@ -465,11 +468,15 @@ function gotCode() {
         </div>
       </section>
 
+      <section v-if="order.delivery_mode === 'upstream_direct' && ['paid', 'manual_review', 'delivered', 'completed'].includes(order.status)" class="section card pad">
+        <DirectOrderPanel :order-id="order.id" :product-id="order.product_id" :can-resupply="['paid', 'manual_review'].includes(order.status)" />
+      </section>
+
       <section v-if="order.can_reveal || secrets.length || order.manual_delivery || ['delivered', 'completed'].includes(order.status)" class="section card pad">
         <DeliveryView
           :info="order.delivery_info"
           :codes="secrets"
-          :can-reveal="order.can_reveal"
+          :can-reveal="order.can_reveal && order.delivery_mode !== 'upstream_direct'"
           :revealing="revealing"
           :manual-text="order.manual_delivery?.text ?? null"
           :order-no="order.order_no"
@@ -481,6 +488,7 @@ function gotCode() {
           @hide="secrets = []"
           @confirm="confirmReceived"
         />
+        <CardOtpPanel v-if="order.delivery_mode === 'upstream_vcc' && ['delivered', 'completed'].includes(order.status)" :order-id="order.id" />
         <template v-if="order.manual_delivery?.attachment && attachmentUrl">
           <button
             v-if="order.manual_delivery.attachment.kind === 'image'"

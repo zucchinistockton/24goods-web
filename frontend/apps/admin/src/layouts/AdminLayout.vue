@@ -21,6 +21,8 @@ import {
   Shop,
   Tickets,
   User,
+  Van,
+  Connection,
   Wallet,
 } from '@element-plus/icons-vue'
 import { LogoMark } from '@24goods/shared/ui'
@@ -85,6 +87,7 @@ const groups = computed(() => {
         { path: '/orders', key: 'nav.orders', icon: List },
         { path: '/services', key: 'services.title', icon: List },
         { path: '/after-sales', key: 'nav.afterSales', icon: Service },
+        { path: '/procurement', key: 'procurement.title', icon: Connection },
         { path: '/users', key: 'v5.nav.users', icon: User },
         { path: '/announcements', key: 'news.title', icon: Bell },
       ],
@@ -117,6 +120,7 @@ const groups = computed(() => {
         key: 'v5.nav.g.system',
         items: [
           { path: '/settings', key: 'v5.nav.settings', icon: Setting },
+          { path: '/suppliers', key: 'suppliers.title', icon: Van },
           { path: '/audit', key: 'v5.nav.logs', icon: Document },
           { path: '/operations', key: 'ops.title', icon: DataBoard },
           { path: '/ledger', key: 'nav.ledger', icon: Coin },

@@ -199,7 +199,9 @@ async def overview(db: AsyncSession, res: Resources, tenant: Any) -> dict[str, A
             select(func.count(Order.id)).where(
                 Order.tenant_id == tenant,
                 Order.status == "paid",
-                Order.delivery_mode == "auto_card",
+                Order.delivery_mode.in_(
+                    ("auto_card", "upstream_cdk", "upstream_vcc", "upstream_direct")
+                ),  # every auto path
                 Order.paid_at < utcnow() - timedelta(minutes=UNDELIVERED_AFTER_MIN),
             )
         )

@@ -16,7 +16,7 @@ from app.models import Attachment, Product, User
 from app.modules.admin import variants as variant_svc
 from app.modules.admin.schemas import BulkProductsIn, ProductIn, ProductPatch
 from app.modules.catalog.categories import category_slugs
-from app.modules.catalog.service import apply_search, prepare_search, stock_counts
+from app.modules.catalog.service import apply_search, prepare_search, product_stock
 from app.modules.common.views import admin_product_view
 
 
@@ -72,7 +72,7 @@ def _summary(p: Product) -> dict[str, Any]:
 
 
 async def view(db: AsyncSession, p: Product) -> dict[str, Any]:
-    stock = (await stock_counts(db, [p.id])).get(p.id) if p.delivery_mode == "auto_card" else None
+    stock = (await product_stock(db, [p])).get(p.id)
     out = admin_product_view(p, stock)
     out["variants"] = (await variant_svc.admin_views(db, p.tenant_id, [p]))[p.id]
     return out
@@ -99,12 +99,24 @@ async def list_products(db: AsyncSession, page: Page, q: str | None, status: str
             .limit(page.page_size)
         )
     )
-    stock = await stock_counts(db, [p.id for p in rows if p.delivery_mode == "auto_card"])
+    stock = await product_stock(db, rows)
     vviews = await variant_svc.admin_views(db, rows[0].tenant_id, rows) if rows else {}
     outs = [admin_product_view(p, stock.get(p.id)) for p in rows]
     for p, out in zip(rows, outs, strict=True):
         out["variants"] = vviews.get(p.id, [])
     return page.wrap(outs, int(total))
+
+
+def _card_format(p: Product) -> None:
+    """A virtual-card product reveals ``<pan>----<MM/YY>----<cvv>``: the separator is fixed (the
+    sealed secret and the buyer's field split depend on it) and a label set is always present."""
+    if p.delivery_mode == "upstream_vcc":
+        p.delivery_separator = "----"
+        p.delivery_format = p.delivery_format or "Card number----Expiry (MM/YY)----CVV"
+    elif p.delivery_mode == "upstream_direct":
+        # the "delivery" is one short non-secret text: plan, masked account, supplier order
+        p.delivery_separator = "----"
+        p.delivery_format = p.delivery_format or "Plan----Account----Supplier order"
 
 
 async def create(db: AsyncSession, body: ProductIn, admin: User, ip: str | None) -> Product:
@@ -150,6 +162,7 @@ async def create(db: AsyncSession, body: ProductIn, admin: User, ip: str | None)
             else None
         ),
     )
+    _card_format(p)
     db.add(p)
     await db.flush()
     await audit(
@@ -241,6 +254,7 @@ async def patch(
     if data.get("usage_i18n") is not None:
         p.usage_i18n = data["usage_i18n"]
         p.usage_html_i18n = render_i18n(data["usage_i18n"])
+    _card_format(p)
     p.price_minor, p.floor_price_minor = price, floor
     await audit(
         db,

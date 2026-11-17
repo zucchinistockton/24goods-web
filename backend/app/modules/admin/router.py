@@ -457,8 +457,9 @@ async def refund_order(
     res: Resources = Depends(get_res),
 ) -> dict:
     order, msg = await order_admin.refund_undelivered(
-        db, order_id, body.reference, body.note, admin, client_ip(request)
-    )
+        db, order_id, body.reference, body.note, admin, client_ip(request),
+        body.acknowledge_irreversible,
+    )  # fmt: skip
     return await _order_reply(res, db, order, msg)
 
 
