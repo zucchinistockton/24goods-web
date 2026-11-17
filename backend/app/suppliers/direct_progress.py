@@ -56,24 +56,30 @@ _FAILED = _FAIL_PAYMENT | _FAIL_CANCEL | _FAIL_OTHER
 
 _RANK = {s: i for i, s in enumerate(VENDOR_STEPS)}
 _CTRL = re.compile("[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff]")
-_URL = re.compile(
-    r"(?i)\b(?:https?|ftp|wss?)://\S*|\bwww\.\S*|\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|net|org|io|cn|me|co|app|xyz|top)\b\S*"
-)
-_MAIL = re.compile(r"\S+@\S+")
-_DIGITS = re.compile(r"\d[\d \-]{6,}\d")
+# Every pattern below is linear: the input is truncated first (see ``clean_message``), URL- and
+# address-like TOKENS are dropped as a whole with fixed-literal searches (no nested or overlapping
+# ``\S+`` runs, so no polynomial backtracking), and the digit run is bounded.
+_TLD = re.compile(r"[a-z0-9-]\.(?:com|net|org|io|cn|me|co|app|xyz|top)(?![a-z0-9])")
+_SCHEME = re.compile(r"(?:https?|ftp|wss?)://|(?:^|[^a-z0-9])www\.")
+_DIGITS = re.compile(r"\d[\d \-]{6,40}\d")
 _LONG = re.compile(r"[A-Za-z0-9_\-+/=]{24,}")
 _CODE = re.compile(r"[^A-Za-z0-9_.:-]")
 _FIELDS = ("status", "stage", "payment_state", "funding_state")
 
 
+def _link_like(token: str) -> bool:
+    t = token.lower()
+    return "@" in t or "://" in t or bool(_SCHEME.search(t)) or bool(_TLD.search(t))
+
+
 def clean_message(value: Any, cap: int = MSG_CAP) -> str | None:
     """Vendor free text made safe to store and show staff: control characters removed, no URLs,
-    e-mail addresses, long digit runs (card numbers) or token-like strings, length-capped."""
+    e-mail addresses, long digit runs (card numbers) or token-like strings, length-capped.
+    The input is cut to ``4 * cap`` characters BEFORE any pattern runs (bounded work)."""
     if not isinstance(value, str):
         return None
-    s = _CTRL.sub(" ", value)
-    s = _MAIL.sub("", s)
-    s = _URL.sub("", s)
+    s = _CTRL.sub(" ", value[: 4 * cap])
+    s = " ".join(t for t in s.split() if not _link_like(t))
     s = _DIGITS.sub("****", s)
     s = _LONG.sub("", s)
     s = " ".join(s.split())[:cap].strip()
@@ -84,7 +90,7 @@ def clean_code(value: Any, cap: int = 48) -> str | None:
     """A machine token ``[A-Za-z0-9_.:-]`` (vendor status / stage / public_code)."""
     if isinstance(value, bool) or not isinstance(value, (str, int)):
         return None
-    s = _CODE.sub("_", str(value).strip())[:cap]
+    s = _CODE.sub("_", str(value)[: 4 * cap].strip())[:cap]
     return s or None
 
 
@@ -246,13 +252,51 @@ def _event_view(ev: Mapping[str, Any]) -> dict[str, Any] | None:
     return {k: v for k, v in out.items() if v is not None}
 
 
+def _event_time(ev: Any) -> str | None:
+    if not isinstance(ev, Mapping):
+        return None
+    for key in ("occurred_at", "created_at", "at", "time"):
+        v = ev.get(key)
+        if isinstance(v, (str, int)) and not isinstance(v, bool):
+            return str(v)[:40]
+    return None
+
+
+def _newest(events: list[Any], n: int) -> list[Any]:
+    """The newest ``n`` vendor events, oldest first. The vendor's list order is not documented:
+    sort by the event's own time when every item has one (stable, so ties keep list order),
+    otherwise by its numeric id, otherwise assume oldest-first and take the tail."""
+    items = events[-500:] if len(events) > 500 else list(events)
+    times = [_event_time(e) for e in items]
+    if items and all(t is not None for t in times) and len({type(e) for e in items}) == 1:
+        order = sorted(range(len(items)), key=lambda i: (times[i] or "", i))
+        return [items[i] for i in order][-n:]
+    ids: list[int | None] = []
+    for e in items:
+        raw = None
+        if isinstance(e, Mapping):
+            for key in ("timeline_event_id", "id", "event_id"):
+                if isinstance(e.get(key), (str, int)) and not isinstance(e.get(key), bool):
+                    raw = e[key]
+                    break
+        ids.append(
+            int(raw)
+            if isinstance(raw, int) or (isinstance(raw, str) and raw.isdigit() and len(raw) < 18)
+            else None
+        )
+    if items and all(i is not None for i in ids):
+        order = sorted(range(len(items)), key=lambda i: (ids[i] or 0, i))
+        return [items[i] for i in order][-n:]
+    return items[-n:]
+
+
 def vendor_view(order: Mapping[str, Any], events: Any = None) -> dict[str, Any]:
     """The whitelist of a vendor order read (``data.order`` + ``data.events``): four state fields
     and at most 50 sanitised timeline events. Nothing else of the body survives."""
     out: dict[str, Any] = {k: clean_code(order.get(k), 32) for k in _FIELDS}
-    evs = []
+    evs: list[dict[str, Any]] = []
     if isinstance(events, list):
-        for ev in events[:50]:
+        for ev in _newest(events, 50):
             if isinstance(ev, Mapping) and (v := _event_view(ev)) is not None:
                 evs.append(v)
     out["events"] = evs
@@ -276,6 +320,12 @@ def _now_iso(now: datetime | None) -> str:
     )
 
 
+def _step_rank(v: Mapping[str, Any]) -> int:
+    return _RANK[
+        vendor_rank(v.get("status"), v.get("stage"), v.get("payment_state"), v.get("funding_state"))
+    ]
+
+
 def record(
     state: dict[str, Any] | None,
     vendor: Mapping[str, Any],
@@ -290,7 +340,8 @@ def record(
     doc: dict[str, Any] = dict(state or {})
     entries: list[dict[str, Any]] = list(doc.get("events") or [])
     seen: list[str] = list(doc.get("seen") or [])
-    last = dict(doc.get("v") or {})
+    best = dict(doc.get("v") or {})  # the furthest state: what the BUYER's step is computed from
+    last = dict(doc.get("raw") or best)  # the latest state: the staff timeline compares to this
     at = _now_iso(now)
     added = 0
 
@@ -307,8 +358,18 @@ def record(
         # a field the vendor did not send keeps its last value (a webhook has no payment_state)
         merged = {k: cur[k] if cur[k] is not None else last.get(k) for k in _FIELDS}
         if merged != {k: last.get(k) for k in _FIELDS}:
-            push({k: v for k, v in merged.items() if v is not None})
-            doc["v"] = {k: v for k, v in merged.items() if v is not None}
+            clean = {k: v for k, v in merged.items() if v is not None}
+            push(clean)  # the staff timeline keeps every change, even a late lower one
+            doc["raw"] = clean
+            # a late or out-of-order answer, or a vendor ``failed`` on a still-active job, must
+            # not LOWER the step the buyer sees: only an equal or higher rank replaces ``v``
+            if not best or (
+                _low(merged.get("status")) not in _FAILED
+                and _step_rank(merged) >= _step_rank(best)
+                and _step_rank({"status": merged.get("status")})
+                >= _step_rank({"status": best.get("status")})
+            ):
+                doc["v"] = clean
     for ev in vendor.get("events") or []:
         tid = ev.get("tid")
         if not tid or tid in seen:
@@ -326,13 +387,22 @@ def record(
 def from_job(job: Any, *, half: bool = False, order_refunded: bool = False) -> Progress:
     """:func:`map_progress` for a ``ProcurementJob`` row (duck-typed: state, error_code,
     upstream_ref, first_sent_at, progress)."""
-    v = (getattr(job, "progress", None) or {}).get("v") or {}
+    doc = getattr(job, "progress", None) or {}
+    v = doc.get("v") or {}
+    status = v.get("status")
+    if not v:  # ``upstream_status`` is ``status`` or ``op:status`` / ``status:fee_status``
+        status = str(job.upstream_status or "").split(":", 1)[0] or None
+    if job.state in ("failed", "voided", "void_pending", "needs_manual"):
+        # the failure reason comes from the LATEST vendor status (``v`` never moves backwards)
+        raw_status = (doc.get("raw") or {}).get("status")
+        if _low(raw_status) in _FAILED:
+            status = raw_status
     return map_progress(
         job_state=job.state,
         error_code=job.error_code,
         waiting_supplier=job.state == "queued" and job.error_code == "waiting_for_card",
         half=half,
-        status=v.get("status") or job.upstream_status,
+        status=status,
         stage=v.get("stage"),
         payment_state=v.get("payment_state"),
         funding_state=v.get("funding_state"),

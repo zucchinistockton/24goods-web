@@ -362,7 +362,7 @@ async def _supplier_progress(db: AsyncSession, job: ProcurementJob) -> dict[str,
     p = dp.from_job(job, order_refunded=order_status == "refunded")
     return {
         "supplier_timeline": list(doc.get("events") or []),
-        "vendor_state": dict(doc.get("v") or {}),
+        "vendor_state": dict(doc.get("raw") or doc.get("v") or {}),
         "buyer_progress": {
             "step": p.step,
             "percent": p.percent,

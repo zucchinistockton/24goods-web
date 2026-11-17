@@ -22,7 +22,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from app.suppliers.base import SupplierEvent, WebhookRejected, dec
-from app.suppliers.direct_progress import clean_message
+from app.suppliers.direct_progress import clean_code, clean_message
 
 MAX_BODY = 64 * 1024
 SIGNATURE_HEADER = "x-signature"
@@ -50,6 +50,11 @@ _FIELDS: dict[str, tuple[str, ...]] = {
     ),
     "card_operation": ("operation", "operation_id", "status", "card_id", "channel"),
     "card_3ds_otp": ("card_id", "matrix_id", "channel"),
+}  # fmt: skip
+# progress fields (issue #30): machine tokens only, character-restricted and length-capped
+_CODE_CAPS = {
+    "timeline_event_id": 64, "category": 32, "step": 48, "public_code": 48, "payment_fact": 32,
+    "payment_state": 32, "funding_state": 32,
 }  # fmt: skip
 _AMOUNTS = frozenset({"amount", "balance_before", "balance_after", "settle_amount", "auth_amount"})
 
@@ -85,6 +90,8 @@ def mask_pan(value: Any) -> str:
 
 
 def _scalar(key: str, v: Any) -> Any:
+    if key in _CODE_CAPS:
+        return clean_code(v, _CODE_CAPS[key])
     if key in _AMOUNTS:
         try:
             return str(dec(v))
