@@ -8,6 +8,7 @@ from sqlalchemy import delete, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import audit
+from app.core.config import Settings
 from app.core.deps import Page
 from app.core.errors import Conflict, InvalidState, NotFound, Validation
 from app.core.markdown import render_i18n
@@ -17,6 +18,7 @@ from app.modules.admin import variants as variant_svc
 from app.modules.admin.schemas import BulkProductsIn, ProductIn, ProductPatch
 from app.modules.catalog.categories import category_slugs
 from app.modules.catalog.service import apply_search, prepare_search, product_stock
+from app.modules.common.vcc import VCC_MODE, ensure_sellable, vcc_sales_enabled
 from app.modules.common.views import admin_product_view
 
 
@@ -119,7 +121,10 @@ def _card_format(p: Product) -> None:
         p.delivery_format = p.delivery_format or "Plan----Account----Supplier order"
 
 
-async def create(db: AsyncSession, body: ProductIn, admin: User, ip: str | None) -> Product:
+async def create(
+    db: AsyncSession, body: ProductIn, admin: User, ip: str | None, settings: Settings | None = None
+) -> Product:
+    ensure_sellable(settings, body.delivery_mode)
     try:
         price = parse_amount(body.price)
         floor = _floor(body.floor_price)
@@ -191,7 +196,12 @@ async def get(db: AsyncSession, product_id: uuid.UUID, *, lock: bool = False) ->
 
 
 async def patch(
-    db: AsyncSession, product_id: uuid.UUID, body: ProductPatch, admin: User, ip: str | None
+    db: AsyncSession,
+    product_id: uuid.UUID,
+    body: ProductPatch,
+    admin: User,
+    ip: str | None,
+    settings: Settings | None = None,
 ) -> Product:
     p = await get(db, product_id, lock=True)
     before = _summary(p)
@@ -254,6 +264,9 @@ async def patch(
     if data.get("usage_i18n") is not None:
         p.usage_i18n = data["usage_i18n"]
         p.usage_html_i18n = render_i18n(data["usage_i18n"])
+    if ("status" in data or "delivery_mode" in data) and p.status == "active":
+        # owner decision 2026-11-17: a virtual-card product can never be (re)activated
+        ensure_sellable(settings, p.delivery_mode)
     _card_format(p)
     p.price_minor, p.floor_price_minor = price, floor
     await audit(
@@ -360,7 +373,13 @@ async def restore(db: AsyncSession, product_id: uuid.UUID, admin: User, ip: str 
     return p
 
 
-async def bulk(db: AsyncSession, body: BulkProductsIn, admin: User, ip: str | None) -> int:
+async def bulk(
+    db: AsyncSession,
+    body: BulkProductsIn,
+    admin: User,
+    ip: str | None,
+    settings: Settings | None = None,
+) -> int:
     """publish | unpublish | archive | restore | set_category over up to 200 products.
     Rows that cannot take the action (e.g. restore of a non-archived product) are skipped."""
     ids = list(dict.fromkeys(body.ids))
@@ -379,6 +398,8 @@ async def bulk(db: AsyncSession, body: BulkProductsIn, admin: User, ip: str | No
     changed: list[str] = []
     for p in rows:
         if body.action == "publish" and p.status == "draft":
+            if p.delivery_mode == VCC_MODE and not vcc_sales_enabled(settings):
+                continue  # owner decision 2026-11-17: skipped, never published
             p.status = "active"
         elif body.action == "unpublish" and p.status == "active":
             p.status = "draft"

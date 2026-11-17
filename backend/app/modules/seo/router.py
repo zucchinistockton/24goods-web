@@ -29,6 +29,7 @@ from app.core.storefront import Storefront, is_custom_host, resolve
 from app.models import Article, Product
 from app.modules.catalog import service as catalog
 from app.modules.catalog.categories import disabled_slugs
+from app.modules.common.vcc import sellable
 from app.modules.content.site import tenant_settings
 from app.modules.reseller.pricing import Pricer
 from app.modules.seo import template
@@ -452,7 +453,10 @@ async def product(
     if uid is not None and str(uid) == pid.lower():
         row = await db.scalar(
             select(Product.category).where(
-                Product.id == uid, Product.tenant_id == tid, Product.status == "active"
+                Product.id == uid,
+                Product.tenant_id == tid,
+                Product.status == "active",
+                sellable(),
             )
         )
         if row is not None and row not in await disabled_slugs(db, tid):
@@ -617,7 +621,7 @@ async def sitemap(
     if ctx.indexable:
         hidden_cats = await disabled_slugs(db, tid)
         stmt = select(Product.id, Product.updated_at).where(
-            Product.tenant_id == tid, Product.status == "active"
+            Product.tenant_id == tid, Product.status == "active", sellable()
         )
         if hidden_cats:
             stmt = stmt.where(Product.category.not_in(hidden_cats))

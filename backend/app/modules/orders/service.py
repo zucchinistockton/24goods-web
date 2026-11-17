@@ -61,6 +61,7 @@ from app.modules.chat.messages import (
 from app.modules.common.buyerinput import normalize_value
 from app.modules.common.modes import CODE_MODES, UPSTREAM_MODES
 from app.modules.common.orderviews import latest_tickets, one_view, order_views  # noqa: F401
+from app.modules.common.vcc import ensure_sellable
 from app.modules.common.views import REVEALABLE, order_card_payload
 from app.modules.content.site import tenant_settings
 from app.modules.orders import direct as direct_svc
@@ -308,6 +309,7 @@ async def create_order(
     (``fee = ceil((subtotal - discount) * permille / 1000)``); the order stores the applied
     rate. The one-time plaintext access code is left on ``order.access_code_plain``
     (never persisted, never logged)."""
+    ensure_sellable(settings, delivery_mode)  # owner decision 2026-11-17: no virtual cards
     if (
         delivery_mode == "upstream_direct"
         and kind == "goods"
@@ -852,6 +854,7 @@ async def reveal_for(res: Resources, order: Order, buyer_id: uuid.UUID) -> list[
     if not (
         order.buyer_id == buyer_id
         and order.delivery_mode in CODE_MODES
+        and order.delivery_mode != "upstream_vcc"  # owner decision 2026-11-17: never shown
         and order.status in REVEALABLE
     ):
         raise InvalidState("Nothing to reveal for this order")
