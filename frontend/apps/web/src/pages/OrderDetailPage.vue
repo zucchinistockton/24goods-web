@@ -476,7 +476,7 @@ function gotCode() {
         <DeliveryView
           :info="order.delivery_info"
           :codes="secrets"
-          :can-reveal="order.can_reveal"
+          :can-reveal="order.can_reveal && order.delivery_mode !== 'upstream_direct'"
           :revealing="revealing"
           :manual-text="order.manual_delivery?.text ?? null"
           :order-no="order.order_no"
