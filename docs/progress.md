@@ -18,12 +18,15 @@ registry token): tag rollback images from the running `:main`, `compose pull api
 the 2026-11-16 03:30 set is in `/root/kesiv-backups/nightly-20261116T033001Z` (`pg_restore --list`: 43 tables).
 Backups are still unencrypted and there has been no restore drill (#28, owner).
 
-**Active work is not on `main` (2026-11-16).** The current hand-off, with the ordered next steps, is the top
+**Active work is not on `main` (2026-11-17).** The current hand-off, with the ordered next steps, is the top
 block of `docs/progress.md` on branch **`feat/v12-procurement`** (local worktree
-`.claude/worktrees/agent-af3aa371765135692`): `git show origin/feat/v12-procurement:docs/progress.md | head -110`.
-In short: v12 procurement M2 is merged into `feat/v12-procurement` (PR #2, all payment-audit findings fixed
-except two deferred to M3) and runs on the demo with the procurement process; it is not on `main`. Open: the redemption site
-(backend built on `feat/v12-redeem`), the ZovoCard sandbox webhook (account expires 2026-11-18 10:57), M3.
+`.claude/worktrees/agent-af3aa371765135692`): `git show origin/feat/v12-procurement:docs/progress.md | head -160`.
+In short: v12 procurement is complete on `feat/v12-procurement` — M2 (CDK codes), the redemption site
+(`redeem.kesiv.com`, on the demo against the vendor sandbox), M3 part 1 (virtual cards) and M3 part 2 (direct
+subscription on the buyer's account), each payment-audited and security-reviewed, each verified against the real
+ZovoCard sandbox on the demo. It is not on `main` and not in production: that waits for the M1 exit gate
+(independent security review, AGENTS.md §1.11). The vendor sandbox expires 2026-11-18 10:57; after that the demo
+must go back to the simulator (steps in that hand-off).
 
 **Optional two-factor login (2026-11-16, PR `feat/totp-2fa`, ADR-039, migration `0022a_user_totp`).** Buyers
 and staff can turn on an authenticator app (TOTP). Login for an enrolled account is password → pending token
