@@ -478,8 +478,10 @@ async def apply(
     only a recomputed recommendation that is exactly that."""
     await enforce(res.redis, "pricing:apply", str(admin.id), 60, 3600)
     tid = admin.tenant_id
-    tenant = await _tenant_row(db, tid)  # lock 1: the settings the maths reads
-    # lock 2: the row whose price changes (populate_existing: never a stale identity-map copy)
+    # Lock order: the row whose price changes FIRST, then the tenant settings row. A normal price
+    # edit locks the product and then inserts an audit row, whose foreign key takes a KEY SHARE
+    # lock on the tenant row; taking the tenant row first (FOR UPDATE) deadlocked against it.
+    # populate_existing: never a stale identity-map copy.
     lock = {"populate_existing": True}
     p = await db.scalar(
         select(Product)
@@ -503,6 +505,16 @@ async def apply(
         )
         if v is None:
             raise NotFound("Variant not found")
+    # FOR NO KEY UPDATE: serialises against a settings change (FOR UPDATE) but not against the
+    # foreign-key KEY SHARE locks every audit / order insert of this tenant takes
+    tenant = await db.scalar(
+        select(Tenant)
+        .where(Tenant.id == tid)
+        .with_for_update(key_share=True)
+        .execution_options(**lock)
+    )
+    if tenant is None:
+        raise NotFound("Tenant not found")
     ts = dict(tenant.settings or {})
     st = cm.from_tenant(ts)
     _ch, rate = _channel(res, ts)
