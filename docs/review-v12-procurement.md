@@ -1219,6 +1219,53 @@ reasons for the three new `error_code`s.
   after the insert) the API deletes its own `pending` row on failure, the sweeper nulls it after 15 min
   (`MAX_AGE`) and deletes unused rows after 2 days.
 
+**Round 2 (payment audit + security re-review of the same head)**
+
+* **No-check half-price bypass (HIGH).** A plain variant (no `options`) or a product with no variants could hold
+  a full-price primary and a half-price secondary source; failover or round-robin then reached the half plan
+  with no check. Fixed three ways: (a) source create / patch / enable refuse a target whose enabled sources mix
+  half and non-half plans, or mix plan / product / country once one is half-price (422 `source_plan_mixed`);
+  (b) `requirement()` is "required" when ANY enabled source is half-price (the storefront flag uses the same
+  rule); (c) fail-closed in `engine.candidates()`: an order with no attached check never gets a half-price
+  source, and with nothing left the job is `needs_manual`.
+* **Live options.** The engine reads the variant's live `options`: a change is refused with 409
+  `variant_has_open_orders` while an order of the variant is `pending_payment` / `paid` / `manual_review`, and with
+  422 `source_options_mismatch` if an enabled source would no longer match.
+* **Account binding is keyed.** The `email_masked` comparison (first letter + domain) is only an early UX hint on
+  the API. The binding is `account_hmac`: HMAC-SHA256 over `tenant_id` and the canonical identity (ChatGPT
+  account id, else the lower-cased full e-mail), computed by PROCUREMENT when it opens the check's sealed
+  session, stored on the check row (the API role cannot read it). At execution procurement opens the order's
+  sealed session, derives the same identity and compares (constant time) BEFORE any vendor call; a mismatch or a
+  missing identity for a session-bearing plan ends the job `needs_manual` with `half_check_account_mismatch` and
+  no spend. A `manual` check has no session (staff decide) and so no binding. Claude / Grok sessions carry no
+  account, so a non-manual check for them is refused (`half_check_unsupported`).
+  **Key:** HKDF-SHA256 of the lexicographically first PRIVATE session key of the procurement credential keyring
+  (`APP_CRED_PRIVATE_KEYS_FILE`; procurement only). No new variable. Adding later key ids keeps bindings valid;
+  removing the first id invalidates open checks (30 min; a refusal before any spend).
+* **Execution-time refusal** now covers EVERY ineligible reason of the vendor preflight (blocked, waiting,
+  active / recovering subscription, `quote_error`, no quote), not only `quote_error` / `plan_not_quoted`.
+* **CDK orders (bug).** A CDK order has no session, so `claim` skips the account comparison for
+  `upstream_cdk`; it used to fail every CDK half-price order with `half_check_account_mismatch`.
+* **Price below cost.** The price guard also runs when a variant is CREATED active; the price AND the floor
+  (quotes use the floor) must be `>=` the highest cost estimate of its sources; a variant with `options` or with
+  sources whose source has no `cost_estimate` cannot be activated (`cost_unknown`); generated variants get
+  `floor_price` = the converted cost estimate (rounded up; 0 until an FX rate exists); enabling a source or raising
+  its cost under an ACTIVE variant is refused with `price_below_cost` / `cost_unknown` / `fx_rate_missing`.
+  **Not included in the guard:** promotions / coupons and payment-channel fees (see the margin report).
+* **DB (0032, amended).** A BEFORE INSERT trigger lets `app_api` open only `pending` / `manual_pending` checks
+  with no `order_id`, `reason`, `decided_at` or `account_hmac`; setting `order_id` also requires an order of the
+  same tenant and BUYER as the check. The triggers are role-named, so the API asserts at startup in production
+  that it connects as `app_api`. All three functions use `search_path = pg_catalog, public, pg_temp`.
+* **`chatgpt_direct` oracle / DoS.** The same session is read from ChatGPT once per 6 h (Redis key = keyed
+  hash of the session cookie, per tenant; the value is the earlier coarse outcome, only `passed` / `ineligible`
+  are kept); the method needs an account at least 24 h old or with a paid order (`half_check_account_new`, coarse
+  buyer message). Registration: e-mail verification is a per-tenant OPTION (`email_verify_on_register`, default
+  off), with a limit of 5 registrations per minute per IP and optional Turnstile, so the age gate is the control
+  that makes a mass of throw-away accounts cost time.
+* **Catalog path.** `decorate` reads the half-price flag with ONE query per product (`required_flags`), not one
+  per variant. `GET /half-checks/required` is rate limited (60/min per user, 120/min per IP).
+* `region_offered` fails closed when the vendor's region list is empty and the source pins a country.
+
 ### 20.7 Left open
 
 * The e2e smoke scenario was not extended (CI runs it); the typecheck of the new Vue components ran only in CI.
