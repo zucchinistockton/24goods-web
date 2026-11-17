@@ -21,7 +21,7 @@ from starlette.routing import Route
 
 from app.core.errors import error_body
 from app.core.ratelimit import hit
-from app.procurement import cardpool, engine, halfcheck, service
+from app.procurement import cardpool, engine, halfcheck, redeem_admin, service
 from app.procurement.context import ProcurementContext
 
 log = logging.getLogger("app.procurement.internal")
@@ -279,8 +279,51 @@ def create_procurement_app(ctx: ProcurementContext) -> Starlette:
         except Exception as exc:
             return _card_error(exc)
 
+    def _cdk_error(exc: Exception) -> JSONResponse:
+        if isinstance(exc, redeem_admin.BadCode):
+            return _err(422, "validation", "That is not a redemption code")
+        if isinstance(exc, LookupError) and not isinstance(exc, service.SupplierNotFound):
+            return _err(404, "cdk_not_found", "The supplier has no such code")
+        if isinstance(exc, redeem_admin.CdkRejected):
+            return _err(409, "cdk_rejected", "The supplier refused: " + exc.code[:40])
+        return _card_error(exc)
+
+    async def redeem_cdk_status(request: Request) -> JSONResponse:
+        """``POST /internal/redeem/cdk-status {"tenant_id", "code"}``: the vendor's status of a code
+        (read only). The code is used in memory for this one call."""
+        got = await _card_call(request, "proc:redeem-admin", 60)
+        if isinstance(got, JSONResponse):
+            return got
+        data, tid, _ = got
+        try:
+            return JSONResponse(
+                await redeem_admin.cdk_status(ctx, tid, str(data.get("code") or "")),
+                headers=NO_STORE,
+            )
+        except Exception as exc:
+            return _cdk_error(exc)
+
+    async def redeem_cdk_set(request: Request) -> JSONResponse:
+        """``POST /internal/redeem/cdk-set {"tenant_id", "code", "action": disable|enable}``."""
+        got = await _card_call(request, "proc:redeem-admin-write", 30)
+        if isinstance(got, JSONResponse):
+            return got
+        data, tid, _ = got
+        action = data.get("action")
+        if action not in ("disable", "enable"):
+            return _err(422, "validation", "action must be disable or enable")
+        try:
+            return JSONResponse(
+                await redeem_admin.cdk_set(ctx, tid, str(data.get("code") or ""), action),
+                headers=NO_STORE,
+            )
+        except Exception as exc:
+            return _cdk_error(exc)
+
     return Starlette(
         routes=[
+            Route("/internal/redeem/cdk-status", redeem_cdk_status, methods=["POST"]),
+            Route("/internal/redeem/cdk-set", redeem_cdk_set, methods=["POST"]),
             Route("/internal/cards/pool", cards_pool, methods=["POST"]),
             Route("/internal/cards/schedule", cards_schedule, methods=["POST"]),
             Route("/internal/cards/rules", cards_rules, methods=["POST"]),

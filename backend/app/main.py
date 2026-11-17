@@ -38,6 +38,7 @@ from app.modules.admin.procurement_cost import router as admin_procurement_cost_
 from app.modules.admin.procurement_jobs import router as admin_procurement_jobs_router
 from app.modules.admin.procurement_options import router as admin_procurement_options_router
 from app.modules.admin.procurement_pricing import router as admin_procurement_pricing_router
+from app.modules.admin.procurement_redeem import router as admin_procurement_redeem_router
 from app.modules.admin.procurement_sources import router as admin_procurement_sources_router
 from app.modules.admin.router import router as admin_router
 from app.modules.admin.settings import router as admin_settings_router
@@ -217,6 +218,7 @@ def api_router() -> APIRouter:
         admin_procurement_jobs_router,
         admin_procurement_cost_router,
         admin_procurement_cards_router,
+        admin_procurement_redeem_router,
         admin_procurement_pricing_router,
         admin_procurement_options_router,
         webhooks_router,

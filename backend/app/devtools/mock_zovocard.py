@@ -782,6 +782,16 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
                 )
             cdk["status"] = "disabled"
             return JSONResponse(_env(0, {"id": cdk["id"], "status": "disabled"}))
+        m = re.fullmatch(r"/gpt-direct/cdks/([0-9]{1,12})/enable", path)
+        if m:  # "restore a code the account may enable to unused": only a disabled one here
+            cdk = mock.cdks.get(int(m.group(1)))
+            if cdk is None or cdk["status"] != "disabled":
+                return JSONResponse(
+                    {"code": 409, "error_code": "CDK_ENABLE_REJECTED", "msg": "not disabled"},
+                    status_code=409,
+                )
+            cdk["status"] = "unused"
+            return JSONResponse(_env(0, {"id": cdk["id"], "status": "unused"}))
         return JSONResponse({"code": 404, "msg": "not implemented in mock"}, status_code=404)
 
     async def dispatch(request: Request) -> JSONResponse:
@@ -934,7 +944,18 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
             return JSONResponse(_env(0, {"total": len(ordered), "list": rows}))
         if path == "/gpt-direct/cdks":
             items = sorted(mock.cdks.values(), key=lambda c: -c["id"])
-            return JSONResponse(_env(0, {"total": len(items), "list": items}))
+            q = request.query_params.get("q")  # the real list searches the code; substring here
+            if q:
+                items = [c for c in items if q in str(c.get("code"))]
+            for key in ("status", "plan"):
+                want = request.query_params.get(key)
+                if want:
+                    items = [c for c in items if c.get(key) == want]
+            try:
+                size = min(200, max(1, int(request.query_params.get("page_size", "20"))))
+            except ValueError:
+                size = 20
+            return JSONResponse(_env(0, {"total": len(items), "list": items[:size]}))
         if path == "/balance":
             if mock.scenarios:  # the E2E smoke buys cards: enough wallet for the balance breaker
                 return JSONResponse(
