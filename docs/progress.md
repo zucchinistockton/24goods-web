@@ -4,7 +4,7 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 ## Current state — hand-off (read this first in a new session)
 
-**Hand-off 2026-11-17 evening (session paused on the 5-hour limit). START HERE.**
+**Hand-off 2026-11-17 13:24 UTC (session paused on the 5-hour limit). START HERE.**
 
 - **Production (c4) runs `55ad99a`** (v12 launch, see the launch block below). Nothing newer is deployed there, by
   owner decision ("develop on the demo, not production"). Waiting for production: #36 (no virtual-card sales /
@@ -243,7 +243,7 @@ merge (auth path, AGENTS.md §5.3); the UI was typechecked by CI only and never 
     balance read (N4); unbounded RETRYABLE (N7); parked job with a healthy alternative (N8); refund with a
     fulfilled-undelivered unit (N5); recovery `IDEMPOTENCY_CONFLICT` (N6). The fresh pre-check adds one
     `GET /gpt-direct/plans` per first send: check the mock's rate limit and the e2e scenario plans.
-- **Done in the 2026-11-15 night session.** Audit fixes for H1, H2, M1–M5, L1, L2, L4, L5, L7 (`38754af`..
+- **Done in the 2026-11-15 session.** Audit fixes for H1, H2, M1–M5, L1, L2, L4, L5, L7 (`38754af`..
   `6469097`, migration 0027, 40 tests); admin page handles the new codes (`5531880`); `main` merged into the
   branch and procurement alerts moved to the Telegram message catalog (`2895860`). Behaviour change: a source
   cannot be switched on without a cost estimate unless the supplier reports its own USD price. On `main`:
@@ -275,7 +275,7 @@ merge (auth path, AGENTS.md §5.3); the UI was typechecked by CI only and never 
 - Housekeeping: `docs/research/zovocard/` is untracked in the main checkout (vendor docs; decide whether it
   belongs in git); stale local branches `worktree-agent-*`, `fix/pay-ux`, `docs/deploy-*` can be deleted.
 
-**Hand-off 2026-11-15 evening (superseded by the block above; kept for the M2 build notes and the original
+**Hand-off 2026-11-15 (superseded by the block above; kept for the M2 build notes and the original
 audit findings).**
 
 - **START HERE.** Branch `feat/v12-procurement-m2` (worktree `.claude/worktrees/agent-af3aa371765135692`,
