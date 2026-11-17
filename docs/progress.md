@@ -4,22 +4,24 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 ## Current state — hand-off (read this first in a new session)
 
-**Hand-off 2026-11-17 13:24 UTC (session paused on the 5-hour limit). START HERE.**
+**Hand-off 2026-11-17 (updated after PR #38 was merged and deployed to the demo). START HERE.**
 
 - **Production (c4) runs `55ad99a`** (v12 launch, see the launch block below). Nothing newer is deployed there, by
   owner decision ("develop on the demo, not production"). Waiting for production: #36 (no virtual-card sales /
-  no card reveal) and #37 (cost model). Hand deploy procedure + `--profile procurement` in the launch block.
-- **Demo (demo.kesiv.com) runs `main` `156ddc7`**: v12 + #36 + #37. Demo redemption page `redeem-demo.kesiv.com`
-  (production page `redeem.kesiv.com`). Testing guide: `docs/testing-guide.md`. The vendor sandbox expires
-  **2026-11-18 10:57**: then run `/opt/24goods-demo/deploy/sandbox-off.sh` on the demo host.
+  no card reveal), #37 (cost model) and #38 (regions + half-price check). Hand deploy procedure +
+  `--profile procurement` in the launch block.
+- **Demo (demo.kesiv.com) runs `main` `401c401`**: v12 + #36 + #37 + #38 (CI images of run 44124958536 loaded as
+  `goods24-{api,web}:m2-demo`, previous `156ddc7` kept as `:demo-prev`; migrations `0031`/`0032`; pre-deploy dump
+  `/root/demo-backups/demo-20261117T162233Z.dump`). Demo redemption page `redeem-demo.kesiv.com` (production page
+  `redeem.kesiv.com`). Testing guide: `docs/testing-guide.md`. The vendor sandbox expires **2026-11-18 10:57**:
+  then run `/opt/24goods-demo/deploy/sandbox-off.sh` on the demo host.
 - **Open work, in order** (tracking issue #33; owner accepted all suggestions; demo only):
-  1. **#27 PR #38 `feat/regions-half`** (worktree `.claude/worktrees/regions`): plan × region variants + half-price
-     check before payment (vendor preflight / `chatgpt_direct` / manual, admin-selectable). **Not mergeable yet**:
-     frontend typecheck error (`RegionsPanel.vue:105-106`), payment audit FAIL (failover can buy a full-price plan for
-     a half-price sale; sources not validated against variant options) and security notes. **The full fix list is on
-     PR #38** (comment of 2026-11-17). **Fixes applied 2026-11-17 on the branch** (typecheck, source pinning, account /
-     qty binding, unpriced variants, DEFINER decision, hardening; see review-v12 §20.8), then two re-audit rounds (no-check half-price failover, keyed account binding
-     from token claims, cost floor, INSERT guard, prod role assertion). Next: CI → merge → demo → browser check.
+  1. ~~#27 PR #38~~ **done**: plan × region variants + half-price check before payment, merged `401c401` after three
+     fix rounds and re-audits (review-v12 §20.8), deployed to the demo, browser-checked (buyer product page at
+     375 px, console Procurement → Regions in light and dark). **Before real money:** a `manual` check on a direct
+     source has no account binding (vendor preflight is the gate); demo has no plan × region variants yet (create
+     them with "Generate plan × region variants" on a CDK / direct product to try the buyer flow); e-mail
+     verification at registration is off by default (the 24 h account-age gate is the control for `chatgpt_direct`).
   2. #29 automatic card selection / issuance (owner: yes), 3. #30 progress display + detailed logs,
   4. #31 redemption admin (port features from the vendor's `zovo_card_cdk_auto`, do not deploy it — evaluation on
      #31), 5. #35 shop sells codes, redemption on its own platform (both modes kept; direct can be switched off per
