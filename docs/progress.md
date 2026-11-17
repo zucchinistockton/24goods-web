@@ -7,7 +7,38 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 **v12 released to `main` (2026-11-17, owner decision).** The owner stated on 2026-11-17 that the independent
 security review (M1 exit gate, AGENTS.md §1.11) has been passed and approved merging v12 procurement to `main`,
 deploying it to production and selling with real money. The review report itself is not in the repository yet:
-file it under `docs/research/` or link it here. Production deploy record: see the block below once done.
+file it under `docs/research/` or link it here.
+
+**Production launch of v12, 2026-11-17 (owner's go-ahead in the same message).** Production (c4) runs `55ad99a`
+(`main` after the release merge #23 `d074ac3` and the redeem fix #24); migrations `0023`–`0030` applied (database at
+`0030_cred_delete_backstop`); api / web / delivery / **procurement** healthy; `prod.sh smoke` all pass; data intact
+(42 orders before and after); FORCE RLS on every new table. Pre-deploy dump:
+`/root/kesiv-backups/predeploy-v12-20261117T040400Z` (sha256 verified, 44 tables). Rollback images on c4:
+`goods24-{api,web}:rollback-eed9972` (before v12; to roll back the schema too, restore that dump) and
+`:rollback-d074ac3` (v12 before #24). Set up by hand on c4 (backups `deploy/env.bak-20261117T042914Z`,
+`.env.bak-*`, `/opt/kesiv/backups/users.acl-*`, `/opt/kesiv/backups/certs-*`): session keypair
+`secrets/cred_{public,private}_keys.json` (kid `c20261117-e7…`, private key 0400 for the container user only),
+`env/procurement.env` (DB role `app_procurement`, Redis user `procurement`, production ZovoCard keys,
+`APP_PROCUREMENT_ALLOW_PRODUCTION_WRITES=true`, redeem proxy `APP_REDEEM_*` with `SUPPLIER_ENV=production`),
+`env/api.env` additions (procurement URL / token, session public key, production webhook key,
+`APP_PROCUREMENT_ALLOW_PRODUCTION=true`), `APP_DB_PROCUREMENT_PASSWORD` in `env/migrate.env`, `REDEEM_HOST` in
+`.env`. **Compose commands on c4 now need `--profile procurement`** (otherwise the procurement process is not
+started; `scripts/prod.sh deploy` does not pass it and still has the dead registry token — use the hand procedure).
+Production supplier `zovocard` (env production) created and enabled through the admin API; probe green (auth, IP
+allowed, card + direct permissions). **Vendor wallet balance at launch: 6.27 USD.** Production webhook endpoint
+verified with a self-signed event (signed 200, forged 401).
+**`redeem.kesiv.com` moved to production:** new Cloudflare Origin CA certificate for `shop` + `redeem`
+(id `15699080…`, valid to 2041; key and old files in `~/.secrets/prod-certs/`, old set in `old-*`), per-hostname
+authenticated origin pull enabled for `redeem.kesiv.com`, origin rule port 8088, DNS A → 141.98.198.150. The page
+and the proxy answer against the production vendor (an unknown code gets `code_unavailable`). The demo is back on
+`redeem.localhost`; the dev box's `/etc/caddy/sites/redeem.kesiv.com.conf` was removed (backup in
+`/root/demo-backups/`).
+**Owner to do before selling supplier products:** top up the ZovoCard wallet; set the production webhook callback
+to `https://shop.kesiv.com/api/v1/webhooks/zovocard` in the vendor console (signing key = `ZOVOCARD_WEBHOOK_SECRET`);
+create the products and their sources (plan / card product, price, cost estimate, our funding card for direct
+products) in the console; rotate the ZovoCard production API key and webhook key and `APP_OWNER_PASSWORD` (all
+were pasted in chat); file the security review report. Still open: encrypted backups and a restore drill (#28);
+c4 disk at 88 %.
 
 **Production deploys 2026-11-16 (owner's explicit go-ahead, by hand).** (1) `24a64fb`: dark mode #6 + Telegram
 language #7, no migration. (2) `eed9972`: optional two-factor login #10, migration `0022a_user_totp` (additive;
@@ -413,30 +444,6 @@ Order of work: M1 (adapter + probe + process + admin Suppliers page) -> M2 (CDK,
 ops, redemption site) -> M3 (VCC, 3DS, direct top-up). Side PRs: `fix/pay-ux-reco` (USDT/Alipay pay UX,
 exclude-from-recommendations flag), `feat/totp-2fa` (optional TOTP, spec §13). Status of each: see the
 spec's §10 and the open PRs.
-**Optional two-factor login (2026-11-16, PR `feat/totp-2fa`, ADR-039, migration `0022a_user_totp`).** Buyers
-and staff can turn on an authenticator app (TOTP). Login for an enrolled account is password → pending token
-→ code (`POST /auth/login/2fa`); ten single-use recovery codes; admins can reset another user's second
-factor (Users page). Buyer app: second step on the login page (also after Google sign-in), My account →
-Settings → Two-factor login. Console: second step on the login page, user menu → Two-factor login. Tests:
-`tests/test_twofactor.py`, `tests/test_totp_core.py`. Not built: "require 2FA for staff". Security-reviewer (2026-11-16): pass with notes, no bypass of the second factor; its High finding (race in
-the wrong-code limiter) and the Medium ones (password reset keeps a squatter's enrolment; admin could reset
-another admin) are fixed, the rest are recorded as accepted risks in ADR-039. **Needs a human review before
-merge (auth path, AGENTS.md §5.3); the UI was typechecked by CI only and never seen in a browser.** When v12 reaches `main`, `0023_procurement` must revise `0022a_user_totp`.
-**Telegram notification language (2026-11-15, PR `feat/tg-language`).** Staff alerts are English by
-default; `notifications.telegram_language` (`en` | `zh-CN`, Settings → Notifications) switches them. All
-sentences live in one catalog (`app/core/notify_tg.py` `TEXTS`; callers pass `T(key, …)` and plain strings
-only for data), rendered when the message goes out and HTML-escaped after rendering. The service-expiry
-reminder uses the same setting for Telegram (e-mail keeps the staff owner's locale). A test keeps the
-zh-CN catalog complete and its placeholders equal to English. No migration.
-**Dark mode (2026-11-15, PR `feat/dark-mode`).** Both apps follow the system theme
-(`prefers-color-scheme`, live; no manual switch, nothing stored). `followSystemTheme()` in
-`packages/shared/src/theme.ts` sets `html.dark` (+ `van-theme-dark` in the buyer app) before mount and keeps
-`theme-color` in step. Buyer app: dark values for every token in `styles/tokens.css` plus new semantic tokens
-(`--c-fill`, `--c-chip`, `--c-hero-*`, `--c-note-*`, `--c-warn/ok/bad/info-soft|ink`, …) replacing ~70
-hard-coded colours; QR codes keep a white plate. Console: Element Plus dark variables + `--a-*` dark values.
-Shared chat/UI components read `--gc-*` tokens with the old light values as fallbacks. No `color-mix()` (older
-mobile browsers). Typechecked and built by CI only; **look at both themes on the demo before production**.
-
 **Production deploy 2026-11-15: `d881dfa` (pay-page fixes #88, email redesign #3; no migration).**
 Images `ghcr.io/zucchinistockton/goods24-{api,web}:main`; c4 `.env` now points at the new owner (backup
 `.env.bak-20261115`). Rollback images kept on c4: `goods24-api:rollback-222b03b`, `goods24-web:rollback-222b03b`
