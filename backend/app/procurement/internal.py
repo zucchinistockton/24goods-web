@@ -94,6 +94,33 @@ def create_procurement_app(ctx: ProcurementContext) -> Starlette:
             return _err(404, "not_found", "Supplier not found")
         return JSONResponse({"report": report.as_dict()}, headers=NO_STORE)
 
+    async def regions(request: Request) -> JSONResponse:
+        """``POST /internal/regions {"tenant_id", "product"}``: the vendor's live regions."""
+        if not _token_ok(request):
+            return _err(401, "unauthorized", "Bad internal token")
+        body = await request.body()
+        if len(body) > MAX_BODY:
+            return _err(422, "validation", "body too large")
+        try:
+            data = json.loads(body)
+            tenant_id = uuid.UUID(str(data["tenant_id"]))
+            product = str(data.get("product") or "gpt")
+        except (ValueError, KeyError, TypeError, AttributeError):
+            return _err(422, "validation", "tenant_id (UUID) is required")
+        if product not in ("gpt", "claude", "grok"):
+            return _err(422, "validation", "unknown product")
+        allowed, reset = await hit(ctx.redis, "proc:regions", str(tenant_id), 30, 600)
+        if not allowed:
+            return _err(429, "rate_limited", "Too many reads", {"Retry-After": str(reset)})
+        try:
+            out = await service.payment_regions(ctx, tenant_id, product)
+        except service.SupplierNotFound:
+            return _err(404, "not_found", "No enabled ZovoCard supplier")
+        except Exception as exc:  # the vendor failing is "unavailable", never a 500 with detail
+            log.warning("regions: vendor read failed error=%s", type(exc).__name__)
+            return _err(502, "supplier_unavailable", "The supplier could not be read")
+        return JSONResponse({"regions": out}, headers=NO_STORE)
+
     async def direct_order(request: Request) -> JSONResponse:
         """Read-only state of a direct job's supplier order (the console's hand-fulfil guard)."""
         if not _token_ok(request):
@@ -119,6 +146,7 @@ def create_procurement_app(ctx: ProcurementContext) -> Starlette:
     return Starlette(
         routes=[
             Route("/internal/direct-order", direct_order, methods=["POST"]),
+            Route("/internal/regions", regions, methods=["POST"]),
             Route("/healthz", healthz),
             Route("/internal/probe", probe, methods=["POST"]),
             Route("/internal/check-offer", check_offer, methods=["POST"]),

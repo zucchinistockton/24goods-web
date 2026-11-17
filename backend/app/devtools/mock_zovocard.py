@@ -145,6 +145,9 @@ def _reg(key: str, product: str, acc: str, currency: str, amount: int, **extra: 
 SCENARIO_PLANS = ("scn_lost", "scn_409", "scn_202", "scn_503")
 
 
+MOCK_GPT_REGIONS = (("PH", "PHP"), ("EG", "EGP"), ("CL", "CLP"), ("JP", "JPY"), ("US", "USD"))
+
+
 def plans_fixture(product: str, scenarios: bool = False) -> dict[str, Any]:
     """Synthetic plans payload. GPT: ``plus`` and ``go`` purchasable; ``pro_5x_renew`` has
     ``purchasable: false``; ``pro_20x`` has the registry flag but its plan is disabled;
@@ -186,11 +189,14 @@ def plans_fixture(product: str, scenarios: bool = False) -> dict[str, Any]:
             _reg("pro_5x_renew", "gpt", "pro_5x_renew", "PHP", 0, purchasable=False),
             credit,
         ]
-        regions = [{"country": "PH", "currency": "PHP"}, {"country": "US", "currency": "USD"}]
+        regions = [{"country": c, "currency": cur} for c, cur in MOCK_GPT_REGIONS]
         if scenarios:
             for key in SCENARIO_PLANS:
                 plans[key] = _plan(key, key, "PHP", 30000)
                 registry.append(_reg(key, "gpt", key, "PHP", 30000))
+            # half-price promotion plan (issue #27): quoted only to an eligible account
+            plans["plus_half"] = _plan("plus_half", "Plus Half", "PHP", 55000)
+            registry.append(_reg("plus_half", "gpt", "plus_half", "PHP", 55000))
     return {
         "version": 7,
         "updatedAt": 1700000000000,
@@ -297,6 +303,7 @@ class MockZovo:
     list_cap: int = 100  # rows per page the order list really returns (paging tests)
     direct_current_plan: str = "free"  # what the preflight reports as the account's plan
     direct_quote_error: str = ""  # a non-empty quote_error on the preflight
+    direct_half_eligible: bool = True  # False: the preflight quotes no ``*_half`` plan
     direct_cancelled: int = 0
     direct_product_seen: list[str] = field(default_factory=list)  # product exactly as sent
 
@@ -541,6 +548,8 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
         quotes: dict[str, Any] = {}
         for prod in ("gpt", "claude", "grok"):
             for row in plans_fixture(prod, mock.scenarios)["registry"]:
+                if row["key"].endswith("_half") and not mock.direct_half_eligible:
+                    continue
                 if row["checkout_amount_minor"]:
                     quotes[row["key"]] = {
                         "country": country, "currency": row["checkout_currency"],

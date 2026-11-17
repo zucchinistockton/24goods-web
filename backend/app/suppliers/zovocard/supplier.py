@@ -86,6 +86,15 @@ class CardProduct:
     recharge_fee: Decimal | None = None  # a RATE (vendor 6.1), applied to a top-up
 
 
+def region_offered(catalog: PlanCatalog, country: object) -> bool:
+    """A region the offer names must still be in the vendor's ``payment_regions`` (issue #27: a
+    region the vendor stops offering is shown unavailable, never forced). A catalogue that lists
+    no region at all is read as "not stated" and does not hide anything."""
+    if country is None or not catalog.regions:
+        return True
+    return any(c == country for c, _cur in catalog.regions)
+
+
 def is_purchasable(catalog: PlanCatalog, key: str) -> bool:
     """review-v12 §5/§11: ``registry[key].purchasable is True and
     plans[registry[key].acc_plan_key].enabled is True``. Strict identity checks: a missing field,
@@ -297,6 +306,11 @@ class ZovoCardSupplier:
         self._plans[product] = (now, catalog)
         return catalog
 
+    async def payment_regions(self, product: str) -> list[tuple[str, str]]:
+        """The vendor's live ``payment_regions`` ``(country, currency)`` for a product (cached with
+        the plans catalogue). Never hard-coded: the vendor says the list changes."""
+        return list((await self.plans(product)).regions)
+
     async def redemption_cost(self, offer: OfferSpec) -> Money | None:
         """Reserve the breaker holds back per issued CDK (review-v12 §6, §12 second pass): the
         plan's ``expectedAmountMinor`` plus the balance buffer (``balanceBufferBps``, at least
@@ -375,6 +389,8 @@ class ZovoCardSupplier:
             return Availability(False, exc.reason, checked_at=now)
         if not is_purchasable(catalog, key):
             return Availability(False, "not_purchasable", checked_at=now)
+        if not region_offered(catalog, offer.params.get("payment_country")):
+            return Availability(False, "region_not_offered", checked_at=now)
         return Availability(True, checked_at=now)
 
     async def probe(self) -> ProbeReport:
@@ -770,6 +786,8 @@ class ZovoCardSupplier:
             return Availability(False, exc.reason, checked_at=now)
         if not is_purchasable(catalog, spec.plan):
             return Availability(False, "not_purchasable", checked_at=now)
+        if spec.product == "gpt" and not region_offered(catalog, spec.country):
+            return Availability(False, "region_not_offered", checked_at=now)
         try:
             cost = await self._direct_cost(offer)
         except SupplierError:
