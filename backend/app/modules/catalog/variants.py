@@ -20,6 +20,7 @@ from app.core.i18n import pick
 from app.core.money import fmt
 from app.models import CardStock, Product, ProductVariant
 from app.modules.catalog import upstream
+from app.modules.catalog.regions import is_half_plan, options_of, region_currency
 from app.modules.common.modes import STOCKED_MODES, UPSTREAM_MODES
 from app.modules.common.sitedefaults import resolve_after_sales_hours, resolve_after_sales_months
 from app.modules.reseller.pricing import Pricer
@@ -202,11 +203,16 @@ def buyer_variant_view(
 ) -> dict[str, Any]:
     terms = effective_terms(p, v)
     unit = pricer.unit(p, v.price_minor) if pricer else v.price_minor
+    opts = options_of(v.options)
     return {
         "id": str(v.id),
         "name": pick(v.name_i18n, lang),
         "price": fmt(unit),
         "stock": variant_stock(p, v, cards),
+        # issue #27: plan x region attributes; the region's own charge currency is a label only
+        "options": opts,
+        "region_currency": region_currency(opts["region"]) if opts else None,
+        "half_price": bool(opts) and is_half_plan(opts["plan"]),
         "after_sales_hours": resolve_after_sales_hours(
             terms["after_sales_hours"], ts, terms["after_sales_months"]
         ),
@@ -235,6 +241,8 @@ async def decorate(
         vs = by_product[p.id]
         out["has_variants"] = bool(vs)
         out["variants"] = [buyer_variant_view(p, v, lang, cards, ts, pricer) for v in vs]
+        # two selectors (plan, region) only when EVERY active variant has options
+        out["variant_options"] = bool(vs) and all(options_of(v.options) for v in vs)
         if not vs:
             continue
         out["price"] = fmt(
@@ -262,5 +270,6 @@ def admin_variant_view(
         "after_sales_months": v.after_sales_months,
         "after_sales_hours": v.after_sales_hours,
         "subscription": v.subscription,
+        "options": v.options,
         "sold": v.sold,
     }

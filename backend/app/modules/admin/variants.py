@@ -10,7 +10,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import audit
-from app.core.errors import InvalidState, NotFound, Validation
+from app.core.errors import Conflict, InvalidState, NotFound, Validation
 from app.core.money import MoneyError, parse_amount
 from app.core.scoped import get_scoped
 from app.models import Product, ProductVariant, User
@@ -37,7 +37,27 @@ def _summary(v: ProductVariant) -> dict[str, Any]:
         "after_sales_hours": v.after_sales_hours,
         "after_sales_months": v.after_sales_months,
         "subscription": v.subscription,
+        "options": v.options,
     }
+
+
+async def _options_taken(
+    db: AsyncSession,
+    tenant_id: uuid.UUID,
+    product_id: uuid.UUID,
+    options: dict[str, Any],
+    except_id: uuid.UUID | None = None,
+) -> bool:
+    """Another variant of the product already has this (plan, region), any status."""
+    q = select(ProductVariant.id).where(
+        ProductVariant.tenant_id == tenant_id,
+        ProductVariant.product_id == product_id,
+        ProductVariant.options["plan"].astext == options["plan"],
+        ProductVariant.options["region"].astext == options["region"],
+    )
+    if except_id is not None:
+        q = q.where(ProductVariant.id != except_id)
+    return (await db.scalar(q.limit(1))) is not None
 
 
 async def _product(db: AsyncSession, tenant_id: uuid.UUID, product_id: uuid.UUID) -> Product:
@@ -102,9 +122,13 @@ async def create(
     n = len(await svc.variants_for(db, admin.tenant_id, [p.id], include_archived=True))
     if n >= MAX_VARIANTS:
         raise Validation(f"at most {MAX_VARIANTS} variants per product")
+    options = body.options.model_dump() if body.options else None
+    if options is not None and await _options_taken(db, admin.tenant_id, p.id, options):
+        raise Conflict("A variant with this plan and region exists", code="variant_options_taken")
     v = ProductVariant(
         tenant_id=admin.tenant_id,
         product_id=p.id,
+        options=options,
         name_i18n=body.name_i18n,
         price_minor=price,
         floor_price_minor=floor,
@@ -179,6 +203,15 @@ async def patch(
         v.after_sales_months = data["after_sales_months"]
         if data["after_sales_months"] is not None:
             v.after_sales_hours = None
+    if "options" in data:
+        new_opts = body.options.model_dump() if body.options else None
+        if new_opts is not None and await _options_taken(
+            db, admin.tenant_id, p.id, new_opts, except_id=v.id
+        ):
+            raise Conflict(
+                "A variant with this plan and region exists", code="variant_options_taken"
+            )
+        v.options = new_opts
     if "subscription" in data:
         sb = body.subscription
         v.subscription = sb.model_dump() if sb is not None else None

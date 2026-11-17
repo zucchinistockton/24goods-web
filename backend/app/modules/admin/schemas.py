@@ -5,7 +5,7 @@ import uuid
 from datetime import date, datetime, timezone
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.modules.inventory.service import end_of_day
 
@@ -184,6 +184,14 @@ class ProductIn(BaseModel):
         return _images(v)
 
 
+class VariantOptions(BaseModel):
+    """issue #27: the plan x region attributes of a variant (both required, nothing else)."""
+
+    model_config = ConfigDict(extra="forbid")
+    plan: str = Field(pattern=r"^[a-z0-9_]{1,40}$")
+    region: str = Field(pattern=r"^[A-Z]{2}$")
+
+
 class VariantIn(BaseModel):
     """v11 W1: one purchasable SKU. NULL term fields inherit the product's."""
 
@@ -197,6 +205,7 @@ class VariantIn(BaseModel):
     after_sales_hours: int | None = Field(None, ge=0, le=8760)
     after_sales_months: int | None = Field(None, ge=1, le=12)
     subscription: SubscriptionConfig | None = None
+    options: VariantOptions | None = None
 
     @field_validator("name_i18n")
     @classmethod
@@ -216,6 +225,7 @@ class VariantPatch(BaseModel):
     after_sales_hours: int | None = Field(None, ge=0, le=8760)
     after_sales_months: int | None = Field(None, ge=1, le=12)
     subscription: SubscriptionConfig | None = None
+    options: VariantOptions | None = None  # explicit null clears
 
     @field_validator("name_i18n")
     @classmethod
