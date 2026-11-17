@@ -1430,7 +1430,81 @@ card is opened). The decline / chargeback thresholds are watched in part 2.
 
 * The exact JSON of `card-pool/schedule` (`pick` as an object or an id, the candidate id key) and the "no card" error
   codes marked [I] are unverified: confirm against the sandbox.
-* Part 2: card pool view, card-rules editor (`GET/PUT card-rules`, `reset-usage`), decline / chargeback risk monitor.
+* Part 2 (card pool view, card-rules editor, reset of failed usage, decline monitor): done, see §21.8.
 * The console shows a source's card mode in the list but not yet the card a job used (the job API returns the
-  columns' absence; part 2).
+  columns' absence).
 
+### 21.8 Console: card pool, card rules, reset of failed usage, decline monitor (issue #29 part 2)
+
+Legend as §21: [V] documented, [I] inferred. The API never holds vendor keys: every vendor read and write goes
+console -> `app/modules/admin/procurement_cards.py` -> procurement `POST /internal/cards/{pool,schedule,rules,rules-set,reset-failed}`
+(token, 30-60 requests / 10 min per tenant) -> `app/procurement/cardpool.py` -> `app/suppliers/zovocard/cardpool.py`.
+
+**Endpoints** (all under `/admin/procurement/cards`, platform tenant only, staff session, no API tokens):
+* Staff (`agent` / `admin`), read only: `GET suppliers`, `GET pool?product=&supplier_id=`, `GET schedule?product=&plan=`, `GET risk`.
+* Admins: `GET rules`, `PUT rules/{product}` (partial edit), `POST reset-failed {card_ids, confirm: true}`.
+
+**Pool view.** `GET /cards?page&page_size` [V] lists the vendor account's cards; the PAN in that answer is reduced to the
+last four digits at the parser and dropped. Cards bought for buyers are
+excluded and counted (`excluded_buyer_cards`), so only funding cards are shown. The match is tenant-wide, never per supplier row
+(rows can share one vendor account): any card id that is the `upstream_ref` of ANY `vcc` job of the tenant, and any card whose
+masked number (first six + last four, computed in the adapter while the vendor list still has the PAN, then dropped) equals the
+`card_mask` of a non-voided `vcc` job of the tenant (a hand-pasted card has no id). Another tenant's jobs never exclude ours. Per card one `GET /gpt-direct/cards/{id}/usage?product=`
+(at most 40 cards): `light` / `pro20` buckets with `used` / `remaining` / `cap` [V names; `failed` inside a bucket is [I]],
+`cooling` and `busy` [V, as used by the engine], `locked` and the failure streak (`decline_count` | `consecutive_failures`)
+[I]. A card whose usage cannot be read is shown "usage unreadable", never guessed. Our own counts per card (sent / declined /
+in flight, last 30 days) come from `procurement_jobs` (`card_id`, else the offer's fixed card), always filtered by tenant.
+The schedule preview is `GET /gpt-direct/card-pool/schedule?card_mode=auto_existing` [V]; `pick` as a bare id or `{card_id|id}`
+and the candidates' `skip_reason` text are [I] (the text is shown as a machine-safe stub).
+
+**Rules editor.** `GET /gpt-direct/card-rules` [V] (three rows; the envelope `{list}` | list | one object is [I]); `PUT` [V]
+sends the whole rule (the current one merged with the edit, plus the existing `select_priority` passed through unchanged
+because whether an omitted field resets is unknown [I]). Ranges, enforced twice (API pydantic, strict types, and the
+procurement process): `light_max_uses` / `pro20_max_uses` 0-1000 (0 = unlimited [V]), `max_auto_switches` 0-10 (0 = none [V]),
+`select_mode` `default | lowest_usage | newest` [V], booleans strict. Every change writes a `warning` audit row
+`procurement.card_rules_updated` with before / after (editable fields only). `GET rules` adds `cost_model_max_auto_switches` and
+`matches_cost_model` per product (the vendor's effective switch count, 0 when `auto_switch_on_fail` is off, against the cost
+model's `max_auto_switches`); the console warns on a mismatch because the switch cost estimate (§21.5) assumes the cost model's number. `matches_cost_model` is
+advisory only: it changes no behaviour and blocks nothing.
+
+**Not yet exercised (M2): per-order override of the vendor rule.** The docs state ([V] doc line) that `no_auto_card_switch: true` on an
+order overrides the vendor rule `auto_switch_on_fail`; we rely on it for every order without `vendor_switch` but have never seen
+it hold. Run in the vendor SANDBOX before real money: set the rule `auto_switch_on_fail=true, max_auto_switches=10` for the product,
+place an order with `no_auto_card_switch=true` on a card that declines, and confirm the order shows NO switch (the card used stays
+the card sent, no `direct_switch_to`). If it switches, the rule must stay `auto_switch_on_fail=false` and §21.5 costs are understated.
+
+**Reset failed usage.** `POST /gpt-direct/cards/reset-usage {card_ids, scope: "failed"}` [V]. Never `scope=all`, never an empty
+list (empty = every card at the vendor): 1-50 explicit ids, `confirm: true` required (the console also asks), every id must be one
+of the funding set above (not a buyer's by id or mask; plus `funding_card_clash`), else 422. A disabled supplier row is refused
+for both writes (409 `supplier_disabled`, also with an explicit `supplier_id`); reads may still address it. Audit `procurement.card_usage_reset`
+(warning; ids, scope, vendor's count when stated [I]). The vendor's own answer shape beyond that is not used.
+
+**Production guard.** Both writes are refused for a supplier with env `production`, or with env `sandbox` whose base URL is a public
+https host other than the vendor's own sandbox (`sandbox.zovocard.com`; plain http is exempt only for our simulator: a single-label host such as `mockzovo` or a loopback / private IP literal; any other http host, e.g. the real vendor over http, counts as production), unless `APP_PROCUREMENT_ALLOW_PRODUCTION_WRITES`
+is on: 409 `production_writes_disabled`, checked in the procurement service first (clean answer, no audit row, nothing sent) and
+again by the client as a backstop. Reads stay open.
+
+**Decline monitor** (`app/procurement/risk.py`). Of the direct jobs created in the window that reached the vendor (`upstream_ref`,
+`first_sent_at` or `maybe_sent`), `declined` = recorded outcome `order_declined | order_failed_precharge` (the engine's `DECLINES`,
+one list), `in_flight` = `submitting | accepted_pending`; rate = declined / sent as `Decimal` (4 places, `null` for an empty
+period). Windows 7 and 30 days, overall and per funding card. Thresholds are the cost model's `chargeback_tier1_rate` (15 %) and
+`chargeback_tier2_rate` (30 %): `near` at 80 % of one, `over` at or above it; a window or card with fewer than 10 sent orders
+never warns (`min_sample`, our choice: one decline in two orders is noise). `level` = `ok | warning | critical`; the Cards tab
+shows a dot badge and an alert. The hourly API job `decline_risk_check` (not the procurement process: its role cannot read
+`audit_log`) writes a `warning` audit row `procurement.decline_rate_warning` per threshold, window and subject (`all` or
+`card:<id>`) at most once per 24 h (dedupe on the audit table); platform tenant only. It counts OUR declines, a proxy for the
+vendor's number.
+
+**Chargebacks: not available from the vendor API.** No documented endpoint or field returns chargeback or decline rates or counts
+(`GET /balance` carries balance, spendable balance and the reserve only; the docs mention the shared "chargeback rate" only in
+the fee rules). The console says so (`chargebacks: {available: false, reason: "not_available_from_vendor_api"}`).
+**Open question for ZovoCard:** is the account's current chargeback / decline rate and tier readable by API, and which field?
+Also still open: `chargeback_tier1_min_tx` (100) is shown but is not used to suppress warnings (we use our own sample floor).
+
+**Small items.** The pricing form has `max_auto_switches` (2-10, the server floor). Hints under switches in the source form get a
+normal line height (`.form-hint`).
+
+**Simulator.** `GET /cards` (list with the full PAN, like the real one), `usage_failed` (failed count per funding card, cleared by
+reset-usage), card-rules defaults with the documented fields. **Tests:** `tests/test_procurement_cards.py` (authorization by role
+and tenant, validation, production guard, audit rows, per-tenant counts, risk maths, once-a-day warnings, PAN sweep of responses,
+logs and audit rows); admin vitest `test/card-pool-v13.test.ts`.

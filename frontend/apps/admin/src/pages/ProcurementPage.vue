@@ -9,6 +9,7 @@ import {
   COST_RE,
   COUNTRY_RE,
   PLAN_RE,
+  createCardsApi,
   createProcurementApi,
   type CostGroup,
   type CostSummaryRow,
@@ -23,6 +24,7 @@ import {
 } from '../api-procurement'
 import PricingPanel from '../components/PricingPanel.vue'
 import RegionsPanel from '../components/RegionsPanel.vue'
+import CardsPanel from '../components/CardsPanel.vue'
 import { createSuppliersApi, type AdminSupplier } from '../api-suppliers'
 import { usePaged } from '../composables/usePaged'
 import { useAuthStore } from '../stores/auth'
@@ -33,7 +35,9 @@ const suppliersApi = createSuppliersApi(client)
 const auth = useAuthStore()
 const { t, te, locale } = useI18n()
 
-const tab = ref<'jobs' | 'sources' | 'cost' | 'pricing' | 'regions'>('jobs')
+const tab = ref<'jobs' | 'sources' | 'cost' | 'pricing' | 'regions' | 'cards'>('jobs')
+// decline-rate warning badge on the Cards tab (80 % of a vendor threshold); staff can read it
+const riskLevel = ref<'ok' | 'warning' | 'critical'>('ok')
 const when = (v: string | null | undefined) => (v ? formatDateTime(v, locale.value) : '—')
 const money = (v: string | null | undefined, cur: string | null | undefined) => (v == null ? '—' : `${v} ${cur ?? ''}`.trim())
 /** Server error codes of the procurement routes, translated when a key exists. */
@@ -382,7 +386,13 @@ watch(tab, async (v) => {
     void loadCost()
   }
 })
-onMounted(() => jobs.load())
+onMounted(() => {
+  void jobs.load()
+  createCardsApi(client)
+    .risk()
+    .then((r) => (riskLevel.value = r.level))
+    .catch(() => undefined) // a badge only: the Cards tab shows the real error
+})
 </script>
 
 <template>
@@ -581,6 +591,14 @@ onMounted(() => jobs.load())
           </div>
         </div>
       </el-tab-pane>
+      <el-tab-pane name="cards" lazy>
+        <template #label>
+          {{ t('procurement.tab.cards') }}
+          <el-badge v-if="riskLevel !== 'ok'" is-dot :type="riskLevel === 'critical' ? 'danger' : 'warning'" class="tab-dot" :title="t(`cardPool.riskDot.${riskLevel}`)" />
+          <span v-if="riskLevel !== 'ok'" class="sr-only">{{ t(`cardPool.riskDot.${riskLevel}`) }}</span>
+        </template>
+        <CardsPanel @risk="(l) => (riskLevel = l)" />
+      </el-tab-pane>
       <el-tab-pane v-if="auth.isAdmin" name="pricing" :label="t('procurement.tab.pricing')" lazy>
         <PricingPanel />
       </el-tab-pane>
@@ -715,7 +733,7 @@ onMounted(() => jobs.load())
             </el-form-item>
             <el-form-item v-if="isDirect" :label="t('procurement.src.vendorSwitch')">
               <el-switch v-model="srcDlg.vendor_switch" />
-              <div class="muted small">{{ t('procurement.src.vendorSwitchHint') }}</div>
+              <div class="muted small form-hint">{{ t('procurement.src.vendorSwitchHint') }}</div>
             </el-form-item>
             <el-form-item v-if="isDirect" :label="t('procurement.src.payCurrency')" :error="srcErr.pay_currency">
               <el-input v-model="srcDlg.pay_currency" maxlength="3" class="mono" placeholder="USD" />
@@ -744,8 +762,25 @@ onMounted(() => jobs.load())
 </template>
 
 <style scoped>
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
 .bar {
   margin-bottom: 12px;
+}
+.form-hint {
+  /* el-form-item gives its content a 32px line height: a hint needs a normal one */
+  line-height: 1.4;
+  margin-top: 4px;
+  width: 100%;
+}
+.tab-dot {
+  margin-left: 2px;
 }
 .intro {
   margin: 0 0 12px;

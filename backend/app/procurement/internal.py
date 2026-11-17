@@ -11,6 +11,7 @@ from __future__ import annotations
 import hmac
 import json
 import logging
+import re
 import uuid
 
 from starlette.applications import Starlette
@@ -20,7 +21,7 @@ from starlette.routing import Route
 
 from app.core.errors import error_body
 from app.core.ratelimit import hit
-from app.procurement import engine, halfcheck, service
+from app.procurement import cardpool, engine, halfcheck, service
 from app.procurement.context import ProcurementContext
 
 log = logging.getLogger("app.procurement.internal")
@@ -166,8 +167,125 @@ def create_procurement_app(ctx: ProcurementContext) -> Starlette:
             return _err(404, "not_found", "Job not found")
         return JSONResponse(out, headers=NO_STORE)
 
+    async def _card_call(request: Request, bucket: str, limit: int, write: bool = False):
+        """Common shell of the card-pool routes (issue #29 part 2): token, size, UUIDs, rate
+        limit. Returns ``(data, tenant_id, supplier_id)`` or the error response."""
+        if not _token_ok(request):
+            return _err(401, "unauthorized", "Bad internal token")
+        body = await request.body()
+        if len(body) > MAX_BODY:
+            return _err(422, "validation", "body too large")
+        try:
+            data = json.loads(body)
+            tenant_id = uuid.UUID(str(data["tenant_id"]))
+            raw = data.get("supplier_id")
+            supplier_id = uuid.UUID(str(raw)) if raw else None
+            if not isinstance(data, dict):
+                raise TypeError
+        except (ValueError, KeyError, TypeError, AttributeError):
+            return _err(422, "validation", "tenant_id (UUID) is required")
+        allowed, reset = await hit(ctx.redis, bucket, str(tenant_id), limit, 600)
+        if not allowed:
+            return _err(429, "rate_limited", "Too many requests", {"Retry-After": str(reset)})
+        return data, tenant_id, supplier_id
+
+    def _card_error(exc: Exception) -> JSONResponse:
+        if isinstance(exc, service.SupplierNotFound):
+            return _err(404, "not_found", "No ZovoCard supplier")
+        if isinstance(exc, cardpool.SupplierDisabled):
+            return _err(409, "supplier_disabled", "The supplier is disabled")
+        if isinstance(exc, cardpool.ProductionWritesDisabled):
+            return _err(
+                409, "production_writes_disabled", "Writes to a production supplier are disabled"
+            )
+        if isinstance(exc, (cardpool.NotFundingCard, ValueError)):
+            return _err(422, "validation", str(exc)[:120])
+        if isinstance(exc, LookupError):
+            return _err(502, "supplier_unavailable", "The supplier rules could not be read")
+        log.warning("cards: vendor call failed error=%s", type(exc).__name__)
+        return _err(502, "supplier_unavailable", "The supplier could not be read")
+
+    async def cards_pool(request: Request) -> JSONResponse:
+        got = await _card_call(request, "proc:cards", 60)
+        if isinstance(got, JSONResponse):
+            return got
+        data, tid, sid = got
+        product = str(data.get("product") or "gpt")
+        if product not in ("gpt", "claude", "grok"):
+            return _err(422, "validation", "unknown product")
+        try:
+            return JSONResponse(await cardpool.pool(ctx, tid, sid, product), headers=NO_STORE)
+        except Exception as exc:
+            return _card_error(exc)
+
+    async def cards_schedule(request: Request) -> JSONResponse:
+        got = await _card_call(request, "proc:cards-schedule", 60)
+        if isinstance(got, JSONResponse):
+            return got
+        data, tid, sid = got
+        product, plan = str(data.get("product") or ""), str(data.get("plan") or "")
+        if product not in ("gpt", "claude", "grok") or not re.fullmatch(
+            r"[A-Za-z0-9_.-]{1,48}", plan
+        ):
+            return _err(422, "validation", "product and plan are required")
+        try:
+            return JSONResponse(
+                await cardpool.schedule(ctx, tid, sid, product, plan), headers=NO_STORE
+            )
+        except Exception as exc:
+            return _card_error(exc)
+
+    async def cards_rules(request: Request) -> JSONResponse:
+        got = await _card_call(request, "proc:cards-rules", 60)
+        if isinstance(got, JSONResponse):
+            return got
+        _data, tid, sid = got
+        try:
+            return JSONResponse(await cardpool.rules(ctx, tid, sid), headers=NO_STORE)
+        except Exception as exc:
+            return _card_error(exc)
+
+    async def cards_rules_set(request: Request) -> JSONResponse:
+        got = await _card_call(request, "proc:cards-write", 30)
+        if isinstance(got, JSONResponse):
+            return got
+        data, tid, sid = got
+        product, patch = data.get("product"), data.get("patch")
+        if product not in ("gpt", "claude", "grok") or not isinstance(patch, dict):
+            return _err(422, "validation", "product and patch are required")
+        try:
+            return JSONResponse(
+                await cardpool.set_rule(ctx, tid, sid, str(product), patch), headers=NO_STORE
+            )
+        except Exception as exc:
+            return _card_error(exc)
+
+    async def cards_reset_failed(request: Request) -> JSONResponse:
+        got = await _card_call(request, "proc:cards-write", 30)
+        if isinstance(got, JSONResponse):
+            return got
+        data, tid, sid = got
+        ids = data.get("card_ids")
+        if (
+            not isinstance(ids, list)
+            or not 1 <= len(ids) <= cardpool.cp.MAX_RESET_CARDS
+            or any(isinstance(i, bool) or not isinstance(i, int) or i < 1 for i in ids)
+        ):
+            return _err(422, "validation", "card_ids: 1-50 explicit card ids are required")
+        try:
+            return JSONResponse(
+                await cardpool.reset_failed(ctx, tid, sid, sorted(set(ids))), headers=NO_STORE
+            )
+        except Exception as exc:
+            return _card_error(exc)
+
     return Starlette(
         routes=[
+            Route("/internal/cards/pool", cards_pool, methods=["POST"]),
+            Route("/internal/cards/schedule", cards_schedule, methods=["POST"]),
+            Route("/internal/cards/rules", cards_rules, methods=["POST"]),
+            Route("/internal/cards/rules-set", cards_rules_set, methods=["POST"]),
+            Route("/internal/cards/reset-failed", cards_reset_failed, methods=["POST"]),
             Route("/internal/direct-order", direct_order, methods=["POST"]),
             Route("/internal/regions", regions, methods=["POST"]),
             Route("/internal/half-check", half_check, methods=["POST"]),

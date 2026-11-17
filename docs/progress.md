@@ -26,9 +26,10 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
      `auto_existing` = vendor pick, optional vendor switch refused for production suppliers, bounded "waiting for
      card", conservative switch cost; two audit rounds, review-v12 §21), on the demo, browser-checked (source form in
      light and dark). Open: confirm the three guessed vendor codes and the schedule `pick` shape on the sandbox;
-     `auto_issue` waits for the vendor (question on #29). **Part 2 next**: card pool view, card rules editor,
-     decline / chargeback monitor, `max_auto_switches` console field, and the hint's line height in the source form.
-     3. #30 progress display + detailed logs,
+     `auto_issue` waits for the vendor (question on #29). **Part 2** on `feat/card-pool` (PR #45): console Cards tab
+     (pool view, schedule preview, rules editor, failed-usage reset, decline monitor with hourly warning,
+     `max_auto_switches` field, hint line height; review §21.8); chargebacks are not exposed by the vendor API
+     (open question). 3. #30 progress display + detailed logs,
   4. #31 redemption admin (port features from the vendor's `zovo_card_cdk_auto`, do not deploy it — evaluation on
      #31), 5. #35 shop sells codes, redemption on its own platform (both modes kept; direct can be switched off per
      product), 6. #34 OKX Agentic Wallet top-ups (later).

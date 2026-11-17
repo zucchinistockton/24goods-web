@@ -244,6 +244,7 @@ export interface PricingSettings {
   topup_fee_fixed: string
   failed_fee: string
   failed_free_count: number
+  max_auto_switches: number
   auth_reversal_rate: string
   chargeback_tier1_rate: string
   chargeback_tier1_min_tx: number
@@ -393,5 +394,114 @@ export function createRegionsApi(c: ApiClient) {
     generate: (b: GenerateInput) => c.post<GenerateResult>(`${base}/generate-variants`, b),
     checks: (status: ManualCheck['status'] | 'all' = 'manual_pending') => c.get<{ items: ManualCheck[] }>(`${base}/half-checks`, { status }),
     decide: (id: string, approve: boolean) => c.post<{ id: string; status: string }>(`${base}/half-checks/${seg(id)}/decision`, { approve }),
+  }
+}
+
+// ------------------------------------------------------------------ card pool (issue #29 part 2)
+// Response shapes marked [I] are inferred from the vendor docs (review-v12 §21.8) and parsed
+// defensively by the server; a field the vendor does not send is null here.
+export type CardProduct = 'gpt' | 'claude' | 'grok'
+export interface CardSupplier {
+  id: string
+  code: string
+  label: string
+  env: SupplierEnv
+}
+export interface UsageBucket {
+  used: number | null
+  remaining: number | null
+  cap: number | null
+  failed: number | null
+  unlimited: boolean
+}
+export interface CardUsage {
+  readable?: boolean
+  light?: UsageBucket
+  pro20?: UsageBucket
+  cooling?: boolean
+  busy?: boolean
+  /** [I] not a documented field */
+  locked?: boolean
+  /** [I] consecutive failures */
+  failure_streak?: number | null
+}
+export type RiskLevelName = 'ok' | 'warning' | 'critical'
+export interface RiskView {
+  sent: number
+  declined: number
+  in_flight: number
+  /** a decimal fraction ("0.1667") or null for an empty period */
+  rate: string | null
+  level: RiskLevelName
+  tier1: 'ok' | 'near' | 'over'
+  tier2: 'ok' | 'near' | 'over'
+}
+export interface PoolCard {
+  id: number
+  last4: string | null
+  product_code: string
+  status: string
+  balance: string | null
+  usage: CardUsage
+  ours_30d: RiskView
+}
+export interface CardPool {
+  supplier: { id: string; code: string; env: SupplierEnv }
+  product: CardProduct
+  cards: PoolCard[]
+  truncated: boolean
+  excluded_buyer_cards: number
+  ours_30d: RiskView
+}
+export interface SchedulePreview {
+  pick: number | null
+  candidates: { card_id: number; skip_reason: string | null }[]
+}
+export interface CardRule {
+  product: CardProduct
+  count_failures: boolean | null
+  light_max_uses: number | null
+  pro20_max_uses: number | null
+  select_mode: 'default' | 'lowest_usage' | 'newest' | null
+  auto_switch_on_fail: boolean | null
+  max_auto_switches: number | null
+  strict_select: boolean | null
+  is_default: boolean
+  matches_cost_model: boolean | null
+}
+export interface CardRules {
+  supplier: { id: string; code: string; env: SupplierEnv } | null
+  rules: Partial<Record<CardProduct, CardRule>>
+  cost_model_max_auto_switches: number
+}
+export type CardRulePatch = Partial<{
+  count_failures: boolean
+  light_max_uses: number
+  pro20_max_uses: number
+  select_mode: 'default' | 'lowest_usage' | 'newest'
+  auto_switch_on_fail: boolean
+  max_auto_switches: number
+  strict_select: boolean
+}>
+export interface RiskReport {
+  thresholds: { tier1: string; tier2: string; warn_at: string; min_sample: number; tier1_min_tx: number }
+  level: RiskLevelName
+  windows: Record<'7' | '30', { overall: RiskView; cards: (RiskView & { card_id: string })[] }>
+  chargebacks: { available: boolean; reason: string }
+}
+
+export function createCardsApi(c: ApiClient) {
+  const base = '/admin/procurement/cards'
+  const sup = (supplier_id?: string) => (supplier_id ? { supplier_id } : {})
+  return {
+    suppliers: () => c.get<{ items: CardSupplier[] }>(`${base}/suppliers`),
+    pool: (product: CardProduct, supplier_id?: string) => c.get<CardPool>(`${base}/pool`, { product, ...sup(supplier_id) }),
+    schedule: (product: CardProduct, plan: string, supplier_id?: string) => c.get<SchedulePreview>(`${base}/schedule`, { product, plan, ...sup(supplier_id) }),
+    risk: (supplier_id?: string) => c.get<RiskReport>(`${base}/risk`, sup(supplier_id)),
+    rules: (supplier_id?: string) => c.get<CardRules>(`${base}/rules`, sup(supplier_id)),
+    saveRule: (product: CardProduct, patch: CardRulePatch, supplier_id?: string) =>
+      c.put<{ product: CardProduct; before: CardRulePatch | null; after: CardRulePatch | null }>(`${base}/rules/${seg(product)}`, { ...patch, ...sup(supplier_id) }),
+    resetFailed: (card_ids: number[], supplier_id?: string) =>
+      c.post<{ scope: 'failed'; card_ids: number[]; reset: number | null }>(`${base}/reset-failed`, { card_ids, confirm: true, ...sup(supplier_id) }),
   }
 }

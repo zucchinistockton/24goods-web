@@ -83,6 +83,40 @@ class ZovoConfig:
         if not self.app_secret:
             raise ValueError("app_secret is required")
 
+    @property
+    def production_target(self) -> bool:
+        """Writes need the opt-in. ``env=production`` is production; so is a ``sandbox`` row whose
+        host is not the vendor's own sandbox (it may well be production). Exempt are only the
+        vendor sandbox over https and OUR simulator over plain http: a single-label host (a
+        container or test name such as ``mockzovo``) or a loopback / private IP literal. Any
+        other http host, e.g. ``http://api.<vendor>``, counts as production (re-audit of #45)."""
+        if self.env == "production":
+            return True
+        from app.suppliers.zovocard.direct import real_sandbox  # local: keeps imports one-way
+
+        if self.base_url.startswith("https://"):
+            return not real_sandbox(self.base_url, self.env)
+        return not _simulator_host(self.base_url)
+
+
+def _simulator_host(url: str) -> bool:
+    """A plain-http base URL that can only be our own simulator: a single-label hostname (never
+    resolvable as a public internet name) or a loopback / private IP literal."""
+    import ipaddress
+    from urllib.parse import urlsplit
+
+    try:
+        host = urlsplit(url).hostname or ""
+    except ValueError:
+        return False
+    if not host:
+        return False
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return "." not in host  # a container / test name; a public host always has a dot
+    return ip.is_loopback or (ip.is_private and not ip.is_link_local)
+
 
 @dataclass(frozen=True)
 class ZovoResponse:
@@ -185,7 +219,7 @@ class ZovoClient:
             raise ValueError("invalid API path")
         if mutating:
             # checked BEFORE anything else: a production write never leaves the process
-            if self.config.env == "production" and not self.config.allow_production_writes:
+            if self.config.production_target and not self.config.allow_production_writes:
                 log.warning("zovocard refused production write %s %s", method, path)
                 raise ProductionWriteBlocked()
         if write:
