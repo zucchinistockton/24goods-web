@@ -135,7 +135,8 @@ def map_upstream_error(step: str, status: int, error_code: str | None) -> str:
         return "account_ineligible"
     if error_code == "IDEMPOTENCY_CONFLICT":
         return "conflict"
-    if status == 404:
+    if status == 404 or error_code == "not_found":
+        # production answers an unknown code at preview with HTTP 400 ``not_found`` (2026-11-17)
         return "code_unavailable" if step == "preview" else "not_found"
     if status == 429:
         return "rate_limited"

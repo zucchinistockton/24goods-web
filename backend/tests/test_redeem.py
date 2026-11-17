@@ -768,3 +768,11 @@ def test_redeem_answer_in_the_vendors_real_shape():
         "stage": None,
         "terminal": True,
     }
+
+
+def test_production_unknown_code_answer_maps_to_code_unavailable():
+    """Seen on the production vendor 2026-11-17: HTTP 400 with error_code ``not_found``."""
+    from app.procurement.redeem import map_upstream_error
+
+    assert map_upstream_error("preview", 400, "not_found") == "code_unavailable"
+    assert map_upstream_error("result", 400, "not_found") == "not_found"
