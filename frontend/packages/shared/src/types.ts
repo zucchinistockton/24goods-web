@@ -157,6 +157,8 @@ export interface AdminVariant {
   after_sales_months: number | null
   after_sales_hours: number | null
   subscription: Record<string, unknown> | null
+  /** issue #27: plan x region attributes (null = a plain variant) */
+  options?: VariantOptions | null
   sold: number
 }
 /** Body for POST/PATCH /admin/products/{id}/variants. */

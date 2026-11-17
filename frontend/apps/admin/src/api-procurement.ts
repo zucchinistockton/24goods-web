@@ -335,3 +335,54 @@ export function createPricingApi(c: ApiClient) {
     },
   }
 }
+
+/** issue #27: regions, the half-price check method and the plan x region generator. */
+export type HalfMethod = 'vendor_preflight' | 'chatgpt_direct' | 'manual'
+export interface ProcOptions {
+  region_allowlist: string[]
+  half_price_check: HalfMethod
+  half_methods: HalfMethod[]
+}
+export interface VendorRegion {
+  country: string
+  currency: string
+  allowed: boolean
+}
+export interface ManualCheck {
+  id: string
+  status: 'manual_pending' | 'manual_approved' | 'manual_refused'
+  plan: string
+  product_id: string
+  variant_id: string | null
+  order_id: string | null
+  order_no: string | null
+  order_status: string | null
+  created_at: string
+  decided_at: string | null
+}
+export interface GenerateInput {
+  product_id: string
+  supplier_id: string
+  vendor_product: 'gpt' | 'claude' | 'grok'
+  plans: string[]
+  regions: string[]
+  card_id?: number
+  cost_estimate?: string
+}
+export interface GenerateResult {
+  created: { plan: string; region: string; variant_id: string }[]
+  kept: { plan: string; region: string }[]
+  skipped: { region: string; reason: 'not_allowed' | 'not_offered' }[]
+}
+
+export function createRegionsApi(c: ApiClient) {
+  const base = '/admin/procurement'
+  return {
+    options: () => c.get<ProcOptions>(`${base}/options`),
+    saveOptions: (b: { region_allowlist?: string[]; half_price_check?: HalfMethod }) => c.put<ProcOptions>(`${base}/options`, b),
+    regions: (product: 'gpt' | 'claude' | 'grok') => c.get<{ available: boolean; regions: VendorRegion[] }>(`${base}/regions`, { product }),
+    generate: (b: GenerateInput) => c.post<GenerateResult>(`${base}/generate-variants`, b),
+    checks: (status: ManualCheck['status'] | 'all' = 'manual_pending') => c.get<{ items: ManualCheck[] }>(`${base}/half-checks`, { status }),
+    decide: (id: string, approve: boolean) => c.post<{ id: string; status: string }>(`${base}/half-checks/${seg(id)}/decision`, { approve }),
+  }
+}
