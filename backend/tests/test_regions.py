@@ -227,3 +227,29 @@ async def test_generator_direct_needs_a_card_and_is_platform_admin_and_tenant_sc
         assert r.status_code == 422 and r.json()["error"]["code"] == "bad_mode"
     finally:
         await up.close()
+
+
+async def test_direct_topups_are_switched_off_by_product_status_not_by_code(env):
+    """A CDK-only shop is configuration: an unpublished ``upstream_direct`` product is neither
+    listed nor buyable, the CDK product next to it is unaffected."""
+    up, _sid = await _gen_setup(env, "upstream_direct")
+    try:
+        cdk = await env.product(mode="upstream_cdk", title="CDK", price=900, floor=100)
+        buyer, _ = await env.login("buyer")
+        ids = {i["id"] for i in (await buyer.get(f"{API}/products")).json()["items"]}
+        assert str(up.product.id) in ids and str(cdk.id) in ids
+        async with env.owner_session() as db:
+            from sqlalchemy import text
+
+            await db.execute(
+                text("UPDATE products SET status = 'draft' WHERE id = :i"), {"i": up.product.id}
+            )
+            await db.commit()
+        ids = {i["id"] for i in (await buyer.get(f"{API}/products")).json()["items"]}
+        assert str(up.product.id) not in ids and str(cdk.id) in ids
+        r = await buyer.post(
+            f"{API}/orders", json={"product_id": str(up.product.id), "qty": 1, "session": "x" * 20}
+        )
+        assert r.status_code == 404
+    finally:
+        await up.close()
