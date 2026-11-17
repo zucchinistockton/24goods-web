@@ -16,9 +16,11 @@ Methods (owner setting ``half_price_check``, stored on the row at creation):
 from __future__ import annotations
 
 import asyncio
+import hmac
+import json
 import logging
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -38,6 +40,7 @@ log = logging.getLogger("app.procurement.halfcheck")
 
 MAX_AGE = timedelta(minutes=15)  # a sealed session older than this is wiped, never used
 PER_BUYER = (3, 600)  # chatgpt_direct reads per buyer per 10 minutes
+DEDUP_TTL = timedelta(hours=6)  # the same session token is not re-read from ChatGPT within this
 GLOBAL = (60, 3600)  # chatgpt_direct reads per hour PER TENANT (the egress IP is shared)
 
 
@@ -47,6 +50,71 @@ class Outcome:
     reason: str = ""
     detail: dict[str, Any] | None = None
     account_mask: str | None = None
+    account_hmac: str | None = None  # keyed binding of the checked account (never the identity)
+
+
+def identity_of(product: str, credential: str) -> str | None:
+    """The canonical identity of the account a session belongs to: the ChatGPT account id, else
+    the lower-cased FULL e-mail; ``None`` when none can be derived (Claude / Grok sessions carry
+    no account). Never logged."""
+    if product != "gpt":
+        return None
+    try:
+        start = credential.find("{")
+        data, _ = json.JSONDecoder().raw_decode(credential[max(start, 0) :])
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    acct = data.get("account")
+    aid = acct.get("id") if isinstance(acct, dict) else None
+    if isinstance(aid, str) and aid:
+        return f"acct:{aid}"
+    user = data.get("user")
+    email = user.get("email") if isinstance(user, dict) else None
+    if isinstance(email, str) and "@" in email:
+        return f"mail:{email.strip().lower()}"
+    return None
+
+
+def binding_of(
+    ctx: ProcurementContext, tenant_id: uuid.UUID, product: str, credential: str
+) -> str | None:
+    ident = identity_of(product, credential)
+    if ident is None or ctx.cred_opener is None:
+        return None
+    return ctx.cred_opener.account_binding(str(tenant_id), ident)
+
+
+async def verify_account(
+    ctx: ProcurementContext,
+    db: Any,
+    tenant_id: uuid.UUID,
+    order_id: uuid.UUID,
+    product: str,
+    credential: str,
+) -> str | None:
+    """Execution-time binding (before any vendor call): ``None`` = go on, else the refusal code.
+
+    The order's session must belong to the account the half-price check was made for. A check made
+    with a session (``vendor_preflight`` / ``chatgpt_direct``) carries ``account_hmac``; an order
+    without a check is no concern of this function (the engine excludes half-price sources for it).
+    A ``manual`` check has no session to bind (staff decide)."""
+    row = (
+        await db.execute(
+            select(HalfPriceCheck.method, HalfPriceCheck.account_hmac).where(
+                HalfPriceCheck.tenant_id == tenant_id, HalfPriceCheck.order_id == order_id
+            )
+        )
+    ).first()
+    if row is None or row.method == "manual":
+        return None
+    have = binding_of(ctx, tenant_id, product, credential)
+    if have is None or row.account_hmac is None:
+        return "half_check_account_mismatch"  # a session-bearing plan without an identity
+    if not hmac.compare_digest(have, row.account_hmac):
+        return "half_check_account_mismatch"
+    return None
 
 
 async def _finish(
@@ -61,6 +129,8 @@ async def _finish(
             "blob": None,
             "decided_at": datetime.now(timezone.utc),
         }
+        if out.account_hmac:
+            values["account_hmac"] = out.account_hmac
         if out.account_mask:
             # keep the mask derived from the sealed session itself (the API binds the order's
             # session to it); the vendor's own mask only fills a row that has none
@@ -173,18 +243,48 @@ async def _via_preflight(
     return Outcome(res.status, res.reason, None)
 
 
+def _token_hash(ctx: ProcurementContext, tenant_id: uuid.UUID, token: str) -> str:
+    """Keyed hash of a session token (never the token). Without an opener (cannot happen: the
+    credential was just opened) the process token keys it."""
+    if ctx.cred_opener is not None:
+        return ctx.cred_opener.account_binding(str(tenant_id), f"token:{token}")[:40]
+    return hmac.new(
+        (ctx.settings.procurement_token or "x").encode(), token.encode(), "sha256"
+    ).hexdigest()[:40]
+
+
 async def _via_chatgpt(
     ctx: ProcurementContext, tenant_id: uuid.UUID, row: Any, credential: str
 ) -> Outcome:
     if row.vendor_product != "gpt":
         return Outcome("unavailable", "gpt_only")
-    ok, _ = await hit(ctx.redis, "proc:halfcheck-user", f"{tenant_id}:{row.user_id}", *PER_BUYER)
-    if not ok:
-        return Outcome("unavailable", "rate_limited")
     try:
         token, account_id = chatgpt_check.session_fields(credential)
     except ValueError:  # the sealed document was not JSON: cannot happen after validation
         return Outcome("unavailable", "unreadable_session")
+    # one token is read from ChatGPT once per DEDUP_TTL: the same session cannot be used to poll an
+    # account's state. Only a KEYED hash of the token is a Redis key; the value is the earlier
+    # coarse outcome (no token, no account data).
+    try:  # the long-lived session cookie mints new access tokens: it is the stable identity
+        stable = json.loads(credential).get("sessionToken") or token
+    except (ValueError, AttributeError):
+        stable = token
+    dedup_key = f"rl:proc:halfcheck-tok:{tenant_id}:{_token_hash(ctx, tenant_id, str(stable))}"
+    try:
+        cached = await ctx.redis.get(dedup_key)
+    except Exception:  # Redis down: the per-buyer / per-tenant budgets below still apply
+        cached = None
+    if cached:
+        try:
+            earlier = json.loads(cached)
+            return Outcome(
+                str(earlier["status"]), str(earlier.get("reason") or ""), earlier.get("detail")
+            )
+        except (ValueError, KeyError, TypeError):
+            pass
+    ok, _ = await hit(ctx.redis, "proc:halfcheck-user", f"{tenant_id}:{row.user_id}", *PER_BUYER)
+    if not ok:
+        return Outcome("unavailable", "rate_limited")
     # the per-tenant budget is spent only by a read that really goes to ChatGPT (a session that
     # fails locally costs nothing), and one tenant cannot exhaust another's
     ok, _ = await hit(ctx.redis, "proc:halfcheck-global", str(tenant_id), *GLOBAL)
@@ -202,7 +302,16 @@ async def _via_chatgpt(
         "plan_type": parsed["plan_type"],
         "campaigns": [c["key"] for c in parsed["campaigns"]],
     }
-    return Outcome("passed" if eligible else "ineligible", why, detail)
+    out = Outcome("passed" if eligible else "ineligible", why, detail)
+    try:
+        await ctx.redis.set(
+            dedup_key,
+            json.dumps({"status": out.status, "reason": out.reason, "detail": detail}),
+            ex=int(DEDUP_TTL.total_seconds()),
+        )
+    except Exception as exc:  # nothing depends on the cache being written
+        log.info("half-check dedup cache not written error=%s", type(exc).__name__)
+    return out
 
 
 async def _signal_limit(ctx: ProcurementContext, tenant_id: uuid.UUID) -> None:
@@ -268,6 +377,12 @@ async def run_check(ctx: ProcurementContext, tenant_id: uuid.UUID, check_id: uui
                     out = await _via_chatgpt(ctx, tenant_id, row, credential)
                 else:
                     out = await _via_preflight(ctx, tenant_id, row, credential)
+                bound = binding_of(ctx, tenant_id, row.vendor_product, credential)
+                if out.status == "passed" and bound is None:
+                    # no identity to bind the order to: a check that could not be bound is no pass
+                    out = Outcome("unavailable", "half_check_unsupported")
+                else:
+                    out = replace(out, account_hmac=bound)
     except Exception as exc:  # any failure is "unavailable"; the exception text is not logged
         log.warning("half-check check=%s failed error=%s", check_id, type(exc).__name__)
         out = Outcome("unavailable", "check_failed")

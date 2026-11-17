@@ -102,9 +102,13 @@ class CardProduct:
 def region_offered(catalog: PlanCatalog, country: object) -> bool:
     """A region the offer names must still be in the vendor's ``payment_regions`` (issue #27: a
     region the vendor stops offering is shown unavailable, never forced). A catalogue that lists
-    no region at all is read as "not stated" and does not hide anything."""
-    if country is None or not catalog.regions:
+    no region at all cannot confirm a pinned country: it is NOT offered (fail closed); a source
+    without a pinned country is unaffected."""
+    if country is None:
         return True
+    if not catalog.regions:
+        return False  # fail closed: the vendor's region list is empty / unreadable, a pinned
+        # country cannot be shown to be offered
     return any(c == country for c, _cur in catalog.regions)
 
 
@@ -931,13 +935,14 @@ class ZovoCardSupplier:
                 # second line of defence of issue #27: the vendor refuses a half-price key for an
                 # account that is not eligible BEFORE any charge and never falls back to full
                 # price. It is a definite refusal here too (staff refund), never a retry.
-                ok, why = dr.half_eligibility(
+                ok, _ = dr.half_eligibility(
                     pf,
                     spec.plan,
                     datetime.now(timezone.utc),
                     quotes_optional=dr.real_sandbox(self.client.config.base_url, self.env),
                 )
-                if not ok and why in ("quote_error", "plan_not_quoted"):
+                # EVERY reason the preflight gives (blocked, waiting, subscribed, no quote...)
+                if not ok:
                     return Result(Outcome.FATAL, error_code="half_price_ineligible", **seen)
             if pf.quote_error:  # the vendor: do not create an order while quote_error is set
                 return Result(Outcome.RETRYABLE, error_code="quote_error", **seen)

@@ -242,14 +242,10 @@ async def decorate(
         out["has_variants"] = bool(vs)
         if p.delivery_mode in ("upstream_cdk", "upstream_direct"):
             # buyer must pass the half-price eligibility check before ordering these (issue #27)
-            from app.modules.orders.halfcheck import requirement
+            from app.modules.orders.halfcheck import required_flags
 
-            flags = {v.id: await requirement(db, tenant_id, p.id, v.id) is not None for v in vs}
-            out["half_price"] = (
-                any(flags.values())
-                if vs
-                else (await requirement(db, tenant_id, p.id, None) is not None)
-            )
+            flags = await required_flags(db, tenant_id, p.id, [v.id for v in vs])
+            out["half_price"] = any(flags[v.id] for v in vs) if vs else bool(flags.get(None))
         else:
             flags = {}
         out["variants"] = [buyer_variant_view(p, v, lang, cards, ts, pricer) for v in vs]

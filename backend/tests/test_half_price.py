@@ -27,11 +27,21 @@ from tests.test_procurement_direct import (
     gpt_session,
     new_marker,
 )
-from tests.test_procurement_vcc import _zovo
+from tests.test_procurement_vcc import _rows, _zovo
 
 API = "/api/v1"
 HALF = {"product": "gpt", "plan": "plus_half", "card_id": 4242}
 OPT = f"{API}/admin/procurement/options"
+
+
+@pytest.fixture(autouse=True)
+def _no_account_age_gate(monkeypatch):
+    """The 24 h account-age gate of ``chatgpt_direct`` has its own test; the rest use new buyers."""
+    from datetime import timedelta
+
+    from app.modules.orders import halfcheck as oh
+
+    monkeypatch.setattr(oh, "MIN_ACCOUNT_AGE", timedelta(0))
 
 
 @pytest.fixture
@@ -335,6 +345,12 @@ async def test_chatgpt_direct_method_eligible_ineligible_and_refused(env, hp):
     buyer, _ = await env.login("buyer")
     chk = (await _check(buyer, hp, session)).json()
     assert chk["status"] == "passed" and chk["method"] == "chatgpt_direct"
+    # the SAME session is not read from ChatGPT again within 6 h: the earlier outcome is returned
+    again = (await _check(buyer, hp, session)).json()
+    assert again["status"] == "passed" and len(seen) == 1
+    # only a keyed hash of it is in Redis (never the token)
+    keys = [k async for k in env.res.redis.scan_iter(match="rl:proc:halfcheck-tok:*")]
+    assert len(keys) == 1 and "SMK" not in keys[0].decode() and "eyJ" not in keys[0].decode()
     assert await _status(env, chk["id"]) == ("passed", None, False)
     (req,) = seen
     # a plain read-only request: documented endpoint, bearer token, honest user agent, no more
@@ -346,29 +362,29 @@ async def test_chatgpt_direct_method_eligible_ineligible_and_refused(env, hp):
     # not eligible: a paid plan has no free-plan promotion
     answer.update(json=_acct("plus"))
     b2, _ = await env.login("buyer")
-    c2 = (await _check(b2, hp, session)).json()
+    c2 = (await _check(b2, hp, gpt_session(new_marker()))).json()
     assert c2["status"] == "ineligible" and c2["reason"] == "not_eligible"
     assert (await _status(env, c2["id"]))[1] == "not_free_account"
     # a free account with no listed promotion
     answer.update(json=_acct("free"))
     b3, _ = await env.login("buyer")
-    c3 = (await _check(b3, hp, session)).json()
+    c3 = (await _check(b3, hp, gpt_session(new_marker()))).json()
     assert (await _status(env, c3["id"]))[1] == "no_promotion"
     # ChatGPT refuses (challenge page / 403 / 429): "unavailable", never a workaround
     for status in (403, 429, 503):
         answer.update(status=status, json=None)
         b, _ = await env.login("buyer")
-        c = (await _check(b, hp, session)).json()
+        c = (await _check(b, hp, gpt_session(new_marker()))).json()
         assert c["status"] == "unavailable" and c["reason"] == "check_unavailable"
         assert (await _status(env, c["id"]))[1] == "chatgpt_refused"
     answer.update(status=401)
     b, _ = await env.login("buyer")
-    assert (await _check(b, hp, session)).json()["status"] == "session_invalid"
+    assert (await _check(b, hp, gpt_session(new_marker()))).json()["status"] == "session_invalid"
     answer.update(status=200, json={"nope": 1})
     b, _ = await env.login("buyer")
-    cu = (await _check(b, hp, session)).json()
+    cu = (await _check(b, hp, gpt_session(new_marker()))).json()
     assert (await _status(env, cu["id"]))[1] == "unreadable_answer"
-    # nothing was retried: one request per check
+    # nothing was retried: one request per distinct session
     assert len(seen) == 8
 
 
@@ -382,8 +398,9 @@ async def test_chatgpt_direct_is_rate_limited_per_buyer_and_never_proxied(env, h
     await _setup(env, hp, method="chatgpt_direct")
     hp.ctx.chatgpt_http = _chatgpt(handler)
     buyer, _ = await env.login("buyer")
-    session = gpt_session(new_marker())
-    statuses = [(await _check(buyer, hp, session)).json()["status"] for _ in range(4)]
+    statuses = [
+        (await _check(buyer, hp, gpt_session(new_marker()))).json()["status"] for _ in range(4)
+    ]
     assert statuses == ["passed", "passed", "passed", "unavailable"]  # 3 per buyer / 10 min
     assert len(calls) == 3
 
@@ -761,10 +778,15 @@ async def test_failover_and_round_robin_never_leave_the_checked_plan(env, hp):
         for _ in range(6):
             got = await engine.candidates(hp.ctx, db, row)
             assert [c.params["plan"] for c in got] == ["plus_half"]
-    # without a check or options an order is unpinned (existing behaviour: both sources)
+    # an order with NO attached check never reaches a half-price source (fail closed): only the
+    # full-price source is left for it, and with nothing else left there is no candidate at all
     other = uuid.uuid4()
     async with tenant_session(hp.ctx.maker, hp.env.tenant_id) as db:
-        assert len(await engine.candidates(hp.ctx, db, _order_row(hp, other))) == 2
+        got = await engine.candidates(hp.ctx, db, _order_row(hp, other))
+        assert [c.params["plan"] for c in got] == ["plus"]
+    await _sql_exec(env, "DELETE FROM supplier_offers WHERE params->>'plan' = 'plus'")
+    async with tenant_session(hp.ctx.maker, hp.env.tenant_id) as db:
+        assert await engine.pick_candidates(hp.ctx, db, _order_row(hp, other)) == []
 
 
 async def test_variant_options_pin_sources_to_plan_and_region(env, hp):
@@ -779,21 +801,20 @@ async def test_variant_options_pin_sources_to_plan_and_region(env, hp):
             json={
                 "name_i18n": {"en": "PH"},
                 "price": "20.00",
-                "options": {"plan": "plus_half", "region": "PH"},
+                "status": "archived",  # an active options variant needs costed sources first
+                "options": {"plan": "plus", "region": "PH"},
             },
         )
     ).json()
     base = await env.scalar("SELECT id FROM supplier_offers LIMIT 1")
-    await _clone_offer(env, base, "plus_half", 10, v["id"], payment_country="PH")
-    await _clone_offer(env, base, "plus", 20, v["id"], payment_country="PH")  # other plan
-    await _clone_offer(env, base, "plus_half", 30, v["id"], payment_country="EG")  # other region
-    await _clone_offer(env, base, "plus_half", 40, v["id"])  # no country, region is not US
+    await _clone_offer(env, base, "plus", 10, v["id"], payment_country="PH")
+    await _clone_offer(env, base, "pro_20x", 20, v["id"], payment_country="PH")  # other plan
+    await _clone_offer(env, base, "plus", 30, v["id"], payment_country="EG")  # other region
+    await _clone_offer(env, base, "plus", 40, v["id"])  # no country, region is not US
     row = _order_row(hp, uuid.uuid4(), uuid.UUID(v["id"]))
     async with tenant_session(hp.ctx.maker, hp.env.tenant_id) as db:
         got = await engine.candidates(hp.ctx, db, row)
-    assert [(c.params["plan"], c.params.get("payment_country")) for c in got] == [
-        ("plus_half", "PH")
-    ]
+    assert [(c.params["plan"], c.params.get("payment_country")) for c in got] == [("plus", "PH")]
 
 
 async def test_console_rejects_sources_that_differ_from_the_variant_options(env, hp):
@@ -805,6 +826,7 @@ async def test_console_rejects_sources_that_differ_from_the_variant_options(env,
             json={
                 "name_i18n": {"en": "PH"},
                 "price": "20.00",
+                "status": "archived",  # an active options variant needs costed sources first
                 "options": {"plan": "plus_half", "region": "PH"},
             },
         )
@@ -884,11 +906,10 @@ async def test_chatgpt_global_budget_is_per_tenant_and_signals_staff(env, hp, mo
 
     await _setup(env, hp, method="chatgpt_direct")
     hp.ctx.chatgpt_http = _chatgpt(handler)
-    session = gpt_session(new_marker())
     out = []
     for _ in range(4):  # four different buyers share the tenant's budget of 2 real reads
         b, _ = await env.login("buyer")
-        out.append((await _check(b, hp, session)).json())
+        out.append((await _check(b, hp, gpt_session(new_marker()))).json())
     assert [c["status"] for c in out] == ["passed", "passed", "unavailable", "unavailable"]
     assert out[2]["reason"] == "rate_limited" and len(calls) == 2
     # staff get ONE warning (not one per refused buyer) telling them to switch the method
@@ -896,3 +917,342 @@ async def test_chatgpt_global_budget_is_per_tenant_and_signals_staff(env, hp, mo
         await env.scalar("SELECT count(*) FROM audit_log WHERE action = 'half_check.limit_hit'")
         == 1
     )
+
+
+# --------------------------------------------------------------------------- round 2 (audit)
+def _session_for(marker: str, account_id: str, email: str = "same@example.com") -> str:
+    """A valid session of ANOTHER ChatGPT account that shows the same masked e-mail."""
+    import time
+
+    from tests.test_procurement_direct import _b64
+
+    doc = json.loads(gpt_session(marker, email=email))
+    doc["account"]["id"] = account_id
+    claims = {
+        "exp": int(time.time()) + 10 * 86400,
+        "https://api.openai.com/auth": {"chatgpt_account_id": account_id},
+    }
+    doc["accessToken"] = f"eyJhbGciOiJub25lIn0.{_b64(claims)}.sig"
+    return json.dumps(doc)
+
+
+async def _sources(env, hp):
+    sid = await env.scalar("SELECT id FROM suppliers LIMIT 1")
+    return f"{API}/admin/procurement/sources", sid
+
+
+async def test_enabled_sources_of_a_target_never_mix_half_and_full_price_plans(env, hp):
+    await _setup(env, hp)
+    admin, _ = await env.login("admin")
+    src, sid = await _sources(env, hp)
+    full = {"product": "gpt", "plan": "plus", "card_id": 4242}
+
+    def body(params, **kw):
+        return {"product_id": str(hp.product.id), "supplier_id": str(sid), "params": params,
+                "cost_estimate": "2.00", **kw}  # fmt: skip
+
+    # create ENABLED beside the enabled half-price source: refused
+    r = await admin.post(src, json=body(full, enabled=True))
+    assert r.status_code == 422 and r.json()["error"]["code"] == "source_plan_mixed"
+    # disabled is fine; ENABLING it (patch) is refused
+    r = await admin.post(src, json=body(full))
+    assert r.status_code == 201, r.text
+    oid = r.json()["id"]
+    r = await admin.patch(f"{src}/{oid}", json={"enabled": True})
+    assert r.status_code == 422 and r.json()["error"]["code"] == "source_plan_mixed"
+    # two half-price sources of another country mix too
+    ph = {**HALF, "payment_country": "PH", "payment_currency": "PHP"}
+    r = await admin.post(src, json=body(ph, enabled=True))
+    assert r.status_code == 422 and r.json()["error"]["code"] == "source_plan_mixed"
+    # patching a disabled source's params onto a mixed plan and enabling in one call: refused
+    drift = HALF | {"payment_country": "EG", "payment_currency": "EGP"}
+    r = await admin.patch(f"{src}/{oid}", json={"params": drift, "enabled": True})
+    assert r.status_code == 422 and r.json()["error"]["code"] == "source_plan_mixed"
+    # the half-price source itself can be re-saved alone
+    half_id = await env.scalar("SELECT id FROM supplier_offers WHERE params->>'plan' = 'plus_half'")
+    r = await admin.patch(f"{src}/{half_id}", json={"priority": 7})
+    assert r.status_code == 200
+    # another tenant's admin cannot reach these sources
+    foreign, _ = await env.login("admin", tenant_id=env.other_tenant_id)
+    r = await foreign.patch(f"{src}/{oid}", json={"enabled": True})
+    assert r.status_code in (401, 403, 404)
+
+
+async def test_required_when_any_enabled_source_is_half_price_and_the_engine_fails_closed(env, hp):
+    from app.core.db import tenant_session
+    from app.procurement import engine
+
+    await _setup(env, hp)
+    offer = await env.scalar("SELECT id FROM supplier_offers LIMIT 1")
+    await _clone_offer(env, offer, "plus", 1)  # FULL price is the primary (first) source
+    buyer, _ = await env.login("buyer")
+    req = (
+        await buyer.get(f"{API}/half-checks/required", params={"product_id": str(hp.product.id)})
+    ).json()
+    assert req["required"] is True and req["plan"] == "plus_half"
+    detail = (await buyer.get(f"{API}/products/{hp.product.id}")).json()
+    assert detail["half_price"] is True
+    # an order without an attached check can only reach the full-price source ...
+    row = _order_row(hp, uuid.uuid4())
+    async with tenant_session(hp.ctx.maker, hp.env.tenant_id) as db:
+        got = await engine.pick_candidates(hp.ctx, db, row)
+        assert [c.params["plan"] for c in got] == ["plus"]
+    # ... and with only the half-price source left there is none: the job needs staff
+    await _sql_exec(env, "DELETE FROM supplier_offers WHERE params->>'plan' = 'plus'")
+    async with tenant_session(hp.ctx.maker, hp.env.tenant_id) as db:
+        assert await engine.pick_candidates(hp.ctx, db, row) == []
+
+
+async def test_order_without_its_check_goes_to_needs_manual_and_nothing_is_sent(env, hp):
+    vendor = await _setup(env, hp)
+    buyer, _ = await env.login("buyer")
+    session = gpt_session(new_marker())
+    chk = (await _check(buyer, hp, session)).json()
+    order = (await _order(buyer, hp, session, chk["id"])).json()
+    await pay_order(env, buyer, order)
+    await _sql_exec(env, "UPDATE half_price_checks SET order_id = NULL")  # staff-level accident
+    await env.drain()
+    await hp.run()
+    job = await _job(hp, order)
+    assert job.state == "needs_manual"
+    assert vendor.direct_executions == 0
+
+
+async def test_account_binding_is_keyed_and_compared_in_procurement_before_any_spend(env, hp):
+    vendor = await _setup(env, hp)
+    buyer, _ = await env.login("buyer")
+    mine = _session_for(new_marker(), "acct-mine")
+    chk = (await _check(buyer, hp, mine)).json()
+    assert chk["status"] == "passed"
+    stored = (await _rows(env, "SELECT account_hmac FROM half_price_checks"))[0][0]
+    # a keyed digest: neither the account id nor the e-mail, and the API role cannot read it
+    assert stored and len(stored) == 64 and "acct-mine" not in stored
+    from sqlalchemy.exc import DBAPIError
+
+    async with env.api_session() as db:
+        with pytest.raises(DBAPIError):
+            await db.execute(text("SELECT account_hmac FROM half_price_checks"))
+        await db.rollback()
+    # another account with the SAME masked e-mail: the API's mask hint cannot tell them apart
+    other = _session_for(new_marker(), "acct-other")
+    r = await _order(buyer, hp, other, chk["id"])
+    assert r.status_code == 200, r.text
+    order = r.json()
+    await pay_order(env, buyer, order)
+    await env.drain()
+    await hp.run()
+    job = await _job(hp, order)
+    assert job.state == "needs_manual" and job.error_code == "half_check_account_mismatch"
+    assert vendor.direct_executions == 0 and vendor.preflights == 1  # only the check's own read
+    # the matching account goes through
+    chk2 = (await _check(buyer, hp, mine)).json()
+    ok = (await _order(buyer, hp, _session_for(new_marker(), "acct-mine"), chk2["id"])).json()
+    await pay_order(env, buyer, ok)
+    await env.drain()
+    await hp.run()
+    assert (await _job(hp, ok)).state in ("accepted_pending", "fulfilled")
+
+
+async def test_a_check_without_a_binding_never_executes(env, hp):
+    vendor = await _setup(env, hp)
+    buyer, _ = await env.login("buyer")
+    session = gpt_session(new_marker())
+    chk = (await _check(buyer, hp, session)).json()
+    order = (await _order(buyer, hp, session, chk["id"])).json()
+    await pay_order(env, buyer, order)
+    await _sql_exec(env, "UPDATE half_price_checks SET account_hmac = NULL")
+    await env.drain()
+    await hp.run()
+    job = await _job(hp, order)
+    assert job.state == "needs_manual" and job.error_code == "half_check_account_mismatch"
+    assert vendor.direct_executions == 0
+
+
+async def test_claude_and_grok_checks_without_an_identity_are_refused_unless_manual(env, hp):
+    await _zovo(hp, _vendor(), {"product": "grok", "plan": "super_half", "card_id": 4242})
+    await _method(env, "vendor_preflight")
+    buyer, _ = await env.login("buyer")
+    r = await _check(buyer, hp, "sso=" + "A" * 40)
+    assert r.status_code == 422 and r.json()["error"]["code"] == "half_check_unsupported"
+    assert await env.scalar("SELECT count(*) FROM half_price_checks") == 0
+    await _method(env, "manual")  # staff decide: no session, nothing to bind
+    assert (await _check(buyer, hp)).status_code == 200
+
+
+async def test_vendor_preflight_refusal_covers_every_ineligible_reason(env, hp):
+    vendor = await _setup(env, hp, method="manual")
+    buyer, _ = await env.login("buyer")
+    chk = (await _check(buyer, hp)).json()
+    order = (await _order(buyer, hp, gpt_session(new_marker()), chk["id"])).json()
+    admin, _ = await env.login("admin")
+    await admin.post(
+        f"{API}/admin/procurement/half-checks/{chk['id']}/decision", json={"approve": True}
+    )
+    vendor.preflight_over = {"blocking_reason": "cooling_down"}  # not quote_error / not_quoted
+    await pay_order(env, buyer, order)
+    await env.drain()
+    await hp.run()
+    job = await _job(hp, order)
+    assert job.state == "needs_manual" and job.error_code == "half_price_ineligible"
+    assert vendor.direct_executions == 0
+
+
+async def test_cdk_half_price_order_with_a_passed_check_succeeds(env):
+    """A code carries no account: the order has no session, so no account comparison (it used to
+    fail every CDK half-price order with ``half_check_account_mismatch``)."""
+
+    class CUp(DUp):
+        def __init__(self, e) -> None:
+            super().__init__(e)
+            self.mode, self.kind = "upstream_cdk", "cdk"
+
+    up = CUp(env)
+    await up.start()
+    try:
+        await _zovo(up, _vendor(), {"product": "gpt", "plan": "plus_half"})
+        await _method(env, "vendor_preflight")
+        buyer, _ = await env.login("buyer")
+        chk = (await _check(buyer, up, gpt_session(new_marker()))).json()
+        assert chk["status"] == "passed", chk
+        r = await buyer.post(
+            f"{API}/orders",
+            json={"product_id": str(up.product.id), "qty": 1, "half_check_id": chk["id"],
+                  "half_check_confirm": True},
+        )  # fmt: skip
+        assert r.status_code == 200, r.text
+        assert await env.scalar("SELECT order_id IS NOT NULL FROM half_price_checks") is True
+    finally:
+        await up.close()
+
+
+async def test_check_insert_and_consume_guards_for_the_api_role(env, hp):
+    from sqlalchemy.exc import DBAPIError
+
+    from tests.helpers import buy
+
+    await _setup(env, hp, method="manual")
+    alice, au = await env.login("buyer")
+    bob, _ = await env.login("buyer")
+    chk = (await _check(alice, hp)).json()
+    manual = await env.product(mode="manual", title="Plain", price=900, floor=100)
+    bobs = await buy(bob, manual, 1)
+
+    async def run(sql: str, **kw):
+        async with env.api_session() as db:
+            try:
+                await db.execute(text(sql), kw)
+                await db.commit()
+            finally:
+                await db.rollback()
+
+    ins = (
+        "INSERT INTO half_price_checks (id, tenant_id, user_id, product_id, method, "
+        "vendor_product, plan, status{extra}) SELECT gen_random_uuid(), tenant_id, user_id, "
+        "product_id, method, vendor_product, plan, :s{vals} FROM half_price_checks"
+    )
+    # a decided / consumed / reasoned row cannot be INSERTED by the API role
+    for extra, vals, kw in (
+        ("", "", {"s": "passed"}),
+        ("", "", {"s": "manual_approved"}),
+        (", reason", ", 'x'", {"s": "pending"}),
+        (", decided_at", ", now()", {"s": "pending"}),
+        (", order_id", ", :o", {"s": "pending", "o": uuid.UUID(bobs["id"])}),
+    ):
+        with pytest.raises(DBAPIError):
+            await run(ins.format(extra=extra, vals=vals), **kw)
+    await run(ins.format(extra="", vals=""), s="manual_pending")  # opening one is allowed
+    # a check is consumed only by an order of the SAME buyer
+    with pytest.raises(DBAPIError):
+        await run(
+            "UPDATE half_price_checks SET order_id = :o WHERE id = :i",
+            o=uuid.UUID(bobs["id"]), i=uuid.UUID(chk["id"]),
+        )  # fmt: skip
+    # cross-tenant: another tenant's pin cannot even see the row
+    async with env.api_session(env.other_tenant_id) as db:
+        n = await db.scalar(text("SELECT count(*) FROM half_price_checks"))
+    assert n == 0
+    assert au is not None
+
+
+async def test_the_same_session_token_is_not_read_twice_and_a_new_account_is_refused(env, hp):
+    seen: list[int] = []
+
+    def handler(req):
+        seen.append(1)
+        return httpx.Response(200, json=_acct("free", {"plus": {"id": "c", "metadata": {}}}))
+
+    await _setup(env, hp, method="chatgpt_direct")
+    hp.ctx.chatgpt_http = _chatgpt(handler)
+    # a buyer whose account is brand new (the real 24 h gate, no paid order): refused, coarse
+    from datetime import timedelta
+
+    from app.modules.orders import halfcheck as oh
+
+    oh.MIN_ACCOUNT_AGE = timedelta(hours=24)
+    try:
+        newbie, _ = await env.login("buyer")
+        r = await _check(newbie, hp, gpt_session(new_marker()))
+        assert r.status_code == 403 and r.json()["error"]["code"] == "half_check_account_new"
+        assert not seen and await env.scalar("SELECT count(*) FROM half_price_checks") == 0
+        async with env.owner_session() as db:  # 25 hours old: allowed
+            await db.execute(text("UPDATE users SET created_at = now() - interval '25 hours'"))
+            await db.commit()
+        session = gpt_session(new_marker())
+        assert (await _check(newbie, hp, session)).json()["status"] == "passed"
+        assert (await _check(newbie, hp, session)).json()["status"] == "passed"
+        assert len(seen) == 1  # the second one came from the 6 h dedup
+        # another tenant never sees the dedup entry of this one (keyed per tenant)
+        keys = [k async for k in env.res.redis.scan_iter(match="rl:proc:halfcheck-tok:*")]
+        assert len(keys) == 1 and str(hp.env.tenant_id) in keys[0].decode()
+    finally:
+        oh.MIN_ACCOUNT_AGE = timedelta(0)
+
+
+async def test_required_endpoint_is_rate_limited(env, hp):
+    await _setup(env, hp)
+    buyer, _ = await env.login("buyer")
+    codes = []
+    for _ in range(62):
+        r = await buyer.get(
+            f"{API}/half-checks/required", params={"product_id": str(hp.product.id)}
+        )
+        codes.append(r.status_code)
+    assert 429 in codes and codes[0] == 200
+
+
+async def test_catalog_decorate_reads_the_half_flag_with_one_query_per_product(env, hp):
+    from sqlalchemy import event
+
+    await _setup(env, hp)
+    admin, _ = await env.login("admin")
+    for n in range(4):
+        r = await admin.post(
+            f"{API}/admin/products/{hp.product.id}/variants",
+            json={"name_i18n": {"en": f"V{n}"}, "price": "20.00", "status": "archived"},
+        )
+        assert r.status_code == 200, r.text
+    async with env.owner_session() as db:  # make them buyer-visible plain variants
+        await db.execute(text("UPDATE product_variants SET status = 'active'"))
+        await db.commit()
+    from app.models import Product
+    from app.modules.catalog import variants as cv
+
+    statements: list[str] = []
+    async with env.api_session() as db:
+        engine = db.get_bind()
+        sync = engine.sync_engine if hasattr(engine, "sync_engine") else engine
+
+        def count(_c, _cur, stmt, *_a):
+            if "supplier_offers.kind, supplier_offers.params" in stmt:  # the half-price flag read
+                statements.append(stmt)
+
+        event.listen(sync, "before_cursor_execute", count)
+        try:
+            from sqlalchemy import select
+
+            p = await db.scalar(select(Product).where(Product.id == hp.product.id))
+            out: dict = {}
+            await cv.decorate(db, hp.env.tenant_id, [(p, out)], "en", None, None)
+        finally:
+            event.remove(sync, "before_cursor_execute", count)
+    assert len(out["variants"]) == 4 and len(statements) == 1

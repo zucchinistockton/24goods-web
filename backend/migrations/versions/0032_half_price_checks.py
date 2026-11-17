@@ -11,7 +11,9 @@ Grants (column level; the API can never read ``blob`` / ``kid`` back):
 ================  =========================================================================
 ``app_api``       INSERT; SELECT of every column except ``blob`` / ``kid``; UPDATE of
                   ``order_id`` ONLY (consume the check when the order is created). A trigger
-                  limits it: NULL -> value, and only for a USABLE check (``passed`` /
+                  limits it: NULL -> value, only for an order of the SAME buyer, and only for a
+                  USABLE check; a second trigger limits INSERT to ``pending`` / ``manual_pending``
+                  rows with no order, reason, decision or account binding (``passed`` /
                   ``manual_pending`` / ``manual_approved``). The staff decision of a manual check
                   goes through ``half_check_decide()`` (SECURITY DEFINER; ``manual_pending`` ->
                   approved / refused only, same tenant as the session pin), so the API role
@@ -19,8 +21,8 @@ Grants (column level; the API can never read ``blob`` / ``kid`` back):
                   check into a passed one.
                   DELETE only of a ``pending`` row (the check call to procurement failed).
 ``app_procurement`` SELECT, UPDATE (``blob``, ``status``, ``reason``, ``detail``,
-                  ``email_masked``, ``decided_at``), DELETE; the sweeper (unpinned session) wipes
-                  stale blobs and old unused rows.
+                  ``email_masked``, ``account_hmac``, ``decided_at``), DELETE; the sweeper (unpinned
+                  session) wipes stale blobs and old unused rows.
 everyone else     nothing.
 ================  =========================================================================
 
@@ -63,6 +65,7 @@ UP = [
         reason varchar(48),
         detail jsonb,
         email_masked varchar(64),
+        account_hmac varchar(64),
         kid varchar(64),
         blob bytea CHECK (blob IS NULL OR octet_length(blob) BETWEEN 64 AND 140000),
         order_id uuid UNIQUE REFERENCES orders(id),
@@ -90,9 +93,10 @@ UP = [
     f"GRANT UPDATE (order_id) ON {T} TO app_api",
     f"GRANT DELETE ON {T} TO app_api",
     f"GRANT SELECT, DELETE ON {T} TO app_procurement",
-    f"GRANT UPDATE (blob, status, reason, detail, email_masked, decided_at) ON {T} "
-    f"TO app_procurement",
-    f"""CREATE FUNCTION {T}_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+    f"GRANT UPDATE (blob, status, reason, detail, email_masked, account_hmac, "
+    f"decided_at) ON {T} TO app_procurement",
+    f"""CREATE FUNCTION {T}_guard() RETURNS trigger LANGUAGE plpgsql
+    SET search_path = pg_catalog, public, pg_temp AS $$
     BEGIN
         IF current_user = 'app_api' THEN
             IF NEW.order_id IS DISTINCT FROM OLD.order_id AND (
@@ -101,6 +105,13 @@ UP = [
             ) THEN
                 RAISE EXCEPTION 'a half-price check is consumed once, and only when usable';
             END IF;
+            IF NEW.order_id IS DISTINCT FROM OLD.order_id AND NOT EXISTS (
+                SELECT 1 FROM public.orders o
+                WHERE o.id = NEW.order_id AND o.tenant_id = OLD.tenant_id
+                  AND o.buyer_id = OLD.user_id
+            ) THEN
+                RAISE EXCEPTION 'a half-price check is consumed by an order of the same buyer';
+            END IF;
             IF NEW.status IS DISTINCT FROM OLD.status
                OR NEW.reason IS DISTINCT FROM OLD.reason
                OR NEW.decided_at IS DISTINCT FROM OLD.decided_at THEN
@@ -108,9 +119,9 @@ UP = [
             END IF;
         END IF;
         RETURN NEW;
-    END $$""",
+    END $$""",  # noqa: S608 (constant table name, no user input)
     f"""CREATE FUNCTION {T}_decide(p_id uuid, p_approve boolean) RETURNS text
-    LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
+    LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
     DECLARE
         pinned uuid := NULLIF(current_setting('app.tenant_id', true), '')::uuid;
         new_status text := CASE WHEN p_approve THEN 'manual_approved' ELSE 'manual_refused' END;
@@ -130,11 +141,31 @@ UP = [
     f"REVOKE ALL ON FUNCTION {T}_decide(uuid, boolean) FROM PUBLIC",
     f"GRANT EXECUTE ON FUNCTION {T}_decide(uuid, boolean) TO app_api",
     f"CREATE TRIGGER {T}_guard BEFORE UPDATE ON {T} FOR EACH ROW EXECUTE FUNCTION {T}_guard()",
+    # INSERT guard: the API role may only open a check (never a decided or consumed one). It is
+    # tied to the role name, so a startup assertion in the API process (prod) makes sure that it
+    # really connects as ``app_api`` (``app.main``).
+    f"""CREATE FUNCTION {T}_insert_guard() RETURNS trigger LANGUAGE plpgsql
+    SET search_path = pg_catalog, public, pg_temp AS $$
+    BEGIN
+        IF current_user = 'app_api' AND (
+            NEW.status NOT IN ('pending', 'manual_pending')
+            OR NEW.order_id IS NOT NULL
+            OR NEW.reason IS NOT NULL
+            OR NEW.decided_at IS NOT NULL
+            OR NEW.account_hmac IS NOT NULL
+        ) THEN
+            RAISE EXCEPTION 'the API can only open a half-price check';
+        END IF;
+        RETURN NEW;
+    END $$""",
+    f"CREATE TRIGGER {T}_insert_guard BEFORE INSERT ON {T} FOR EACH ROW "
+    f"EXECUTE FUNCTION {T}_insert_guard()",
 ]
 
 DOWN = [
     f"DROP TABLE IF EXISTS {T}",
     f"DROP FUNCTION IF EXISTS {T}_guard()",
+    f"DROP FUNCTION IF EXISTS {T}_insert_guard()",
     f"DROP FUNCTION IF EXISTS {T}_decide(uuid, boolean)",
 ]
 

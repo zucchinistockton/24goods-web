@@ -237,6 +237,17 @@ def _route_table() -> APIRouter:
     return table
 
 
+async def _assert_api_role(r: Resources) -> None:
+    """Production: the API connects as ``app_api``. The half-price checks table is protected by
+    triggers that apply to that role only (migration 0032); another role would bypass them."""
+    from sqlalchemy import text
+
+    async with r.maker() as db:
+        who = await db.scalar(text("SELECT current_user"))
+    if who != "app_api":
+        raise RuntimeError(f"the API must connect as app_api, not {who}")
+
+
 def create_app(res: Resources | None = None, *, background: bool = True) -> FastAPI:
     """``res`` given: resources are shared/owned by the caller (serve.py, tests)."""
     settings = res.settings if res is not None else get_settings()
@@ -248,6 +259,8 @@ def create_app(res: Resources | None = None, *, background: bool = True) -> Fast
             app.state.res = build_resources(settings)
         r: Resources = app.state.res
         tasks: list[asyncio.Task[None]] = []
+        if owned and settings.is_prod:
+            await _assert_api_role(r)
         trim()  # drop import/startup garbage from RSS
         if background:
             r.hub.ensure_started()

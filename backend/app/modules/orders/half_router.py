@@ -23,12 +23,16 @@ NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 @router.get("/required")
 async def required(
     product_id: uuid.UUID,
+    request: Request,
     variant_id: uuid.UUID | None = Query(None),
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
+    res: Resources = Depends(get_res),
 ) -> dict:
     """Does this product / variant need the check, and by which method (the buyer is told whether
     to paste a session)."""
+    await enforce(res.redis, "halfcheck:required", str(user.id), 60, 60)
+    await enforce(res.redis, "halfcheck:required-ip", client_ip(request) or "-", 120, 60)
     await get_active_product(db, product_id)  # 404 for an inactive / unknown product
     target = await halfcheck.requirement(db, user.tenant_id, product_id, variant_id)
     if target is None:

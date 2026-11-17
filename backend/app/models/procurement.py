@@ -151,6 +151,9 @@ class HalfPriceCheck(Base):
     reason: Mapped[str | None] = mapped_column(String(48))
     detail: Mapped[dict[str, Any] | None]
     email_masked: Mapped[str | None] = mapped_column(String(64))
+    # keyed HMAC of the checked account's identity (procurement computes and compares it; the API
+    # role cannot read it)
+    account_hmac: Mapped[str | None] = mapped_column(String(64), deferred=True)
     kid: Mapped[str | None] = mapped_column(String(64), deferred=True)
     blob: Mapped[bytes | None] = mapped_column(LargeBinary, deferred=True)
     order_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("orders.id"), unique=True)

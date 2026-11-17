@@ -279,6 +279,13 @@ async def candidates(
             SupplierAccount.env != "sandbox"
         )  # a real session never goes to a sandbox
     opts, chk = await _pins(db, order)
+    stmt_rows = list((await db.execute(stmt)).all())
+    if chk is None:
+        # fail closed: an order with no attached half-price check never reaches a half-price
+        # source (failover / round-robin included); with nothing else left the job needs staff
+        from app.modules.catalog.regions import is_half_plan
+
+        stmt_rows = [r for r in stmt_rows if not is_half_plan((r.params or {}).get("plan"))]
     rows = [
         OfferRow(
             r.id,
@@ -287,7 +294,7 @@ async def candidates(
             dict(r.params or {}),
             SupplierRef(r.supplier_id, order.tenant_id, r.code, r.adapter, r.env, r.health),
         )
-        for r in (await db.execute(stmt)).all()
+        for r in stmt_rows
         if _pinned(dict(r.params or {}), opts, chk)  # before round-robin: it rotates matches only
     ]
     if len(rows) > 1 and await _routing(db, order) == "round_robin":
@@ -1555,6 +1562,26 @@ async def _call(ctx: ProcurementContext, lease: Lease) -> Result:
                 cred, problem = await _open_credential(ctx, lease)
                 if cred is None:
                     return Result(Outcome.FATAL, error_code=problem or "credential_unreadable")
+                from app.modules.catalog.regions import is_half_plan
+
+                if is_half_plan(lease.spec.offer.params.get("plan")) and lease.order_id:
+                    # the order's session must be the account the half-price check was made for:
+                    # compared HERE (the session is sealed for the API), before any vendor call
+                    from app.procurement.halfcheck import verify_account
+
+                    async with tenant_session(ctx.maker, lease.tenant_id) as vdb:
+                        refused = await verify_account(
+                            ctx,
+                            vdb,
+                            lease.tenant_id,
+                            lease.order_id,
+                            str(lease.spec.offer.params.get("product") or "gpt"),
+                            cred,
+                        )
+                        await vdb.rollback()
+                    if refused:
+                        del cred
+                        return Result(Outcome.FATAL, error_code=refused)
                 spec = replace(lease.spec, credential=cred)
                 del cred
                 try:

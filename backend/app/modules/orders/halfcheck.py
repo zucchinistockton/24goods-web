@@ -65,52 +65,67 @@ class TargetPlan:
     kind: str
 
 
+def _enabled_sources(tenant_id: uuid.UUID, product_id: uuid.UUID):  # type: ignore[no-untyped-def]
+    return (
+        select(SupplierOffer.variant_id, SupplierOffer.kind, SupplierOffer.params)
+        .join(SupplierAccount, SupplierAccount.id == SupplierOffer.supplier_id)
+        .where(
+            SupplierOffer.tenant_id == tenant_id,
+            SupplierOffer.product_id == product_id,
+            SupplierOffer.enabled.is_(True),
+            SupplierOffer.kind.in_(("cdk", "direct")),
+            SupplierAccount.enabled.is_(True),
+        )
+        .order_by(SupplierOffer.priority, SupplierOffer.created_at)
+    )
+
+
+def _half_target(rows: list[Any]) -> TargetPlan | None:
+    """Required when ANY enabled source of the target is a half-price plan (a failover or
+    round-robin pick could reach it; ``source_plan_mixed`` keeps the sources uniform, this is the
+    fail-closed read of the same rule). The first half-price source names the plan."""
+    for row in rows:
+        params = row.params or {}
+        plan = params.get("plan")
+        if is_half_plan(plan):
+            country = params.get("payment_country")
+            return TargetPlan(
+                str(params.get("product") or "gpt"),
+                str(plan),
+                country if isinstance(country, str) else None,
+                row.kind,
+            )
+    return None
+
+
 async def requirement(
     db: AsyncSession, tenant_id: uuid.UUID, product_id: uuid.UUID, variant_id: uuid.UUID | None
 ) -> TargetPlan | None:
-    """The primary (priority-first) enabled source of the target, when its plan is a half-price
-    key; ``None`` = no check needed."""
+    """The half-price plan of the target when ANY of its enabled sources is one; ``None`` = no
+    check needed."""
     match = (
         SupplierOffer.variant_id == variant_id
         if variant_id is not None
         else SupplierOffer.variant_id.is_(None)
     )
-    row = (
-        await db.execute(
-            select(SupplierOffer.kind, SupplierOffer.params)
-            .join(SupplierAccount, SupplierAccount.id == SupplierOffer.supplier_id)
-            .where(
-                SupplierOffer.tenant_id == tenant_id,
-                SupplierOffer.product_id == product_id,
-                match,
-                SupplierOffer.enabled.is_(True),
-                SupplierOffer.kind.in_(("cdk", "direct")),
-                SupplierAccount.enabled.is_(True),
-            )
-            .order_by(SupplierOffer.priority, SupplierOffer.created_at)
-            .limit(1)
-        )
-    ).first()
-    if row is None:
-        return None
-    params = row.params or {}
-    plan = params.get("plan")
-    if not is_half_plan(plan):
-        return None
-    country = params.get("payment_country")
-    return TargetPlan(
-        str(params.get("product") or "gpt"),
-        str(plan),
-        country if isinstance(country, str) else None,
-        row.kind,
-    )
+    rows = (await db.execute(_enabled_sources(tenant_id, product_id).where(match))).all()
+    return _half_target(list(rows))
 
 
 async def required_flags(
     db: AsyncSession, tenant_id: uuid.UUID, product_id: uuid.UUID, variant_ids: list[uuid.UUID]
-) -> dict[uuid.UUID, bool]:
-    """Per variant: does buying it need a half-price check (storefront flag)."""
-    return {v: await requirement(db, tenant_id, product_id, v) is not None for v in variant_ids}
+) -> dict[uuid.UUID | None, bool]:
+    """Storefront flags in ONE query per product: per variant, and ``None`` for the product's own
+    (variant-less) sources."""
+    rows = (await db.execute(_enabled_sources(tenant_id, product_id))).all()
+    by: dict[uuid.UUID | None, list[Any]] = {}
+    for r in rows:
+        by.setdefault(r.variant_id, []).append(r)
+    out: dict[uuid.UUID | None, bool] = {
+        v: _half_target(by.get(v, [])) is not None for v in variant_ids
+    }
+    out[None] = _half_target(by.get(None, [])) is not None
+    return out
 
 
 # What a buyer is told about a refusal: coarse only. The vendor's reason (is the account free, does
@@ -160,6 +175,25 @@ async def _method(db: AsyncSession, tenant_id: uuid.UUID) -> str:
     return rg.settings_of(ts)["half_price_check"]
 
 
+MIN_ACCOUNT_AGE = timedelta(hours=24)  # chatgpt_direct reads an account with ChatGPT: not for
+# a throwaway account (oracle / per-tenant budget exhaustion), unless it has already paid once
+
+
+async def _account_old_enough(db: AsyncSession, user: User) -> bool:
+    if datetime.now(timezone.utc) - user.created_at >= MIN_ACCOUNT_AGE:
+        return True
+    paid = await db.scalar(
+        select(func.count())
+        .select_from(Order)
+        .where(
+            Order.tenant_id == user.tenant_id,
+            Order.buyer_id == user.id,
+            Order.paid_at.is_not(None),
+        )
+    )
+    return int(paid or 0) > 0
+
+
 async def create_check(
     db: AsyncSession,
     res: Resources,
@@ -178,6 +212,12 @@ async def create_check(
     if target is None:
         raise Conflict("This item needs no eligibility check", code="half_check_not_required")
     method = await _method(db, tid)
+    if method != "manual" and target.vendor_product != "gpt":
+        # no stable account identity can be derived from a Claude / Grok session, so a check
+        # could not be bound to the account that later pays: refused, never unbound
+        raise Validation("This plan cannot be checked automatically", code="half_check_unsupported")
+    if method == "chatgpt_direct" and not await _account_old_enough(db, user):
+        raise Forbidden("The account is too new for this check", code="half_check_account_new")
     if method == "manual":
         open_manual = await db.scalar(
             select(func.count())
@@ -299,9 +339,9 @@ async def claim(
     unconsumed and fresh, for the plan / country the source sells NOW, for ONE unit, and for the
     account the order session belongs to. Locked, so two orders cannot use one check.
 
-    CDK note: a code carries no account, so for ``upstream_cdk`` the vendor's own enforcement at
-    redemption is the only eligibility binding; the check bounds the SALE (one check = one code)
-    but cannot prove who redeems it."""
+    CDK note (``upstream_cdk``: no session, so no account comparison): a code carries no account,
+    so the vendor's own enforcement at redemption is the only eligibility binding; the check
+    bounds the SALE (one check = one code) but cannot prove who redeems it."""
     if check_id is None:
         raise Validation("This plan needs an eligibility check first", code="half_check_required")
     if qty != 1:
@@ -327,8 +367,14 @@ async def claim(
         or row.country != target.country  # the source changed after the check
     ):
         raise Validation("The eligibility check is not valid", code="half_check_invalid")
-    if row.email_masked is not None and account_masked != row.email_masked:
-        # the session of the order is not the account that was checked
+    if (
+        target.kind == "direct"
+        and row.email_masked is not None
+        and account_masked != row.email_masked
+    ):
+        # EARLY UX HINT only: the session of the order does not look like the account that was
+        # checked. The binding itself is the keyed ``account_hmac`` compared by procurement at
+        # execution (``half_check_account_mismatch``, no spend). A CDK order has no session.
         raise Validation(
             "The order account is not the account that was checked",
             code="half_check_account_mismatch",
