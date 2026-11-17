@@ -4,8 +4,9 @@
  * (done / current / todo), the time of each reached step and a plain message when the order
  * failed or needs attention. Only the coarse keys of the server are shown, translated here.
  */
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { stepGlyph, stepStateKey } from '../lib/progressUi'
 import { normaliseProgress, progressTone, stepTime, type DirectProgress } from '@24goods/shared'
 
 const props = defineProps<{ progress: DirectProgress }>()
@@ -36,6 +37,24 @@ const message = computed(() => {
   }
   return null
 })
+// the current step (or the outcome) as one text; announced politely only when it changes
+const stepText = computed(() => {
+  const cur = p.value.steps.find((s) => s.state === 'current' || s.state === 'failed' || s.state === 'attention')
+  return label(cur?.key ?? p.value.step)
+})
+const announce = ref('')
+watch(
+  () => `${p.value.step}|${p.value.percent}|${p.value.outcome}`,
+  () => {
+    announce.value = t('direct.progress.announce', { percent: p.value.percent, step: stepText.value })
+  },
+)
+const valueText = computed(() => t('direct.progress.valuetext', { percent: p.value.percent, step: stepText.value }))
+const stateWord = (state: string) => t(`direct.progress.state.${stepStateKey(state)}`)
+const iso = (at: string | number | null): string | undefined => {
+  const ms = stepTime(at)
+  return ms === null ? undefined : new Date(ms).toISOString()
+}
 function when(at: string | number | null): string {
   const ms = stepTime(at)
   if (ms === null) return ''
@@ -44,23 +63,32 @@ function when(at: string | number | null): string {
 </script>
 
 <template>
-  <section class="progress" :class="`tone-${tone}`" :aria-label="t('direct.progress.title')">
+  <section class="progress" :class="`tone-${tone}`" aria-labelledby="direct-progress-title">
     <div class="head">
-      <h4 class="title">{{ t('direct.progress.title') }}</h4>
+      <h4 id="direct-progress-title" class="title">{{ t('direct.progress.title') }}</h4>
       <span class="pct" data-testid="progress-percent">{{ p.percent }}%</span>
     </div>
-    <div class="bar" role="progressbar" :aria-valuenow="p.percent" aria-valuemin="0" aria-valuemax="100" :aria-label="t('direct.progress.title')">
+    <div
+      class="bar"
+      role="progressbar"
+      :aria-valuenow="p.percent"
+      aria-valuemin="0"
+      aria-valuemax="100"
+      :aria-valuetext="valueText"
+      aria-labelledby="direct-progress-title"
+    >
       <div class="fill" :style="{ width: `${p.percent}%` }"></div>
     </div>
+    <p class="sr-only" role="status" aria-live="polite" data-testid="progress-announce">{{ announce }}</p>
     <p v-if="p.outcome === 'completed' && p.completed_at" class="done-at">
       {{ t('direct.progress.completedAt', { time: when(p.completed_at) }) }}
     </p>
-    <p v-if="message" class="notice" :class="p.outcome" role="status">{{ message }}</p>
+    <p class="notice" :class="message ? p.outcome : null" :hidden="!message" role="status" aria-live="polite">{{ message }}</p>
     <ol class="steps">
       <li v-for="s in p.steps" :key="s.key" class="step" :class="s.state" :aria-current="s.state === 'current' ? 'step' : undefined">
-        <span class="dot" aria-hidden="true"></span>
-        <span class="name">{{ label(s.key) }}</span>
-        <span v-if="when(s.at)" class="at">{{ when(s.at) }}</span>
+        <span class="dot" aria-hidden="true">{{ stepGlyph(s.state) }}</span>
+        <span class="name">{{ label(s.key) }}<span class="sr-only">: {{ stateWord(s.state) }}</span></span>
+        <time v-if="when(s.at)" class="at" :datetime="iso(s.at)">{{ when(s.at) }}</time>
       </li>
     </ol>
   </section>
@@ -90,22 +118,24 @@ function when(at: string | number | null): string {
   height: 8px;
   border-radius: 4px;
   background: var(--c-fill-strong);
+  /* visible boundary: the track reads against the page (>= 3:1), the fill against the track */
+  box-shadow: inset 0 0 0 1px var(--c-muted);
   overflow: hidden;
 }
 .fill {
   height: 100%;
   border-radius: 4px;
-  background: var(--c-accent);
+  background: var(--c-accent-ink);
   transition: width 240ms ease;
 }
 .tone-ok .fill {
-  background: var(--c-success);
+  background: var(--c-ok-ink);
 }
 .tone-bad .fill {
-  background: var(--c-danger);
+  background: var(--c-bad-ink);
 }
 .tone-warn .fill {
-  background: var(--c-warning);
+  background: var(--c-warn-ink);
 }
 .done-at {
   margin: 8px 0 0;
@@ -120,8 +150,17 @@ function when(at: string | number | null): string {
   line-height: 1.5;
   background: var(--c-fill-strong);
 }
+.notice[hidden] {
+  display: none;
+}
 .notice.failed {
-  color: var(--c-danger);
+  background: var(--c-bad-soft);
+  color: var(--c-bad-ink);
+}
+.notice.attention {
+  background: var(--c-warn-soft);
+  color: var(--c-warn-ink);
+  border-inline-start: 4px solid var(--c-warn-ink);
 }
 .steps {
   margin: 12px 0 0;
@@ -130,52 +169,74 @@ function when(at: string | number | null): string {
 }
 .step {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
+  column-gap: 12px;
+  row-gap: 2px;
   min-height: 44px;
+  padding: 6px 0;
   border-bottom: 1px solid var(--c-fill-strong);
   font-size: 14px;
   color: var(--c-text-2);
 }
 .step .dot {
   flex: none;
-  width: 12px;
-  height: 12px;
+  box-sizing: border-box;
+  width: 20px;
+  height: 20px;
   border-radius: 50%;
-  border: 2px solid var(--c-fill-strong);
+  border: 2px solid var(--c-muted);
   background: transparent;
+  color: var(--c-muted);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
 }
 .step.done {
   color: var(--c-text);
 }
 .step.done .dot {
-  border-color: var(--c-success);
-  background: var(--c-success);
+  border-color: var(--c-ok-ink);
+  background: var(--c-ok-ink);
+  color: var(--c-surface);
 }
 .step.current {
   color: var(--c-text);
   font-weight: 700;
 }
 .step.current .dot {
-  border-color: var(--c-accent);
-  background: var(--c-accent);
+  border-color: var(--c-accent-ink);
+  color: var(--c-accent-ink);
+  font-size: 11px;
 }
 .step.failed .dot {
-  border-color: var(--c-danger);
-  background: var(--c-danger);
+  border-color: var(--c-bad-ink);
+  background: var(--c-bad-ink);
+  color: var(--c-surface);
 }
 .step.attention .dot {
-  border-color: var(--c-warning);
-  background: var(--c-warning);
+  border-color: var(--c-warn-ink);
+  background: var(--c-warn-ink);
+  color: var(--c-surface);
 }
 .step .name {
-  flex: 1;
+  flex: 1 1 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .step .at {
   font-size: 12px;
   color: var(--c-muted);
   font-variant-numeric: tabular-nums;
   text-align: end;
+}
+@media (max-width: 400px) {
+  .step .at {
+    flex: 0 0 100%;
+    padding-inline-start: 32px;
+    text-align: start;
+  }
 }
 @media (prefers-reduced-motion: reduce) {
   .fill {

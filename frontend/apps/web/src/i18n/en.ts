@@ -306,6 +306,15 @@ export default {
     },
     progress: {
       title: 'Progress',
+      announce: 'Progress {percent}%: {step}',
+      valuetext: '{percent}% · {step}',
+      state: {
+        done: 'Done',
+        current: 'In progress',
+        todo: 'Not started',
+        failed: 'Failed',
+        attention: 'Needs attention',
+      },
       completedAt: 'Completed {time}',
       step: {
         paid: 'Payment received',

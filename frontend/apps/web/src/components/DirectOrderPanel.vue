@@ -8,6 +8,7 @@ import { useI18n } from 'vue-i18n'
 import type { DirectOrderInfo } from '@24goods/shared'
 import { api } from '../api'
 import DirectProgress from './DirectProgress.vue'
+import { createCoalescer } from '../lib/progressUi'
 import DirectSessionSheet from './DirectSessionSheet.vue'
 import { useRealtimeStore } from '../stores/realtime'
 import { showSuccessToast, toastError } from '../ui'
@@ -27,12 +28,17 @@ async function load() {
 }
 onMounted(load)
 // issue #30: the engine publishes a coarse event when the buyer's step changes; the page then
-// refetches the direct info once. No timer: nothing polls beyond the page's existing sync.
+// refetches the direct info. Debounced (500 ms) and coalesced: never two loads in flight, and
+// events that arrive during one cost a single extra load. Nothing polls beyond the page's sync.
 const rt = useRealtimeStore()
+const refetch = createCoalescer(load, 500)
 const off = rt.on('order_progress', (e) => {
-  if (e.order_id === props.orderId) void load()
+  if (e.order_id === props.orderId) refetch.trigger()
 })
-onBeforeUnmount(off)
+onBeforeUnmount(() => {
+  off()
+  refetch.cancel()
+})
 defineExpose({ load })
 
 async function resupply(session: string) {

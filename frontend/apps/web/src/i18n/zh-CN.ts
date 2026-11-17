@@ -306,6 +306,15 @@ const zhCN: WebMessages = {
     },
     progress: {
       title: '进度',
+      announce: '进度 {percent}%：{step}',
+      valuetext: '{percent}% · {step}',
+      state: {
+        done: '已完成',
+        current: '进行中',
+        todo: '未开始',
+        failed: '失败',
+        attention: '需要处理',
+      },
       completedAt: '完成于 {time}',
       step: {
         paid: '已收到付款',
