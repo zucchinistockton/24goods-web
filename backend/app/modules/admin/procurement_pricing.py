@@ -76,6 +76,7 @@ class SettingsIn(BaseModel):
     topup_fee_fixed: str | None = Field(None, max_length=16)
     failed_fee: str | None = Field(None, max_length=16)
     failed_free_count: int | None = None
+    max_auto_switches: int | None = None
     auth_reversal_rate: str | None = Field(None, max_length=16)
     chargeback_tier1_rate: str | None = Field(None, max_length=16)
     chargeback_tier1_min_tx: int | None = None

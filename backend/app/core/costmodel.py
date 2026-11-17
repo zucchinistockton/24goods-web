@@ -44,6 +44,9 @@ _RATE_FIELDS: dict[str, str] = {
 }
 _INT_FIELDS: dict[str, tuple[int, int, int]] = {  # default, lo, hi
     "failed_free_count": (3, 0, 1000),
+    # vendor_switch: the most extra card attempts the vendor may make after a refused payment
+    # (vendor default 2); the cost bound of the switch assumes all of them are used and billed
+    "max_auto_switches": (2, 0, 10),
     "chargeback_tier1_min_tx": (100, 0, 1_000_000),
     "round_step_minor": (10, 1, 100_000),
     "fx_max_age_days": (7, 1, 365),
@@ -383,21 +386,16 @@ def fixed_cost(settings: dict[str, Any], src: Source) -> Decimal:
     return _components(settings, src)[0]
 
 
-# the vendor retries a refused payment on another card at most this many times (vendor default
-# ``max_auto_switches`` = 2, §6.18.3 card rules)
-VENDOR_MAX_SWITCHES = 2
-
-
 def switch_cost(settings: dict[str, Any]) -> Decimal:
-    """Expected extra cost per sale of letting the vendor switch card (``vendor_switch``): a
-    failed attempt (rate ``expected_failure_rate``) is retried up to ``VENDOR_MAX_SWITCHES`` times
-    and each failed attempt can be billed ``failed_fee``. The vendor bills failures only after the
-    first ``failed_free_count`` on a card, so the billed share is taken as ``1 / (free + 1)`` of
-    the extra attempts (0 free = every one). An ESTIMATE for the cost rows: it never changes a
+    """CONSERVATIVE UPPER BOUND of the extra cost per sale of ``vendor_switch`` (review-v12 §21.5):
+    ``expected_failure_rate x max_auto_switches x failed_fee``, with NO ``failed_free_count``
+    discount (a card's free failures may already be used up). Together with ``failure_cost``
+    (``rate x failed_fee``, the first failed attempt) it covers all ``1 + max_auto_switches``
+    attempts of an order that keeps failing: the last failed attempt is counted once, in
+    ``failure_cost``, and the switches here. An ESTIMATE for the cost rows: it never changes a
     price by itself."""
     rate = Decimal(settings["expected_failure_rate"])
-    free = Decimal(int(settings["failed_free_count"]))
-    return rate * VENDOR_MAX_SWITCHES * Decimal(settings["failed_fee"]) / (free + 1)
+    return rate * int(settings["max_auto_switches"]) * Decimal(settings["failed_fee"])
 
 
 def _components(
