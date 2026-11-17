@@ -1445,8 +1445,11 @@ console -> `app/modules/admin/procurement_cards.py` -> procurement `POST /intern
 * Admins: `GET rules`, `PUT rules/{product}` (partial edit), `POST reset-failed {card_ids, confirm: true}`.
 
 **Pool view.** `GET /cards?page&page_size` [V] lists the vendor account's cards; the PAN in that answer is reduced to the
-last four digits at the parser and dropped. Cards bought for buyers (any `vcc` job's `upstream_ref` of the supplier) are
-excluded and counted (`excluded_buyer_cards`), so only funding cards are shown. Per card one `GET /gpt-direct/cards/{id}/usage?product=`
+last four digits at the parser and dropped. Cards bought for buyers are
+excluded and counted (`excluded_buyer_cards`), so only funding cards are shown. The match is tenant-wide, never per supplier row
+(rows can share one vendor account): any card id that is the `upstream_ref` of ANY `vcc` job of the tenant, and any card whose
+masked number (first six + last four, computed in the adapter while the vendor list still has the PAN, then dropped) equals the
+`card_mask` of a non-voided `vcc` job of the tenant (a hand-pasted card has no id). Another tenant's jobs never exclude ours. Per card one `GET /gpt-direct/cards/{id}/usage?product=`
 (at most 40 cards): `light` / `pro20` buckets with `used` / `remaining` / `cap` [V names; `failed` inside a bucket is [I]],
 `cooling` and `busy` [V, as used by the engine], `locked` and the failure streak (`decline_count` | `consecutive_failures`)
 [I]. A card whose usage cannot be read is shown "usage unreadable", never guessed. Our own counts per card (sent / declined /
@@ -1461,14 +1464,23 @@ procurement process): `light_max_uses` / `pro20_max_uses` 0-1000 (0 = unlimited 
 `select_mode` `default | lowest_usage | newest` [V], booleans strict. Every change writes a `warning` audit row
 `procurement.card_rules_updated` with before / after (editable fields only). `GET rules` adds `cost_model_max_auto_switches` and
 `matches_cost_model` per product (the vendor's effective switch count, 0 when `auto_switch_on_fail` is off, against the cost
-model's `max_auto_switches`); the console warns on a mismatch because the switch cost estimate (§21.5) assumes the cost model's number.
+model's `max_auto_switches`); the console warns on a mismatch because the switch cost estimate (§21.5) assumes the cost model's number. `matches_cost_model` is
+advisory only: it changes no behaviour and blocks nothing.
+
+**Not yet exercised (M2): per-order override of the vendor rule.** The docs state ([V] doc line) that `no_auto_card_switch: true` on an
+order overrides the vendor rule `auto_switch_on_fail`; we rely on it for every order without `vendor_switch` but have never seen
+it hold. Run in the vendor SANDBOX before real money: set the rule `auto_switch_on_fail=true, max_auto_switches=10` for the product,
+place an order with `no_auto_card_switch=true` on a card that declines, and confirm the order shows NO switch (the card used stays
+the card sent, no `direct_switch_to`). If it switches, the rule must stay `auto_switch_on_fail=false` and §21.5 costs are understated.
 
 **Reset failed usage.** `POST /gpt-direct/cards/reset-usage {card_ids, scope: "failed"}` [V]. Never `scope=all`, never an empty
 list (empty = every card at the vendor): 1-50 explicit ids, `confirm: true` required (the console also asks), every id must be one
-of our listed funding cards (not a buyer's: id check plus `funding_card_clash`), else 422. Audit `procurement.card_usage_reset`
+of the funding set above (not a buyer's by id or mask; plus `funding_card_clash`), else 422. A disabled supplier row is refused
+for both writes (409 `supplier_disabled`, also with an explicit `supplier_id`); reads may still address it. Audit `procurement.card_usage_reset`
 (warning; ids, scope, vendor's count when stated [I]). The vendor's own answer shape beyond that is not used.
 
-**Production guard.** Both writes are refused for a supplier with env `production` unless `APP_PROCUREMENT_ALLOW_PRODUCTION_WRITES`
+**Production guard.** Both writes are refused for a supplier with env `production`, or with env `sandbox` whose base URL is a public
+https host other than the vendor's own sandbox (`sandbox.zovocard.com`; a plain-http simulator is exempt, dev only), unless `APP_PROCUREMENT_ALLOW_PRODUCTION_WRITES`
 is on: 409 `production_writes_disabled`, checked in the procurement service first (clean answer, no audit row, nothing sent) and
 again by the client as a backstop. Reads stay open.
 
