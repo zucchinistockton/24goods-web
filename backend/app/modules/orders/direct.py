@@ -117,14 +117,22 @@ async def store(db: AsyncSession, sealer: CredentialSealer, order: Order, seal: 
 
 
 def info_view(
-    order: Order, job_mask: str | None, cred_mask: str | None, plan: str | None, state: str | None
+    order: Order,
+    job_mask: str | None,
+    cred_mask: str | None,
+    plan: str | None,
+    state: str | None,
+    waiting: bool = False,
 ) -> dict[str, Any]:
-    """What the buyer may see about a direct order: the masked account and the plan, never more."""
+    """What the buyer may see about a direct order: the masked account and the plan, never more.
+    ``waiting_for_supplier`` is the coarse status of a job that has no funding card yet (issue
+    #29): no card id, no reason, no internal detail."""
     return {
         "order_id": str(order.id),
         "account": job_mask or cred_mask,
         "plan": plan,
         "state": state,
+        "waiting_for_supplier": waiting,
     }
 
 
@@ -139,7 +147,12 @@ async def owner_info(db: AsyncSession, order: Order) -> dict[str, Any]:
     )
     row = (
         await db.execute(
-            select(ProcurementJob.account_mask, ProcurementJob.state, SupplierOffer.params)
+            select(
+                ProcurementJob.account_mask,
+                ProcurementJob.state,
+                ProcurementJob.error_code,
+                SupplierOffer.params,
+            )
             .outerjoin(SupplierOffer, SupplierOffer.id == ProcurementJob.offer_id)
             .where(ProcurementJob.tenant_id == order.tenant_id, ProcurementJob.order_id == order.id)
             .order_by(ProcurementJob.created_at)
@@ -163,8 +176,15 @@ async def owner_info(db: AsyncSession, order: Order) -> dict[str, Any]:
             .limit(1)
         )
     plan = f"{params.get('product')}/{params.get('plan')}" if params else None
-    return info_view(order, row.account_mask if row else None, cred_mask, plan,
-                     row.state if row else None)  # fmt: skip
+    waiting = bool(row and row.state == "queued" and row.error_code == "waiting_for_card")
+    return info_view(
+        order,
+        row.account_mask if row else None,
+        cred_mask,
+        plan,
+        row.state if row else None,
+        waiting,
+    )
 
 
 async def resupply(

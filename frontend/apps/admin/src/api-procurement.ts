@@ -38,6 +38,10 @@ export interface SourceParams {
   last_name?: string
   /** direct orders: `product` (gpt | claude | grok), `plan`, our funding card id, optional currency */
   card_id?: number
+  /** issue #29: `fixed` (default, needs card_id) | `auto_existing` (the vendor's pick); `auto_issue` is refused */
+  card_mode?: 'fixed' | 'auto_existing'
+  /** let the vendor switch card after a refused payment (extra failed attempts may cost fees) */
+  vendor_switch?: boolean
   payment_currency?: string
 }
 export interface SourceListing {

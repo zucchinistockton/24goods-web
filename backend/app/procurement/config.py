@@ -56,6 +56,9 @@ class ProcurementSettings:
     direct_decline_limit: int = 3
     # orders at the vendor at the same time on ONE funding card
     direct_card_inflight_max: int = 1
+    # a direct job that has no card to pay with (card mode ``auto_existing``) waits at most this
+    # long in total (backoff retries, no vendor spend), then goes to needs_manual (review-v12 §21.3)
+    direct_card_wait_max_s: float = 1800.0
     # engine (review-v12 §3, §6)
     jobs_poll_s: float = 2.0
     job_lease_s: float = 120.0

@@ -296,6 +296,7 @@ export default {
     state: {
       working: 'In progress',
       queued: 'In progress',
+      waiting_for_supplier: 'Waiting for the supplier',
       submitting: 'In progress',
       accepted_pending: 'Being applied to your account',
       fulfilled: 'Applied',

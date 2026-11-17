@@ -8,6 +8,7 @@ and secret. Shared by the console (source save) and the engine (before every fir
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -50,6 +51,29 @@ async def funding_mask_clash(db: AsyncSession, tenant_id: uuid.UUID, mask: str |
     return bool(n)
 
 
+async def buyer_card_since(
+    db: AsyncSession, tenant_id: uuid.UUID, last4: str | None, since: datetime | None
+) -> bool:
+    """True when a non-voided buyer card (``vcc`` job) whose masked number ends in ``last4`` was
+    recorded or changed at/after ``since``. The full-mask check runs on the pre-check's answer
+    (masks never leave that call); this closes the window between that check and the spend: a
+    match means "check again", never "spend" (a false match only costs one more pre-check)."""
+    if not last4:
+        return False  # no last four from the vendor: only the pre-check's full-mask check applies
+    if since is None:
+        return True  # no check time: check again
+    n = await db.scalar(
+        select(func.count(ProcurementJob.id)).where(
+            ProcurementJob.tenant_id == tenant_id,
+            ProcurementJob.kind == "vcc",
+            func.right(ProcurementJob.card_mask, 4) == last4,
+            ProcurementJob.state != "voided",
+            ProcurementJob.updated_at >= since,
+        )
+    )
+    return bool(n)
+
+
 async def lock_card(db: AsyncSession, supplier_id: uuid.UUID, card_id: int | str) -> None:
     """Serialise the in-flight check of ONE funding card across concurrent leases."""
     await db.execute(
@@ -81,7 +105,13 @@ async def card_in_flight(
                     & ProcurementJob.upstream_ref.is_not(None)
                     & ProcurementJob.next_poll_at.is_not(None)
                 ),
-                SupplierOffer.params["card_id"].astext == str(card_id),
+                # the card WE SENT (auto modes record it on the job), else the offer's; and the card
+                # the vendor reports as paying when it differs (vendor_switch): both are in flight
+                (
+                    func.coalesce(ProcurementJob.card_id, SupplierOffer.params["card_id"].astext)
+                    == str(card_id)
+                )
+                | (ProcurementJob.used_card_id == str(card_id)),
             )
         )
         or 0

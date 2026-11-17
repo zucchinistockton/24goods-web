@@ -974,6 +974,8 @@ export interface DirectOrderInfo {
   account: string | null
   plan: string | null
   state: string | null
+  /** issue #29: the supplier has no card to pay with yet; the order keeps waiting (no detail) */
+  waiting_for_supplier?: boolean
 }
 
 /** issue #27: the half-price eligibility check (`POST /half-checks`). Never carries the session. */

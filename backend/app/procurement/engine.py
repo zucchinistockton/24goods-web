@@ -62,6 +62,7 @@ from app.models import (
 from app.procurement import ledger
 from app.procurement.context import ProcurementContext
 from app.procurement.funding import (
+    buyer_card_since,
     card_in_flight,
     funding_card_clash,
     funding_mask_clash,
@@ -78,6 +79,7 @@ from app.suppliers.base import (
     clean_detail,
     job_idempotency_key,
 )
+from app.suppliers.zovocard import direct as dr
 
 log = logging.getLogger("app.procurement.engine")
 
@@ -900,6 +902,14 @@ class Lease:
     prior_send: bool = False
 
 
+def _offer_params(job: ProcurementJob, offer: OfferRow) -> dict[str, Any]:
+    """The offer's parameters, plus (card mode ``auto_existing``) the card the job was assigned.
+    The offer row and the pinned ``request_hash`` never carry it."""
+    if _auto_card(offer) and job.card_id and job.card_id.isdigit():
+        return {**offer.params, dr.PICKED_CARD_KEY: int(job.card_id)}
+    return offer.params
+
+
 def _spec(job: ProcurementJob, offer: OfferRow, mode: str, tolerance: float = 0.10) -> JobSpec:
     voiding = mode in ("void", "dvoid")
     tol = Decimal(str(tolerance))
@@ -916,11 +926,12 @@ def _spec(job: ProcurementJob, offer: OfferRow, mode: str, tolerance: float = 0.
         else job.step,
         # the vendor caches answers per key: a void never reuses the issue key
         idempotency_key=job_idempotency_key(job.id.hex, "void") if voiding else job.idempotency_key,
-        offer=OfferSpec(kind=offer.kind, params=offer.params),  # type: ignore[arg-type]
+        offer=OfferSpec(kind=offer.kind, params=_offer_params(job, offer)),  # type: ignore[arg-type]
         upstream_ref=job.upstream_ref,
         account_mask=job.account_mask,
         cost_bound=bound,
         quote_tolerance=tol,
+        attempt=job.card_attempt or 0,
     )
 
 
@@ -1311,6 +1322,15 @@ async def _lease(ctx: ProcurementContext, job_id: uuid.UUID, tenant_id: uuid.UUI
                 return None
             if job.step != "ready":
                 mode = "precheck"  # read-only availability check before the first send (H2)
+            elif job.kind == "direct" and _auto_card(offer):
+                if not await _assign_card(ctx, db, job, offer, now):
+                    await db.commit()  # parked: nothing is sent, the key is unchanged
+                    return None
+                if job.state == "queued":
+                    await _transition(db, job, "submitting", "submit")
+                job.step = "sent"  # from here on a crash means "maybe sent": reconcile
+                job.maybe_sent = True
+                job.first_sent_at = now
             elif job.kind == "direct" and await _card_busy(ctx, db, job, offer):
                 # another order is at the vendor on the SAME funding card: wait, never fail over
                 job.error_code = "card_busy"
@@ -1411,10 +1431,142 @@ async def _direct_gate(
         return problem
     if ctx.settings.env == "prod" and offer.ref.env == "sandbox":
         return "sandbox_in_prod"  # a real buyer's session never goes to the sandbox (S-L1)
+    if _auto_card(offer):
+        return None  # the picked card is checked against the same rule when it is assigned
     card = offer.params.get("card_id")
     if await funding_card_clash(db, job.tenant_id, offer.supplier_id, card):
         return "funding_card_invalid"  # a card bought for a buyer is never a funding card (H1)
     return None
+
+
+def _auto_card(offer: OfferRow) -> bool:
+    """A direct source whose funding card is picked per order (card mode ``auto_existing``)."""
+    return offer.kind == "direct" and offer.params.get("card_mode", "fixed") != "fixed"
+
+
+def _candidates_of(job: ProcurementJob) -> list[tuple[str, str | None]]:
+    """The usable cards of the last pre-check: ``"id:last4,id"`` -> ``[(id, last4 | None)]``."""
+    out: list[tuple[str, str | None]] = []
+    for part in (job.card_candidates or "").split(","):
+        cid, _, last4 = part.partition(":")
+        if cid.isdigit() and len(cid) <= 13:
+            out.append((cid, last4 if len(last4) == 4 and last4.isdigit() else None))
+    return out[: dr.MAX_CARD_TRIES]
+
+
+CARD_FRESH_S = 120  # a pre-check's candidates are never spent on after this many seconds
+
+
+async def _park_for_card(
+    ctx: ProcurementContext, db: AsyncSession, job: ProcurementJob, reason: str, now: datetime
+) -> None:
+    """No card can pay this order now (review-v12 §21.3): the job WAITS, back at the start of the
+    send path (``queued`` / ``submit``). A park caused by OUR OWN checks sent nothing, so the
+    idempotency key and client request id stay; a park after a vendor refusal re-keys first
+    (:func:`_rekey`). No vendor money moves while it waits. The total wait is bound
+    (``direct_card_wait_max_s``); then ``needs_manual``. One staff warning audit row per job, at the
+    first park. The buyer sees only "waiting for the supplier" (never ``reason``)."""
+    before = {"state": job.state, "step": job.step}
+    job.card_id = job.card_last4 = job.card_candidates = job.card_candidates_at = None
+    first = job.card_wait_since is None
+    if first:
+        job.card_wait_since = now
+    limit = timedelta(seconds=ctx.settings.direct_card_wait_max_s)
+    deadline = job.card_wait_since + limit
+    job.step = "submit"
+    if now >= deadline:
+        _unsent(job)
+        await _needs_manual(db, job, "card_wait_exhausted")
+        return
+    if job.state != "queued":  # e.g. submitting -> queued: the move is a transition row
+        await _transition(db, job, "queued", f"waiting_for_card:{reason}", severity="warning")
+    job.error_code = "waiting_for_card"
+    job.next_poll_at = min(now + _backoff(job.attempts, None), deadline)
+    if first:
+        await audit(
+            db,
+            tenant_id=job.tenant_id,
+            action="procurement.waiting_for_card",
+            target=f"procurement_job:{job.id}",
+            before=before,
+            after={"state": "queued", "step": "submit"},
+            detail={
+                "order_id": str(job.order_id),
+                "reason": clean_detail(reason),
+                "max_wait_s": int(limit.total_seconds()),
+            },
+            severity="warning",
+        )
+
+
+async def _rekey(db: AsyncSession, job: ProcurementJob) -> bool:
+    """A NEW attempt key and client request id (both derive from ``card_attempt``) for a job whose
+    last send was refused by the vendor BEFORE an order existed and VERIFIED so by a lookup. The
+    vendor replays the first answer per key and refuses a changed body under one key, so a parked
+    job could never succeed otherwise. ``False`` = the attempts are used up (caller holds it)."""
+    if job.card_attempt >= CARD_MAX_REKEYS:
+        return False
+    old = job.idempotency_key
+    job.card_attempt += 1
+    job.idempotency_key = job_idempotency_key(job.id.hex, f"c{job.card_attempt}")
+    await audit(
+        db,
+        tenant_id=job.tenant_id,
+        action="procurement.card_rekeyed",
+        target=f"procurement_job:{job.id}",
+        before={"key": old},
+        after={"key": job.idempotency_key},
+        detail={"order_id": str(job.order_id), "attempt": job.card_attempt},
+        severity="warning",
+    )
+    return True
+
+
+CARD_MAX_REKEYS = 10
+
+
+async def _assign_card(
+    ctx: ProcurementContext, db: AsyncSession, job: ProcurementJob, offer: OfferRow, now: datetime
+) -> bool:
+    """Pick the card of an ``auto_existing`` job from the pre-check's usable cards: the first that
+    is not a buyer's card and has no order in flight (the same rule as a fixed card). The
+    candidates must have been checked within ``CARD_FRESH_S``: an older list is dropped and the
+    job re-checks (nothing is parked, nothing sent). The advisory locks of the candidates are
+    taken in id order (no lock cycle) and released by the lease commit. ``False`` = parked or
+    re-checking."""
+    cands = _candidates_of(job)
+    at = job.card_candidates_at
+    if cands and (at is None or (now - at).total_seconds() > CARD_FRESH_S):
+        job.card_candidates = job.card_candidates_at = None
+        job.step, job.next_poll_at = "submit", now + timedelta(seconds=1)  # re-check (read-only)
+        job.attempts = 0  # a successful pre-check is not a failure to count against the retries
+        return False
+    for cid, _l in sorted(cands):
+        await lock_card(db, offer.supplier_id, cid)
+    for _cid, last4 in cands:
+        # a buyer card recorded AFTER the pre-check that shares a candidate's last four: the
+        # full-mask check must run again before anything is spent (re-audit M2)
+        if await buyer_card_since(db, job.tenant_id, last4, at):
+            job.card_candidates = job.card_candidates_at = None
+            job.step, job.next_poll_at = "submit", now + timedelta(seconds=1)
+            job.attempts = 0
+            return False
+    for cid, last4 in cands:
+        # a card bought for a buyer is never a funding card (H1); the mask check ran on the
+        # pre-check's answer (masks never leave that call) and again for the same card here by id
+        if await funding_card_clash(db, job.tenant_id, offer.supplier_id, cid):
+            continue
+        n = await card_in_flight(db, job.tenant_id, offer.supplier_id, cid, job.id)
+        if n >= ctx.settings.direct_card_inflight_max:
+            continue
+        job.card_id, job.card_last4 = cid, last4
+        job.card_candidates = job.card_candidates_at = None
+        job.card_wait_since = None  # the wait is over
+        job.attempts = 0
+        return True
+    job.attempts += 1  # the park backoff grows
+    await _park_for_card(ctx, db, job, dr.CARD_POOL_BUSY if cands else dr.NO_CARD_PICK, now)
+    return False
 
 
 async def _card_busy(
@@ -1540,8 +1692,15 @@ async def _availability_result(sup: Supplier, offer: OfferSpec) -> Result:
     fn = getattr(sup, "availability_fresh", None) or sup.availability
     av = await fn(offer)
     if av.available is True:
-        return Result(Outcome.OK, funding_mask=av.funding_mask)
+        return Result(
+            Outcome.OK,
+            funding_mask=av.funding_mask,
+            card_candidates=av.card_candidates,
+            candidate_masks=av.candidate_masks,
+        )
     reason = clean_detail(av.reason or "unavailable")
+    if reason in dr.WAIT_REASONS:  # no card right now: a wait, never a refusal of the plan
+        return Result(Outcome.RETRYABLE, error_code=reason)
     # only the catalog's own "no" is definite; a failed lookup says nothing about the plan
     definite = reason in PLAN_REFUSALS
     return Result(Outcome.UNAVAILABLE if definite else Outcome.RETRYABLE, error_code=reason)
@@ -1790,13 +1949,20 @@ async def _apply_precheck(
     order: OrderRow,
     res: Result,
     now: datetime,
+    *,
+    auto_card: bool = False,
 ) -> None:
     """Nothing was sent. Available -> ready to submit; the catalog says no -> next source (or
     ``needs_manual`` without one) and the offer is marked unchecked; a failed lookup is retried."""
     o = res.outcome
-    if o is Outcome.OK:
+    if o is Outcome.OK and auto_card and not res.card_candidates:
+        await _park_for_card(ctx, db, job, dr.NO_CARD_PICK, now)
+    elif o is Outcome.OK:
         # attempts is NOT reset: a submit that keeps answering RETRYABLE must reach MAX_RETRIES (N7)
         job.step, job.error_code, job.next_poll_at = "ready", None, now
+        if auto_card:
+            job.card_candidates = ",".join(f"{c}:{l4 or ''}" for c, l4 in res.card_candidates)[:80]
+            job.card_candidates_at = now
         await _set_check(db, job, True)
     elif o is Outcome.UNAVAILABLE:
         await _set_check(db, job, False)
@@ -1809,6 +1975,8 @@ async def _apply_precheck(
             order,
             "region_not_offered" if res.error_code == "region_not_offered" else "plan_unavailable",
         )
+    elif res.error_code in dr.WAIT_REASONS and auto_card:
+        await _park_for_card(ctx, db, job, res.error_code or dr.NO_CARD_PICK, now)
     else:
         job.error_code = clean_detail(res.error_code or "precheck_failed")
         if job.attempts > MAX_RETRIES:
@@ -1933,6 +2101,72 @@ def _record_reference(job: ProcurementJob, res: Result, mode: str) -> str | None
     return other
 
 
+def _sent_card(job: ProcurementJob, params: dict[str, Any]) -> str | None:
+    """The funding card WE sent the order with: the engine's pick, else the offer's fixed card."""
+    if job.card_id:
+        return job.card_id
+    fixed = params.get("card_id")
+    return str(fixed) if isinstance(fixed, int) and not isinstance(fixed, bool) else None
+
+
+async def _reported_card_problem(
+    db: AsyncSession, job: ProcurementJob, res: Result, lease: Lease
+) -> str | None:
+    """The vendor says which card paid the order. We never trust it over what we sent: it is
+    recorded SEPARATELY (``used_card_id`` / ``used_last4``; ``card_id`` stays the sent card) and
+    checked on every vendor read. A different card is a discrepancy -> ``needs_manual``
+    ``card_mismatch``; with ``vendor_switch`` on (never for a production supplier) it is allowed
+    unless it is a card bought for a buyer (id, and number when the answer carries one) ->
+    ``switched_to_buyer_card``. A reported id that is not a card id of at most 20 digits is a
+    discrepancy too (never truncated)."""
+    if job.kind != "direct" or lease.mode not in ("submit", "query", "verify", "watch"):
+        return None
+    if not res.card_id:
+        return None
+    reported = res.card_id
+    if not reported.isdigit() or len(reported) > 20:
+        return "card_mismatch" if lease.mode != "watch" else None
+    job.used_card_id = reported
+    if lease.mode == "watch":  # a held job: only the in-flight identity is kept up to date
+        job.used_last4 = res.card_last4
+        return None
+    params = lease.spec.offer.params
+    sent = _sent_card(job, params)
+    if sent is None or reported == sent:
+        job.used_last4 = res.card_last4 or (job.card_last4 if reported == sent else None)
+        return None
+    job.used_last4 = res.card_last4
+    if not (params.get("vendor_switch") is True and lease.ref.env != "production"):
+        return "card_mismatch"
+    if await funding_card_clash(db, job.tenant_id, job.supplier_id, reported) or (
+        await funding_mask_clash(db, job.tenant_id, res.funding_mask)
+    ):
+        return "switched_to_buyer_card"
+    return None
+
+
+async def _card_discrepancy(
+    db: AsyncSession, job: ProcurementJob, reason: str, reported: str | None
+) -> None:
+    """Staff warning (card ids are not secrets; never a number) and the job is held, flagged maybe
+    charged: an order ran on a card we did not choose or may not use."""
+    await audit(
+        db,
+        tenant_id=job.tenant_id,
+        action="procurement.card_discrepancy",
+        target=f"procurement_job:{job.id}",
+        detail={
+            "order_id": str(job.order_id),
+            "reason": reason,
+            "sent": job.card_id,
+            "reported": clean_detail(reported, 24),
+        },
+        severity="warning",
+    )
+    job.maybe_sent = True
+    await _needs_manual(db, job, reason)
+
+
 async def _card_mismatch(db: AsyncSession, job: ProcurementJob, other: str) -> None:
     """The supplier answered with a card id other than the one recorded: two cards may exist for
     one job. Nothing is sealed; both ids (not secrets) go to a critical audit row and the job is
@@ -2004,6 +2238,23 @@ async def _direct_fatal(db: AsyncSession, job: ProcurementJob, res: Result, limi
             )
 
 
+async def _vet_candidates(db: AsyncSession, job: ProcurementJob, res: Result) -> Result:
+    """Auto mode: every candidate the vendor's pick offered runs the buyer-card checks (id AND
+    masked number, H1) BEFORE it is stored; a clashing card is dropped and never spent on. The
+    masks live only in this call: they are not stored, logged or audited."""
+    masks = dict(res.candidate_masks)
+    keep: list[tuple[str, str | None]] = []
+    for cid, last4 in res.card_candidates:
+        if await funding_card_clash(db, job.tenant_id, job.supplier_id, cid):
+            continue
+        if await funding_mask_clash(db, job.tenant_id, masks.get(cid)):
+            continue
+        keep.append((cid, last4))
+    return Result(
+        Outcome.OK, funding_mask=res.funding_mask, card_candidates=tuple(keep)
+    )  # (masks dropped)
+
+
 async def _apply(ctx: ProcurementContext, lease: Lease, res: Result) -> None:
     now = utcnow()
     async with tenant_session(ctx.maker, lease.tenant_id) as db:
@@ -2031,6 +2282,10 @@ async def _apply(ctx: ProcurementContext, lease: Lease, res: Result) -> None:
             await _card_mismatch(db, job, other)
             await db.commit()
             return
+        if problem := await _reported_card_problem(db, job, res, lease):
+            await _card_discrepancy(db, job, problem, res.card_id)
+            await db.commit()
+            return
         if lease.mode == "watch":
             await _apply_watch(ctx, db, job, order, res, now, lease.spec.cost_bound)
             await db.commit()
@@ -2046,7 +2301,37 @@ async def _apply(ctx: ProcurementContext, lease: Lease, res: Result) -> None:
                 and await funding_mask_clash(db, job.tenant_id, res.funding_mask)
             ):  # the funding card is a card bought for a buyer (number match): never use it
                 res = Result(Outcome.UNAVAILABLE, error_code="funding_card_invalid")
-            await _apply_precheck(ctx, db, job, order, res, now)
+            if job.kind == "direct" and res.outcome is Outcome.OK and res.card_candidates:
+                res = await _vet_candidates(db, job, res)
+            await _apply_precheck(
+                ctx, db, job, order, res, now,
+                auto_card=lease.spec.offer.params.get("card_mode", "fixed") != "fixed",
+            )  # fmt: skip
+            await db.commit()
+            return
+        if (
+            lease.mode == "submit"
+            and job.kind == "direct"
+            and lease.spec.offer.params.get("card_mode", "fixed") != "fixed"
+            and not lease.prior_send
+            and job.upstream_ref is None
+            and res.error_code in (dr.CARD_REFUSAL_CODES | dr.CARD_GUESSED_CODES)
+            and o in (Outcome.UNAVAILABLE, Outcome.AMBIGUOUS, Outcome.FATAL, Outcome.RETRYABLE)
+        ):
+            # the vendor answered a "no card" code. Only a DOCUMENTED refusal whose lookup by
+            # client request id VERIFIED that no order exists may park the job and re-key it; a
+            # guessed code, or a refusal we could not verify, is held for staff (maybe sent: the
+            # order may exist). Never a blind second key (review-v12 §21.3)
+            documented = res.error_code in dr.CARD_REFUSAL_CODES
+            if documented and res.no_order_verified and await _rekey(db, job):
+                _unsent(job)
+                await _park_for_card(ctx, db, job, res.error_code or dr.NO_CARD_PICK, now)
+            else:
+                await _needs_manual(
+                    db,
+                    job,
+                    "card_refusal_unverified" if documented else "card_code_unconfirmed",
+                )
             await db.commit()
             return
         if o is Outcome.OK:

@@ -110,6 +110,18 @@ class ProcurementJob(Base):
     card_mask: Mapped[str | None] = mapped_column(String(24))
     # 0029: masked account e-mail of an upstream_direct job (never the session)
     account_mask: Mapped[str | None] = mapped_column(String(64))
+    # 0033 (issue #29): the funding card a direct job used (id + last four, never a number), the
+    # usable cards of its last pre-check ("id:last4,..."), and when it first waited for a card
+    card_id: Mapped[str | None] = mapped_column(String(20))
+    card_last4: Mapped[str | None] = mapped_column(String(4))
+    card_candidates: Mapped[str | None] = mapped_column(String(80))
+    card_wait_since: Mapped[datetime | None]
+    # the card the VENDOR reports as paying (card_id above stays the one we sent), when the
+    # candidates were checked, and the re-keyed attempt counter (0 = the first key)
+    used_card_id: Mapped[str | None] = mapped_column(String(20))
+    used_last4: Mapped[str | None] = mapped_column(String(4))
+    card_candidates_at: Mapped[datetime | None]
+    card_attempt: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     created_at: Mapped[datetime] = created_at()
     updated_at: Mapped[datetime] = updated_at()
 

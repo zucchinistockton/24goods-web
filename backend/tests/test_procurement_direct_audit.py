@@ -1000,3 +1000,69 @@ def test_real_sandbox_is_only_the_vendors_sandbox_host():
     assert not dr.real_sandbox("https://zovocard.com/openapi/v1", "production")
     assert not dr.real_sandbox("http://mockzovo:8005/openapi/v1", "sandbox")
     assert not dr.real_sandbox("https://sandbox.zovocard.com.evil.example/openapi/v1", "sandbox")
+
+
+async def test_order_list_not_found_needs_the_vendor_total_and_distinct_ids(env):
+    """PR #42 re-audit M1: "not found" unlocks a re-key, so it is claimed only when the vendor
+    states ``total`` and that many distinct orders were read."""
+    from types import SimpleNamespace
+
+    from app.suppliers.base import JobSpec, OfferSpec
+    from app.suppliers.zovocard import direct as dr
+    from tests.test_procurement_vcc_audit import _adapter
+
+    jid = "cd" * 16
+    mine = dr.client_request_id(jid)
+    sup = _adapter(_vendor())
+    spec = JobSpec(
+        job_id=jid, step="reconcile", idempotency_key=f"pj:{jid}:submit",
+        offer=OfferSpec(kind="direct", params=CLAUDE),
+    )  # fmt: skip
+
+    def row(i: int, rid: str | None = None) -> dict:
+        return {"id": i, "client_request_id": rid or f"o{i}", "status": "queued"}
+
+    def scripted(pages: list[dict]):
+        async def get(path: str, params: dict | None = None):
+            assert path == "/gpt-direct/orders"
+            page = int((params or {}).get("page", "1"))
+            return SimpleNamespace(data=pages[page - 1] if page <= len(pages) else {"list": []})
+
+        return get
+
+    # no ``total`` (an unknown page-size cap): a short page is NOT proof of the end
+    sup.client.get = scripted([{"list": [row(1), row(2)]}])
+    res = await sup.query(spec)
+    assert res.outcome.value == "ambiguous" and res.error_code == "order_list_unverifiable"
+    # the vendor runs out of rows before its own total
+    sup.client.get = scripted([{"total": 5, "list": [row(1), row(2)]}, {"total": 5, "list": []}])
+    res = await sup.query(spec)
+    assert res.outcome.value == "ambiguous" and res.error_code == "order_list_unverifiable"
+    # rows shift between pages (newest-first insert): a repeated row does not count twice, so
+    # the search goes on and finds ours on page 3 (counting rows would have stopped at page 2)
+    seen_status: list[str] = []
+
+    async def status(self, spec, found, rid, _x, mask):
+        seen_status.append(found)
+        return SimpleNamespace(outcome=SimpleNamespace(value="found"), error_code=None)
+
+    import app.suppliers.zovocard.supplier as supmod
+
+    orig = supmod.ZovoCardSupplier._direct_status
+    supmod.ZovoCardSupplier._direct_status = status  # type: ignore[method-assign]
+    try:
+        sup.client.get = scripted(
+            [
+                {"total": 3, "list": [row(1), row(2)]},
+                {"total": 3, "list": [row(2)]},
+                {"total": 3, "list": [row(3, mine)]},
+            ]
+        )
+        res = await sup.query(spec)
+    finally:
+        supmod.ZovoCardSupplier._direct_status = orig  # type: ignore[method-assign]
+    assert seen_status == ["3"]
+    # every distinct order read and none is ours: a definite "not found"
+    sup.client.get = scripted([{"total": 2, "list": [row(1), row(2)]}])
+    res = await sup.query(spec)
+    assert res.outcome.value == "unavailable" and res.error_code == "order_not_found"

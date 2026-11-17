@@ -57,7 +57,7 @@ const stateText = (s: string | null) => (s && te(`direct.state.${s}`) ? t(`direc
       </div>
       <div>
         <dt>{{ t('direct.status') }}</dt>
-        <dd>{{ stateText(info.state) }}</dd>
+        <dd>{{ stateText(info.waiting_for_supplier ? 'waiting_for_supplier' : info.state) }}</dd>
       </div>
     </dl>
     <template v-if="canResupply && info.state === 'needs_manual'">

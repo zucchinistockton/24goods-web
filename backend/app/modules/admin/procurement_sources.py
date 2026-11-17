@@ -30,6 +30,7 @@ from app.modules.admin.variants import source_cost_guard
 from app.modules.catalog.regions import is_half_plan, options_of, source_matches_options
 from app.procurement.funding import funding_card_clash
 from app.suppliers.base import OfferSpec
+from app.suppliers.zovocard import direct as dr
 from app.suppliers.zovocard.direct import direct_spec
 from app.suppliers.zovocard.supplier import cdk_issue_body, vcc_spec
 
@@ -39,7 +40,8 @@ MAX_OFFERS_PER_TARGET = 10
 COST_RE = r"^[0-9]{1,9}(\.[0-9]{1,6})?$"
 ALLOWED_PARAMS = (
     "plan", "product", "payment_country", "payment_currency", "card_id",
-    "product_code", "init_amount", "recharge_amount", "first_name", "last_name",
+    "card_mode", "vendor_switch", "product_code", "init_amount", "recharge_amount",
+    "first_name", "last_name",
 )  # fmt: skip
 AMOUNT_RE = r"^[0-9]{1,6}(\.[0-9]{1,2})?$"
 
@@ -58,6 +60,12 @@ class OfferParams(BaseModel):
     payment_currency: str | None = Field(default=None, pattern=r"^[A-Z]{3}$")  # direct, GPT only
     # direct: the funding card (a card of OUR vendor account) the supplier pays with
     card_id: int | None = Field(default=None, ge=1, le=10**12)
+    # direct (issue #29): how the funding card is chosen. ``fixed`` (default) needs ``card_id``;
+    # ``auto_existing`` lets the vendor's card-pool schedule pick; ``auto_issue`` (a NEW card per
+    # order) is reserved and refused with ``card_mode_unavailable``. ``vendor_switch`` lets the
+    # vendor switch card after a refused payment (extra failed attempts cost ``failed_fee``)
+    card_mode: str | None = Field(default=None, max_length=16)
+    vendor_switch: bool | None = None
     product_code: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,40}$")
     init_amount: str | None = Field(default=None, pattern=AMOUNT_RE)
     recharge_amount: str | None = Field(default=None, pattern=AMOUNT_RE)
@@ -113,7 +121,10 @@ def _require_cost(offer: SupplierOffer, supplier: SupplierAccount) -> None:
 
 
 VCC_KEYS = ("product_code", "init_amount", "recharge_amount", "first_name", "last_name")
-DIRECT_KEYS = ("product", "plan", "card_id", "payment_country", "payment_currency")
+DIRECT_KEYS = (
+    "product", "plan", "card_id", "card_mode", "vendor_switch",
+    "payment_country", "payment_currency",
+)  # fmt: skip
 CDK_KEYS = ("product", "plan", "payment_country")
 
 
@@ -123,9 +134,26 @@ def _params(p: OfferParams, kind: str = "cdk") -> dict[str, Any]:
     if kind == "vcc":
         return {k: v for k, v in data.items() if k in VCC_KEYS}
     if kind == "direct":  # no default product: it must be named (enum lock)
-        return {k: v for k, v in data.items() if k in DIRECT_KEYS}
+        out = {k: v for k, v in data.items() if k in DIRECT_KEYS}
+        if out.get("card_mode", "fixed") != "fixed":
+            out.pop("card_id", None)  # an auto mode never uses a configured card
+        if out.get("card_mode") == "fixed":
+            out.pop("card_mode")  # the default is not stored: today's offers keep their params
+        if out.get("vendor_switch") is False:
+            out.pop("vendor_switch")
+        return out
     data.setdefault("product", "gpt")
     return {k: v for k, v in data.items() if k in CDK_KEYS}
+
+
+def _card_mode_guard(kind: str, p: OfferParams) -> None:
+    """``auto_issue`` is reserved (the vendor documents no way to issue a card on a direct order,
+    review-v12 §21.4): refused with its own code, before the generic parameter check."""
+    if kind == "direct" and p.card_mode not in (None, *dr.CARD_MODES):
+        raise Validation(
+            "This card mode is not available",
+            code="card_mode_unavailable" if p.card_mode == dr.CARD_MODE_RESERVED else "bad_params",
+        )
 
 
 def _valid_params(kind: str, params: dict[str, Any]) -> bool:
@@ -151,7 +179,16 @@ async def _direct_checks(
     sandbox supplier (S-L1)."""
     if offer_kind != "direct":
         return
-    if await funding_card_clash(db, supplier.tenant_id, supplier.id, params.get("card_id", 0)):
+    if params.get("vendor_switch") is True and supplier.env == "production":
+        # the vendor cannot restrict the switch pool yet: a switched order could pay with a card
+        # bought for a buyer. Sandbox and the demo mock only (review-v12 §21.2)
+        raise Validation(
+            "Vendor card switch is not available on a production supplier",
+            code="vendor_switch_unavailable",
+        )
+    if params.get("card_mode", "fixed") == "fixed" and await funding_card_clash(
+        db, supplier.tenant_id, supplier.id, params.get("card_id", 0)
+    ):
         raise Validation(
             "That card was bought for a buyer: it cannot be a funding card",
             code="funding_card_invalid",
@@ -374,6 +411,7 @@ async def add_source(
     )
     if supplier is None:
         raise NotFound("Supplier not found")
+    _card_mode_guard(kind, body.params)
     params = _params(body.params, kind)
     if not _valid_params(kind, params):
         raise Validation("These source parameters cannot be sent to a supplier", code="bad_params")
@@ -526,6 +564,7 @@ async def update_source(
     offer, supplier = await _own(db, admin.tenant_id, offer_id, lock=True)
     before = _snap(offer)
     if body.params is not None:
+        _card_mode_guard(offer.kind, body.params)
         params = _params(body.params, offer.kind)
         if not _valid_params(offer.kind, params):
             raise Validation(
@@ -609,6 +648,21 @@ async def update_source(
             after=after,
             ip=client_ip(request),
         )
+        was = bool((before["params"] or {}).get("vendor_switch"))
+        now_on = bool((after["params"] or {}).get("vendor_switch"))
+        if was != now_on:  # weakens "one order per card" and may cost failed fees (§21.2)
+            await audit(
+                db,
+                tenant_id=admin.tenant_id,
+                action="procurement.vendor_switch_changed",
+                actor_id=admin.id,
+                actor_role=admin.role,
+                target=f"supplier_offer:{offer.id}",
+                before={"vendor_switch": was},
+                after={"vendor_switch": now_on},
+                ip=client_ip(request),
+                severity="warning",
+            )
     await db.commit()
     await db.refresh(offer)
     return _view(offer, supplier)

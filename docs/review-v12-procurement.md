@@ -1283,3 +1283,154 @@ reasons for the three new `error_code`s.
 * The half-price promotion key of the account-check document and the vendor's `promotions` shape are inferred [I];
   confirm against a real eligible / ineligible account before production.
 * The generator does not read the vendor quote for a cost estimate (staff enter it or use the §19 estimate).
+
+
+## 21. Card modes for direct orders (issue #29, part 1: the procurement engine)
+
+Owner decision 2026-11-17: let ZovoCard choose cards automatically and issue a new card when none is available,
+count the extra cost in the cost model (§19) and watch the decline / chargeback thresholds (15 % / 30 %). Part 1 is
+the engine; the console card-pool view, the card-rules editor and the risk monitor are part 2.
+Legend: [V] documented by the vendor (`docs/research/zovocard/zovocard-openapi.md` §6.18.3-§6.18.8a), [I] inferred.
+
+### 21.1 Card mode per direct source (`params.card_mode`)
+
+* `fixed` (default, not stored): `card_id` required, exactly as before (`DirectSpec.card_id`, usage / busy / cooling /
+  in-flight checks, `no_auto_card_switch: true`).
+* `auto_existing`: `card_id` is optional and **never stored or used** (the console drops it). Pre-check (`engine`
+  `precheck` mode, `ZovoCardSupplier._auto_card_availability`) asks `GET /gpt-direct/card-pool/schedule`
+  (`product`, `plan`, `card_mode=auto_existing`) [V]: `data.pick` first, then `data.candidates[]` with **no**
+  `skip_reason`, at most 3 cards in all (the id spelling `card_id` | `id` is [I]). Each card runs through our
+  existing funding checks (`_funding_card_problem`: ours, ACTIVE, balance, usage cap, busy / cooling). The usable
+  ones go to the job (`procurement_jobs.card_candidates`, `"id:last4,..."`, with `card_candidates_at`). Each
+  candidate also returns its masked number to the engine (`Availability.candidate_masks`, `repr=False`), which runs
+  `funding_card_clash` AND `funding_mask_clash` on it (as for a fixed card) in the same call that stores the list; a
+  clashing card is dropped and never spent on. The masks stay in that call: not stored on the job, never logged,
+  never in an audit row. The lease that sends the order takes the first candidate that is not a buyer's card (id
+  clash again) and has no order in flight (`direct_card_inflight_max`, the same advisory lock per card, locks taken
+  in id order). **Freshness:** a list older than `CARD_FRESH_S` (120 s) is dropped and the job re-runs the read-only
+  pre-check (nothing parked, nothing sent), so a card is never spent on without a check inside that bound. The pick
+  is written to `procurement_jobs.card_id` / `card_last4` (the card WE SENT: the in-flight identity, never
+  overwritten by the vendor) and the engine injects it as `picked_card_id` into the spec (the offer row and the
+  pinned `request_hash` never carry it); the wait counter `card_wait_since` is cleared by the assignment.
+* `auto_issue` (a NEW card per order): reserved, see §21.4. Validation: `card_mode_unavailable`; any other unknown
+  value is `bad_params`. `direct_spec` also refuses both, so a stray database value is never sent.
+* The card used is recorded as **id + last four only** (`card_id`, `card_last4`, CHECK `^[0-9]{4}$`); the number
+  never reaches a row, a log, an audit row or an API answer (test: PAN sweep). The card the VENDOR says paid
+  (`order.card_id` / `card_last_four`, [V] §6.18.8a) is recorded separately as `used_card_id` / `used_last4` (also for
+  a fixed job, whose sent card is the offer's); see §21.2 for the checks.
+
+### 21.2 Optional vendor switch (`params.vendor_switch`, default false)
+
+`true` sends `no_auto_card_switch: false` [V]: after a refused payment the vendor retries on another card (default at
+most 2 switches, `max_auto_switches`). Consequences, stated in the console hint: it **weakens "one order in flight per
+card"** (the vendor, not we, picks the retry card), and every extra failed attempt can cost `failed_fee` once the
+card's `failed_free_count` is used up. Platform admins only (the source routes); every change is in the
+`procurement.offer_updated` before / after audit, and a flip of the flag writes a warning
+`procurement.vendor_switch_changed` row.
+
+**Never trust the vendor's card.** `card_id` stays the card we sent. On EVERY vendor read (submit, query, verify,
+watch) the reported card is compared with it and recorded as `used_card_id` / `used_last4`:
+* `vendor_switch` off and the card differs: discrepancy, the job goes to `needs_manual` / `card_mismatch`, flagged
+  maybe charged, with a warning audit row `procurement.card_discrepancy` (card ids only, never a number);
+* `vendor_switch` on: the new card runs `funding_card_clash` (and `funding_mask_clash` when the answer carries a
+  number) - a clash is `needs_manual` / `switched_to_buyer_card` with the same warning row;
+* a reported id that is not 1-20 digits is rejected the same way (`card_mismatch`), never truncated.
+`funding.card_in_flight` counts the sent card and, when it differs, the used card.
+
+**Production suppliers: refused.** Until the vendor can restrict the switch pool to cards we may use, a switched
+order could pay with a card bought for a buyer. `vendor_switch` is refused for a supplier with env `production`: 422
+`vendor_switch_unavailable` on source create, patch and enable; the adapter sends `no_auto_card_switch: true` for a
+production supplier whatever the row says, and the engine ignores the flag there. Allowed on sandbox and the demo mock.
+
+### 21.3 Parked state "waiting for card"
+
+No new job state (the 0023 CHECK is unchanged): a parked job is `queued`, step `submit`, `error_code
+waiting_for_card`, with `card_id` / `card_candidates` cleared and `maybe_sent` false. It parks when
+* the vendor made no pick, or none of the candidates passed our checks (`no_card_pick`),
+* the candidates are busy / cooling / in flight (`card_pool_busy`),
+* the order POST is refused with a DOCUMENTED "no card" code AND a lookup proved that no order exists (below).
+
+Codes: `CARD_REFUSAL_CODES` = `CARD_FUNDING_BUSY`, `CARD_IN_USE`, `CARD_CAPACITY_REACHED`, `CARD_CAPACITY_PRO20`,
+`CARD_COOLING_DOWN` [V: the vendor's owner-card refusals, §6.18.8a, applied to direct orders by analogy [I]]; only
+these are mapped to UNAVAILABLE in `errors.TABLE` (a fixed source keeps today's handling of them: reconcile, then the
+same-key resubmit or failover). The three guesses `NO_CARD_AVAILABLE`, `CARD_POOL_EMPTY`, `SUPPLIER_BUSY` [I] are
+NOT mapped and never park or re-key: the job goes to `needs_manual` / `card_code_unconfirmed` (maybe sent, warning).
+
+**Re-key after a refusal.** The vendor replays the first answer per idempotency key and treats a changed body under
+one key as a conflict, so a parked job that picks another `card_id` cannot reuse its key. After a documented
+refusal on an `auto_existing` source the adapter looks the order up by `client_request_id` in the vendor's order list
+(`GET /gpt-direct/orders`, `{list, total}` [V, verified against the real sandbox 2026-11-16]; matching the row's
+`client_request_id` is done client-side [I]). Only when the whole list has no such order (`no_order_verified`) does
+the engine re-key: `card_attempt += 1`, idempotency key `pj:<job hex>:c<N>` and client request id `pj<job hex>a<N>`
+(attempt 0 keeps `pj<job hex>`), a warning audit row `procurement.card_rekeyed`, then the park. An order that does
+exist is processed as an order; a lookup that fails or is cut short (list too long) leaves the refusal unverified:
+`needs_manual` / `card_refusal_unverified`, never a re-key (at most 10 re-keys per job). A crash after the lease
+never re-sends under a new key: the job reconciles by lookup and resubmits only under the SAME key. Parks caused by
+our own checks (no pick, all candidates busy, stale list) send nothing and keep the key.
+
+The wait is bounded: backoff retries (5 s doubling, capped at 15 min and at the deadline) up to
+`APP_DIRECT_CARD_WAIT_MAX_S` (default 1800 s = 30 min) in total from the first park (`card_wait_since`), then
+`needs_manual` / `card_wait_exhausted` (the usual `procure.failed` path: order to manual review, buyer message).
+One staff warning audit row `procurement.waiting_for_card` (state before / after, reason, max wait) is written at the
+first park of a job; later parks write none. No vendor spend while parked: nothing is sent, and a verified refusal created
+no order. **No double submit:** a job keeps its key until a refusal is verified as order-less (above); a job with an
+order or `maybe_sent` is never parked (it reconciles as before). The park writes a `queued` transition row when it
+moves a job out of `submitting`, takes its `before` snapshot first, and grows the backoff (`attempts`).
+Buyer: `GET /orders/{ref}/direct` adds `waiting_for_supplier` (true while the job is parked); the order page shows
+"Waiting for the supplier" (en / zh-CN). No card, reason or timing leaves the server.
+
+### 21.4 Automatic card issuance: open vendor question
+
+The documented OpenAPI has **no field to issue a new card on a direct order** (`POST /gpt-direct/orders` requires
+`card_id`; the CDK owner path says an explicit card is locked, "no auto-open"). We do **not** invent one. Reserved:
+a third card mode `auto_issue`, refused by validation with `card_mode_unavailable`. **Question for ZovoCard:** is
+there a documented parameter (or a rule such as `card-rules` / the card-pool schedule with `card_mode=auto_issue`)
+that makes the vendor open a card for a direct order, and what does it return (card id and last four on the order)?
+How it would plug in once answered: `CARD_MODES` gets `auto_issue`; `_auto_card_availability` asks the schedule with
+that mode (or the order omits `card_id`); the order read already records `card_id` / `card_last_four`; costs
+(card open fee 1.50 USD, 2 % top-up) enter §21.5 as another component; nothing else in the engine changes. Until
+then, pre-issue cards by hand and use `auto_existing`.
+
+### 21.5 Cost model
+
+`vendor_switch` sources add `switch_cost = expected_failure_rate x max_auto_switches x failed_fee` per sale
+(`core/costmodel.switch_cost`; `Estimate.switch_cost`, included in `fees` / `total_cost` and the price
+recommendation; `cost_usd.switch_cost` in the cost rows). It is a **conservative upper bound**: no
+`failed_free_count` discount (a card's free failures may be used up), and `max_auto_switches` (default 2 = the
+vendor's default, integer 0-10) is a cost-model setting. Together with `failure_cost = expected_failure_rate x
+failed_fee` (the first failed attempt) it covers all `1 + max_auto_switches` attempts of an order that keeps failing
+(`rate x (1 + max) x failed_fee`): the last failed attempt is counted once. It is an estimate only: it never changes a
+price by itself (a recommendation still needs staff to apply it). `auto_existing` without a switch adds nothing (no new
+card is opened). The decline / chargeback thresholds are watched in part 2.
+
+### 21.6 Simulator
+
+`app/devtools/mock_zovocard.py`: `GET /gpt-direct/card-pool/schedule` (`pick` + `candidates` with `skip_reason`;
+`card_pool`, `schedule_skip`, `schedule_none` = no card available), `GET` / `PUT /gpt-direct/card-rules`,
+`POST /gpt-direct/cards/reset-usage`, `direct_no_card_next` / `direct_no_card_code` (refused order POSTs),
+`direct_order_over` (e.g. a reported `card_id`), `direct_switch_to` (the vendor switches card when `no_auto_card_switch` is false), `card_last_four` on orders.
+
+### 21.6a Re-audit of the fix round (2026-11-17)
+
+* **M1, "no order" proof.** The vendor order list search (`_direct_find`), which unlocks a re-key, claims
+  `order_not_found` only when the answer states `total` and that many DISTINCT order ids were read. A missing
+  `total` (an unknown page-size cap), an empty page before `total`, or a row without an id is AMBIGUOUS
+  (`order_list_unverifiable` / `malformed_order`): the job goes to staff, never to a new key. Distinct ids keep
+  rows that shift between pages from ending the search early. `{list, total}` is [V] (sandbox 2026-11-16);
+  matching `client_request_id` on the rows is [I].
+* **M2, buyer card recorded between the check and the spend.** `_assign_card` drops a vetted list and re-runs
+  the full-mask pre-check when a non-voided buyer card whose mask ends in a candidate's last four was recorded or
+  changed after the list was checked (`funding.buyer_card_since`). A false match only costs one more pre-check;
+  only cards recorded after the check count, so there is no loop. Candidates without last four rely on the
+  pre-check's full-mask check alone.
+* **M3, cost floor.** `max_auto_switches` cannot go below the vendor default (2): we send no switch cap, so the
+  estimate must not assume fewer switches than the vendor may make.
+
+### 21.7 Left open
+
+* The exact JSON of `card-pool/schedule` (`pick` as an object or an id, the candidate id key) and the "no card" error
+  codes marked [I] are unverified: confirm against the sandbox.
+* Part 2: card pool view, card-rules editor (`GET/PUT card-rules`, `reset-usage`), decline / chargeback risk monitor.
+* The console shows a source's card mode in the list but not yet the card a job used (the job API returns the
+  columns' absence; part 2).
+

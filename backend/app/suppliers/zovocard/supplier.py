@@ -12,7 +12,7 @@ import logging
 import re
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -809,12 +809,62 @@ class ZovoCardSupplier:
             cost = await self._direct_cost(offer)
         except SupplierError:
             cost = None
+        if spec.card_mode != "fixed":
+            return await self._auto_card_availability(spec, cost, now)
+        assert spec.card_id is not None
         problem, mask = await self._funding_card_problem(spec, cost)
         if problem is not None:
             return Availability(
                 False, problem, cost_estimate=cost, checked_at=now, funding_mask=mask
             )
         return Availability(True, cost_estimate=cost, checked_at=now, funding_mask=mask)
+
+    async def _auto_card_availability(
+        self, spec: dr.DirectSpec, cost: Money | None, now: datetime
+    ) -> Availability:
+        """Card mode ``auto_existing`` (review-v12 §21.1): ask the vendor which card it would pick
+        for this plan (``GET /gpt-direct/card-pool/schedule``, a read; nothing is reserved), then
+        run OUR checks on the pick and, when it fails them, on the next candidates that carry no
+        ``skip_reason`` (at most :data:`dr.MAX_CARD_TRIES` cards in all). The cards that pass go
+        back to the engine, which still enforces "one order in flight per card" before the send.
+        No pick, or no usable card, is a WAIT (never a failure): the job parks."""
+        try:
+            resp = await self.client.get(
+                "/gpt-direct/card-pool/schedule",
+                params={"product": spec.product, "plan": spec.plan, "card_mode": "auto_existing"},
+            )
+        except SupplierError as exc:
+            # the vendor itself says "no card" (a READ: nothing is sent, a guessed code only waits)
+            if exc.reason in dr.CARD_REFUSAL_CODES | dr.CARD_GUESSED_CODES:
+                return Availability(False, dr.NO_CARD_PICK, cost_estimate=cost, checked_at=now)
+            return Availability(False, exc.reason, cost_estimate=cost, checked_at=now)
+        ids = dr.parse_schedule(resp.data)
+        if not ids:
+            return Availability(False, dr.NO_CARD_PICK, cost_estimate=cost, checked_at=now)
+        usable: list[tuple[str, str | None]] = []
+        masks: list[tuple[str, str]] = []  # the engine checks them against buyers' cards (H1)
+        busy = False
+        for cid in ids:
+            probe = dr.DirectSpec(
+                spec.product, spec.plan, cid, spec.country, spec.currency, spec.card_mode
+            )
+            problem, mask = await self._funding_card_problem(probe, cost)
+            if problem is None:
+                usable.append((str(cid), dr.last4_of((mask or "")[-4:])))
+                if mask:
+                    masks.append((str(cid), mask))
+            else:
+                busy = busy or problem == "funding_card_busy"
+        if not usable:
+            reason = dr.CARD_POOL_BUSY if busy else dr.NO_CARD_PICK
+            return Availability(False, reason, cost_estimate=cost, checked_at=now)
+        return Availability(
+            True,
+            cost_estimate=cost,
+            checked_at=now,
+            card_candidates=tuple(usable),
+            candidate_masks=tuple(masks),
+        )
 
     async def _funding_card_problem(
         self, spec: dr.DirectSpec, cost: Money | None
@@ -914,9 +964,11 @@ class ZovoCardSupplier:
         if spec is None:
             return Result(Outcome.FATAL, error_code="invalid_offer")
         ref = job.upstream_ref if job.upstream_ref and job.upstream_ref.isdigit() else None
-        rid = dr.client_request_id(job.job_id)
+        rid = dr.client_request_id(job.job_id, job.attempt)
         if ref is not None:
             return await self._direct_status(spec, ref, rid, None, job.account_mask)
+        if spec.card_id is None:  # auto_existing: the engine must have picked a card first
+            return Result(Outcome.FATAL, error_code="card_not_selected")
         if not job.credential:
             return Result(Outcome.FATAL, error_code="credential_missing")
         try:
@@ -969,6 +1021,7 @@ class ZovoCardSupplier:
                 else pf.token,
                 request_id=rid,
                 pricing_version=version,
+                allow_switch=self.env != "production",
             )
             try:
                 resp = await self.client.request(
@@ -981,7 +1034,10 @@ class ZovoCardSupplier:
             except SupplierError as exc:
                 if exc.error_code == "GPT_PRICE_UNCONFIRMED" and attempt == 1:
                     continue  # re-quote once: the answer is "not executed", the key stays
-                return Result.from_error(exc, account_mask=mask)
+                res = Result.from_error(exc, account_mask=mask)
+                if spec.card_mode != "fixed" and exc.error_code in dr.CARD_REFUSAL_CODES:
+                    return await self._verify_no_order(spec, rid, job, res)
+                return res
             finally:
                 body.clear()
             return await self._direct_created(spec, resp.data, rid, seen)
@@ -1054,7 +1110,14 @@ class ZovoCardSupplier:
             )
         if phase == "done":
             return await self._direct_status(spec, ref, rid, seen.get("account_mask"), None)
-        return Result(Outcome.ACCEPTED_PENDING, upstream_ref=ref, **seen)
+        card_id, card_last4 = dr.order_card(data)
+        return Result(
+            Outcome.ACCEPTED_PENDING,
+            upstream_ref=ref,
+            card_id=card_id,
+            card_last4=card_last4,
+            **seen,
+        )
 
     async def _direct_status(
         self,
@@ -1086,6 +1149,7 @@ class ZovoCardSupplier:
         status = order.get("status")
         phase = dr.order_phase(status)
         detail = _order_detail(order)
+        card_id, card_last4 = dr.order_card(order)  # the card that paid (vendor_switch may move it)
         if phase == "done" and not (
             isinstance(crid, str)
             and crid == rid
@@ -1111,16 +1175,25 @@ class ZovoCardSupplier:
                 upstream_ref=ref,
                 account_mask=mask,
                 detail=detail,
+                card_id=card_id,
+                card_last4=card_last4,
             )
         if phase == "pending":
             return Result(
-                Outcome.ACCEPTED_PENDING, upstream_ref=ref, account_mask=mask, detail=detail
+                Outcome.ACCEPTED_PENDING,
+                upstream_ref=ref,
+                account_mask=mask,
+                detail=detail,
+                card_id=card_id,
+                card_last4=card_last4,
             )
         return Result(
             Outcome.OK,
             upstream_ref=ref,
             account_mask=mask,
             detail=detail,
+            card_id=card_id,
+            card_last4=card_last4,
             secrets=(dr.delivery_text(spec, mask, ref),),  # plan, masked account, order: no secret
             cost=_order_cost(order),
         )
@@ -1132,10 +1205,36 @@ class ZovoCardSupplier:
         spec = dr.direct_spec(job.offer)
         if spec is None:
             return Result(Outcome.FATAL, error_code="invalid_offer")
-        rid = dr.client_request_id(job.job_id)
+        rid = dr.client_request_id(job.job_id, job.attempt)
         if job.upstream_ref and job.upstream_ref.isdigit():
             return await self._direct_status(spec, job.upstream_ref, rid, None, job.account_mask)
-        seen_rows = 0
+        return await self._direct_find(spec, rid, job.account_mask)
+
+    async def _verify_no_order(
+        self, spec: dr.DirectSpec, rid: str, job: JobSpec, refusal: Result
+    ) -> Result:
+        """A documented card refusal in a card mode that picks per order: the engine may park the
+        job and use a NEW key only when the vendor's order list (``GET /gpt-direct/orders`` [V]
+        shape, searched for our ``client_request_id``) proves that no order exists for the old one.
+        An order that does exist is returned as such; a lookup that fails or is cut short leaves
+        the refusal unverified (the engine then holds the job for staff, never re-keys)."""
+        found = await self._direct_find(spec, rid, job.account_mask)
+        if found.upstream_ref:
+            return found
+        if found.outcome is Outcome.UNAVAILABLE and found.error_code == "order_not_found":
+            return replace(refusal, no_order_verified=True)
+        return refusal
+
+    async def _direct_find(self, spec: dr.DirectSpec, rid: str, account_mask: str | None) -> Result:
+        """Search the vendor's order list for ``rid``: its status when found, UNAVAILABLE
+        ``order_not_found`` when the whole list has no such order, else an error result.
+
+        "Not found" unlocks a re-key (a new idempotency key, so a second order could be sent), so
+        it is claimed only when the vendor states ``total`` and that many DISTINCT orders were
+        read: a missing ``total`` (a page-size cap we do not know), an empty page before
+        ``total``, or a row without an id is AMBIGUOUS. Counting distinct ids keeps rows that
+        shift between pages (newest-first inserts) from ending the search early."""
+        seen: set[str] = set()
         for page in range(1, ORDER_LIST_MAX_PAGES + 1):
             try:
                 resp = await self.client.get(
@@ -1146,21 +1245,22 @@ class ZovoCardSupplier:
             rows = resp.data.get("list") if isinstance(resp.data, Mapping) else None
             if not isinstance(rows, list):
                 return Result(Outcome.AMBIGUOUS, error_code="malformed_order_list")
-            seen_rows += len(rows)
             total = resp.data.get("total") if isinstance(resp.data, Mapping) else None
             for item in rows:
+                oid = dr.order_id_of(item) if isinstance(item, Mapping) else None
                 if isinstance(item, Mapping) and item.get("client_request_id") == rid:
-                    found = dr.order_id_of(item)
-                    if found is None:
+                    if oid is None:
                         return Result(Outcome.AMBIGUOUS, error_code="malformed_order")
-                    return await self._direct_status(spec, found, rid, None, job.account_mask)
-            # page until the vendor says there is no more (``total`` rows seen, or a short page)
-            if isinstance(total, int) and not isinstance(total, bool):
-                done = not rows or seen_rows >= total
-            else:
-                done = len(rows) < 100
-            if done:
+                    return await self._direct_status(spec, oid, rid, None, account_mask)
+                if oid is None:
+                    return Result(Outcome.AMBIGUOUS, error_code="malformed_order")
+                seen.add(oid)
+            if not isinstance(total, int) or isinstance(total, bool) or total < 0:
+                return Result(Outcome.AMBIGUOUS, error_code="order_list_unverifiable")
+            if len(seen) >= total:
                 return Result(Outcome.UNAVAILABLE, error_code="order_not_found")
+            if not rows:  # the vendor ran out of rows before its own total
+                return Result(Outcome.AMBIGUOUS, error_code="order_list_unverifiable")
         # the list is longer than we are willing to read: "not found" would be a guess
         return Result(Outcome.AMBIGUOUS, error_code="order_list_too_long")
 
