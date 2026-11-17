@@ -1326,10 +1326,11 @@ def v12_procurement(
         "procurement 503: failed over to the next source, nothing charged at the first"
     )
 
-    # ---- review-v12 M3: an upstream_vcc order (a virtual card bought per order)
-    pv = admin.j(
+    # ---- owner decision 2026-11-17: virtual cards are not sold (and never shown to a buyer)
+    refused = admin.req(
         "POST",
         "admin/products",
+        expect=422,
         json={
             "title_i18n": {"en": f"Virtual card {tag}", "zh-CN": f"虚拟卡 {tag}"},
             "price": "15.00",
@@ -1340,46 +1341,11 @@ def v12_procurement(
             "status": "active",
         },
     )
-    check(pv["delivery_separator"] == "----", "a card product must reveal pan----expiry----cvv")
-    src_v = admin.j(
-        "POST",
-        "admin/procurement/sources",
-        expect=201,
-        json={
-            "product_id": pv["id"],
-            "supplier_id": sup["id"],
-            "params": {"product_code": "MOCK01", "init_amount": "10"},
-            "cost_estimate": "11.50",
-            "priority": 10,
-            "enabled": True,
-        },
-    )
-    chk = admin.j("POST", f"admin/procurement/sources/{src_v['id']}/check")
-    check(chk["available"], f"card source not available: {chk}")
-    ov = buyer.j("POST", "orders", json={"product_id": pv["id"], "qty": 1})
-    pay_with_simulator(buyer, ov["id"])
-    done = wait_status(buyer, ov["id"], {"delivered", "manual_review"}, timeout=180)
-    check(done["status"] == "delivered", f"card order ended in {done['status']}")
-    card = buyer.req("POST", f"orders/{ov['id']}/reveal").json()["secrets"]
-    check(len(card) == 1, "one card per unit")
-    pan, expiry, cvv = card[0].split("----")
     check(
-        re.fullmatch(r"4111\d{12}", pan)
-        and re.fullmatch(r"\d{2}/\d{2}", expiry)
-        and re.fullmatch(r"\d{3}", cvv),
-        "the revealed card must be number----MM/YY----CVV",
+        refused.json()["error"]["code"] == "vcc_not_sellable",
+        f"a virtual-card product must be refused: {refused.text[:200]}",
     )
-    jobs = admin.j("GET", "admin/procurement/jobs", params={"order_id": ov["id"]})["items"]
-    check(len(jobs) == 1 and jobs[0]["state"] == "fulfilled", f"card job {jobs}")
-    view = json.dumps(admin.j("GET", f"admin/procurement/jobs/{jobs[0]['id']}"))
-    check(
-        jobs[0]["kind"] == "vcc"
-        and jobs[0]["card_mask"] == f"{pan[:6]}****{pan[-4:]}"
-        and pan not in view
-        and f"{expiry}----{cvv}" not in view,
-        "the console must show the masked card only",
-    )
-    step("procurement upstream_vcc: card bought, sealed, revealed; console shows the mask only")
+    step("upstream_vcc: creating a virtual-card product is refused (422 vcc_not_sellable)")
 
     # ---- review-v12 M3 part 2: an upstream_direct order (the supplier subscribes the BUYER's
     # own account with the session the buyer supplies at checkout; sealed, never readable by the API)

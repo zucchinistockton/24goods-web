@@ -730,6 +730,23 @@ New fields / codes: job `error_code` `card_mismatch`, `void_failed`, `card_not_a
 * `upstream_direct`, the frontend (buyer card view with copy buttons + 3DS panel, console card-source form), and the
   production egress allowlist (§14.4) remain.
 
+### 17.10 Owner decision 2026-11-17: no sales, no reveal
+
+Buyers misused cards for $0 authorisations and card-binding checks, which cost vendor fees and risk.
+The owner stopped both the sale and the display of card data. The engine below stays dormant and testable.
+
+- **No new sales** (`APP_VCC_SALES_ENABLED`, default `false`, keep false). While false: admin create of an
+  `upstream_vcc` product is 422 `vcc_not_sellable`; a product of that mode cannot be set active (PATCH of
+  `status`/`delivery_mode`) and bulk publish skips it; the storefront (list, detail, by-ids, recommendations,
+  promo lines, SEO, reseller catalogue) never lists it; buy-now, cart checkout, quote creation and quote
+  acceptance (all via `create_order`) answer 422 `vcc_not_sellable`. Existing rows are untouched.
+- **No reveal, unconditional** (not behind the setting): `reveal_for` and `can_reveal` refuse the mode, and the
+  delivery worker's `/internal/reveal` refuses it too (409) even with a valid internal token. A card order is
+  still bought, sealed and delivered; the buyer never sees the number. Staff keep `card_mask`.
+- **No 3DS codes**: `card_otp.forward` drops every code before any lookup (nothing read, stored, published or
+  audited). `GET /orders/{ref}/card-otp` stays and always returns `{"items": []}` so old clients do not break.
+  The buyer panel is removed from the app. Existing jobs stay visible and can be voided/refunded in Procurement.
+
 ## 18. M3 part 2 — `upstream_direct` (the supplier subscribes the BUYER's own account)
 
 Migration `0029_procurement_direct`; tests `backend/tests/test_procurement_direct.py` (+ the `upstream_direct`
