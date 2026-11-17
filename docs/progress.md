@@ -4,15 +4,17 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 ## Current state — hand-off (read this first in a new session)
 
-**Hand-off 2026-11-17 (updated after PR #45 was merged and deployed to the demo). START HERE.**
+**Hand-off 2026-11-17 (updated after PR #47 was merged and deployed to the demo). START HERE.**
 
 - **Production (c4) runs `55ad99a`** (v12 launch, see the launch block below). Nothing newer is deployed there, by
   owner decision ("develop on the demo, not production"). Waiting for production: #36 (no virtual-card sales /
-  no card reveal), #37 (cost model), #38 (regions + half-price check), #42 (card modes) and #45 (card pool console). Hand deploy procedure +
+  no card reveal), #37 (cost model), #38 (regions + half-price check), #42 (card modes), #45 (card pool console) and #47 (progress display; **needs the procurement Redis ACL line
+  from ADR-043 in production's `users.acl` plus a Redis restart**). Hand deploy procedure +
   `--profile procurement` in the launch block.
-- **Demo (demo.kesiv.com) runs `main` `edbf0f9`**: v12 + #36 + #37 + #38 + #42 + #45 (CI images of run 44170085552
-  loaded as `goods24-{api,web}:m2-demo`, previous `9b38f1a` kept as `:demo-prev`; migrations up to `0033_card_modes`;
-  pre-deploy dump `/root/demo-backups/demo-20261117T203059Z.dump`). Demo redemption page `redeem-demo.kesiv.com` (production page
+- **Demo (demo.kesiv.com) runs `main` `6978938`**: v12 + #36 + #37 + #38 + #42 + #45 + #47 (CI images of run
+  44182700295 loaded as `goods24-{api,web}:m2-demo`, previous `edbf0f9` kept as `:demo-prev`; migrations up to
+  `0034_job_progress`; pre-deploy dump `/root/demo-backups/demo-20261117T214314Z.dump`). Demo Redis ACL: the
+  `procurement` user has `&rt:procprogress +publish` (backup `/root/demo-backups/users.acl-20261117T214314Z`). Demo redemption page `redeem-demo.kesiv.com` (production page
   `redeem.kesiv.com`). Testing guide: `docs/testing-guide.md`. The vendor sandbox expires **2026-11-18 10:57**:
   then run `/opt/24goods-demo/deploy/sandbox-off.sh` on the demo host.
 - **Open work, in order** (tracking issue #33; owner accepted all suggestions; demo only):
@@ -27,7 +29,11 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
      failed-usage reset, decline monitor; §21.8), browser-checked against the real vendor sandbox. **Before real
      money:** sandbox test that the vendor rule `auto_switch_on_fail` cannot override our per-order
      `no_auto_card_switch=true`; confirm the guessed vendor codes / shapes marked [I]. #29 stays open only for
-     automatic card issuance (waits for the vendor's answer). 3. #30 progress display + detailed logs,
+     automatic card issuance (waits for the vendor's answer).
+  3. ~~#30~~ **done**: PR #47 `6978938` (buyer progress steps + live updates via a least-privilege relay, redemption
+     page progress, staff supplier timeline; review-v12 §22, ADR-043), on the demo, browser-checked (order page at
+     375 px light/dark, redemption page markup, console job detail). Before real money: confirm the vendor status /
+     stage values marked [I] on the sandbox.
   4. #31 redemption admin (port features from the vendor's `zovo_card_cdk_auto`, do not deploy it — evaluation on
      #31), 5. #35 shop sells codes, redemption on its own platform (both modes kept; direct can be switched off per
      product), 6. #34 OKX Agentic Wallet top-ups (later).
