@@ -49,6 +49,7 @@ CARD_MODES = ("fixed", "auto_existing")
 CARD_MODE_RESERVED = "auto_issue"  # issuing a NEW card per order: reserved, refused (§21.4)
 # params key the ENGINE injects for the card it picked for a job (never an admin parameter)
 PICKED_CARD_KEY = "picked_card_id"
+INVALID_CARD = "invalid"  # ``order_card`` marker: the vendor reported an unusable card id
 MAX_CARD_TRIES = 3
 
 
@@ -128,9 +129,10 @@ def is_half_plan(plan: object) -> bool:
     return isinstance(plan, str) and (plan == "plus_half" or plan.endswith("_half"))
 
 
-def client_request_id(job_id: str) -> str:
-    """The merchant-side order number: deterministic per job, ``[A-Za-z0-9]``, well under 80."""
-    return f"pj{job_id}"[:80]
+def client_request_id(job_id: str, attempt: int = 0) -> str:
+    """The merchant-side order number: deterministic per job (and per re-keyed attempt after a
+    verified card refusal, review-v12 §21.3), ``[A-Za-z0-9]``, well under 80."""
+    return (f"pj{job_id}" if attempt <= 0 else f"pj{job_id}a{attempt}")[:80]
 
 
 def preflight_body(spec: DirectSpec, credential: str) -> dict[str, Any]:
@@ -162,6 +164,7 @@ def order_body(
     preflight_token: str | None,
     request_id: str,
     pricing_version: int | None,
+    allow_switch: bool = True,
 ) -> dict[str, Any]:
     body: dict[str, Any] = {
         "product": spec.product,
@@ -171,7 +174,8 @@ def order_body(
         "client_request_id": request_id,
         # a refused payment stays refused (money control), not hop to another card, unless the
         # source opted in to ``vendor_switch`` (extra failed attempts cost ``failed_fee``, §21.2)
-        "no_auto_card_switch": not spec.vendor_switch,
+        # (never switched on a production supplier: the vendor cannot restrict the switch pool yet)
+        "no_auto_card_switch": not (spec.vendor_switch and allow_switch),
     }
     if spec.country:
         body["payment_country"] = spec.country
@@ -305,24 +309,25 @@ def usage_remaining(data: Any, plan: str) -> int | None:
 
 # Vendor refusals that mean "no card can pay this order right now": the order is not created, no
 # money moves, the job waits (review-v12 §21.3). [V] = in the vendor's list of owner-card refusals
-# (§6.18.8a, written for the CDK owner path, applied here by analogy [I]); the three marked [I]
-# are our own guesses at the wording of "no card / pool empty / supplier busy": NOT in the docs.
-CARD_WAIT_CODES = frozenset(
+# (§6.18.8a, written for the CDK owner path, applied here by analogy [I]). ONLY these may park a
+# job and re-key its next attempt, and only after a lookup verified that no order exists.
+CARD_REFUSAL_CODES = frozenset(
     {
         "CARD_FUNDING_BUSY",  # [V]
         "CARD_IN_USE",  # [V]
         "CARD_CAPACITY_REACHED",  # [V]
         "CARD_CAPACITY_PRO20",  # [V]
         "CARD_COOLING_DOWN",  # [V]
-        "NO_CARD_AVAILABLE",  # [I]
-        "CARD_POOL_EMPTY",  # [I]
-        "SUPPLIER_BUSY",  # [I]
     }
 )
+# our own guesses at the wording of "no card / pool empty / supplier busy": NOT in the docs. They
+# are not mapped in ``errors.TABLE`` and never park or re-key: the job goes to ``needs_manual``.
+CARD_GUESSED_CODES = frozenset({"NO_CARD_AVAILABLE", "CARD_POOL_EMPTY", "SUPPLIER_BUSY"})
+CARD_WAIT_CODES = CARD_REFUSAL_CODES  # (kept name) the codes that mean a wait
 # reasons of our own availability answer that park a job (never a failover, never a failure)
 NO_CARD_PICK = "no_card_pick"  # the vendor picked none, or every candidate failed
 CARD_POOL_BUSY = "card_pool_busy"  # candidates exist but are busy / cooling / in flight
-WAIT_REASONS = frozenset({NO_CARD_PICK, CARD_POOL_BUSY, *CARD_WAIT_CODES})
+WAIT_REASONS = frozenset({NO_CARD_PICK, CARD_POOL_BUSY, *CARD_REFUSAL_CODES})
 
 
 def _id_of(v: Any) -> int | None:
@@ -366,7 +371,10 @@ def order_card(order: Any) -> tuple[str | None, str | None]:
     (vendor §6.18.8a: ``card_id`` and ``card_last_four``; the last four may be empty)."""
     if not isinstance(order, Mapping):
         return None, None
-    cid = _card_id(order.get("card_id"))
+    raw = order.get("card_id")
+    cid = _card_id(raw)
+    if cid is None and raw not in (None, "", 0):
+        return INVALID_CARD, None  # reported, but not a card id we can use: never guessed at
     return (str(cid) if cid is not None else None), last4_of(order.get("card_last_four"))
 
 
@@ -417,7 +425,9 @@ def delivery_text(spec: DirectSpec, account_mask: str | None, order_ref: str) ->
 
 __all__ = [
     "CANCELLABLE",
+    "CARD_GUESSED_CODES",
     "CARD_MODES",
+    "CARD_REFUSAL_CODES",
     "CARD_WAIT_CODES",
     "DIRECT_PRODUCTS",
     "DONE",

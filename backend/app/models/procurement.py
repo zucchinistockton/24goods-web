@@ -116,6 +116,12 @@ class ProcurementJob(Base):
     card_last4: Mapped[str | None] = mapped_column(String(4))
     card_candidates: Mapped[str | None] = mapped_column(String(80))
     card_wait_since: Mapped[datetime | None]
+    # the card the VENDOR reports as paying (card_id above stays the one we sent), when the
+    # candidates were checked, and the re-keyed attempt counter (0 = the first key)
+    used_card_id: Mapped[str | None] = mapped_column(String(20))
+    used_last4: Mapped[str | None] = mapped_column(String(4))
+    card_candidates_at: Mapped[datetime | None]
+    card_attempt: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     created_at: Mapped[datetime] = created_at()
     updated_at: Mapped[datetime] = updated_at()
 

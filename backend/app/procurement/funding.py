@@ -81,9 +81,13 @@ async def card_in_flight(
                     & ProcurementJob.upstream_ref.is_not(None)
                     & ProcurementJob.next_poll_at.is_not(None)
                 ),
-                # the card the job really uses (auto modes record it on the job), else the offer's
-                func.coalesce(ProcurementJob.card_id, SupplierOffer.params["card_id"].astext)
-                == str(card_id),
+                # the card WE SENT (auto modes record it on the job), else the offer's; and the card
+                # the vendor reports as paying when it differs (vendor_switch): both are in flight
+                (
+                    func.coalesce(ProcurementJob.card_id, SupplierOffer.params["card_id"].astext)
+                    == str(card_id)
+                )
+                | (ProcurementJob.used_card_id == str(card_id)),
             )
         )
         or 0

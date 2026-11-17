@@ -172,6 +172,10 @@ class Result:
     card_id: str | None = None
     card_last4: str | None = None
     card_candidates: tuple[tuple[str, str | None], ...] = ()
+    candidate_masks: tuple[tuple[str, str], ...] = field(default=(), repr=False)  # as Availability
+    # direct submit: the vendor refused BEFORE an order existed AND the lookup by client request id
+    # verified that none exists (the only case in which a new attempt key is allowed)
+    no_order_verified: bool = False
     # direct: short machine summary of the vendor order (``status:fee_status``), shown to staff
     detail: str | None = None
 
@@ -237,6 +241,9 @@ class Availability:
     funding_mask: str | None = None
     # direct, ``auto_existing``: cards that passed our checks, best first (id, last four or None)
     card_candidates: tuple[tuple[str, str | None], ...] = ()
+    # the candidates' masked numbers (id, mask): checked against buyers' cards by the engine in the
+    # same process, never stored, logged or audited
+    candidate_masks: tuple[tuple[str, str], ...] = field(default=(), repr=False)
 
 
 @dataclass(frozen=True)
@@ -256,6 +263,8 @@ class JobSpec:
     account_mask: str | None = None
     cost_bound: Money | None = None
     quote_tolerance: Decimal = Decimal("0.10")
+    # direct: re-keyed attempt of the job (0 = the first key); the client request id derives from it
+    attempt: int = 0
 
     def __post_init__(self) -> None:
         if not IDEMPOTENCY_KEY_RE.fullmatch(self.idempotency_key):

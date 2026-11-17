@@ -84,6 +84,13 @@ EXPECTED: dict[tuple[int | None, str | None], tuple[Outcome, bool]] = {
     (None, "GPT_RENEW_SUBSCRIPTION_EXPIRED"): (Outcome.FATAL, False),
     (None, "GPT_PREFLIGHT_RATE_LIMITED"): (Outcome.RETRYABLE, False),
     (None, "IDEMPOTENCY_CONFLICT"): (Outcome.FATAL, False),  # payment audit L7
+    # issue #29: the vendor's DOCUMENTED card refusals (before any order exists); the guessed
+    # NO_CARD_AVAILABLE / CARD_POOL_EMPTY / SUPPLIER_BUSY are deliberately not in the table
+    (None, "CARD_FUNDING_BUSY"): (Outcome.UNAVAILABLE, False),
+    (None, "CARD_IN_USE"): (Outcome.UNAVAILABLE, False),
+    (None, "CARD_CAPACITY_REACHED"): (Outcome.UNAVAILABLE, False),
+    (None, "CARD_CAPACITY_PRO20"): (Outcome.UNAVAILABLE, False),
+    (None, "CARD_COOLING_DOWN"): (Outcome.UNAVAILABLE, False),
     (None, "CDK_DISABLE_REJECTED"): (Outcome.FATAL, False),
     (None, "API_SCOPE_UNAVAILABLE"): (Outcome.UNAVAILABLE, True),
     (None, "ORDER_NOT_FOUND"): (Outcome.FATAL, False),

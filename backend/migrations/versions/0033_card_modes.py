@@ -4,11 +4,17 @@
 has no card yet. No new state: a job that waits for a card stays ``queued`` (error_code
 ``waiting_for_card``), so the state CHECK of 0023 is unchanged.
 
-* ``card_id``: the vendor card id (numeric text) the order was paid with. A card ID is not a card
-  number; the full number never reaches this table.
-* ``card_last4``: the last four digits only (NULL when unknown).
+* ``card_id``: the vendor card id (numeric text) WE SENT the order with (the in-flight identity of
+  a job; never overwritten by what the vendor reports). A card ID is not a card number; the full
+  number never reaches this table.
+* ``card_last4``: the last four digits of the sent card only (NULL when unknown).
+* ``used_card_id`` / ``used_last4``: the card the VENDOR says paid the order (``vendor_switch`` may
+  move it). Counted as in flight too when it differs from ``card_id``.
 * ``card_candidates``: the usable cards of the last pre-check, ``"id:last4,id:last4"`` (max 3),
-  consumed by the lease that sends the order.
+  consumed by the lease that sends the order; ``card_candidates_at`` is when they were checked
+  (a pick older than 120 s is re-checked, never spent on).
+* ``card_attempt``: counts the re-keyed attempts after a verified vendor refusal (0 = the first
+  key). The idempotency key and client request id of an attempt derive from it.
 * ``card_wait_since``: when the job first waited for a card (bounds the total wait; one staff
   warning audit row is written at that moment).
 
@@ -34,8 +40,18 @@ UP = [
     "CHECK (card_last4 IS NULL OR card_last4 ~ '^[0-9]{4}$')",
     "ALTER TABLE procurement_jobs ADD COLUMN card_candidates varchar(80)",
     "ALTER TABLE procurement_jobs ADD COLUMN card_wait_since timestamptz",
+    "ALTER TABLE procurement_jobs ADD COLUMN used_card_id varchar(20)",
+    "ALTER TABLE procurement_jobs ADD COLUMN used_last4 varchar(4) "
+    "CHECK (used_last4 IS NULL OR used_last4 ~ '^[0-9]{4}$')",
+    "ALTER TABLE procurement_jobs ADD COLUMN card_candidates_at timestamptz",
+    "ALTER TABLE procurement_jobs ADD COLUMN card_attempt integer NOT NULL DEFAULT 0 "
+    "CHECK (card_attempt >= 0 AND card_attempt <= 20)",
 ]
 DOWN = [
+    "ALTER TABLE procurement_jobs DROP COLUMN card_attempt",
+    "ALTER TABLE procurement_jobs DROP COLUMN card_candidates_at",
+    "ALTER TABLE procurement_jobs DROP COLUMN used_last4",
+    "ALTER TABLE procurement_jobs DROP COLUMN used_card_id",
     "ALTER TABLE procurement_jobs DROP COLUMN card_wait_since",
     "ALTER TABLE procurement_jobs DROP COLUMN card_candidates",
     "ALTER TABLE procurement_jobs DROP COLUMN card_last4",
