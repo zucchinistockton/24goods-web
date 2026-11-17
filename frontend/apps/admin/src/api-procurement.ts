@@ -252,6 +252,9 @@ export interface PricingSettings {
   service_fee_direct: Record<'gpt' | 'grok' | 'claude', string>
   uses_per_card: Record<'standard' | 'pro20x', number>
   fx: Record<string, { per_usd: string; updated_at: string; updated_by: string }>
+  fx_bands: Record<string, { min: string; max: string }>
+  fx_max_age_days: number
+  fx_max_change: string
 }
 export interface PricingSettingsView {
   settings: PricingSettings
@@ -260,10 +263,10 @@ export interface PricingSettingsView {
   channel: { id: string; fee_rate: string }
   currency: 'USD'
 }
-export type PricingSettingsPatch = Partial<Omit<PricingSettings, 'fx' | 'service_fee_direct' | 'uses_per_card'>> & {
+export type PricingSettingsPatch = Partial<Omit<PricingSettings, 'fx' | 'service_fee_direct' | 'uses_per_card' | 'fx_bands'>> & {
   service_fee_direct?: Partial<PricingSettings['service_fee_direct']>
   uses_per_card?: Partial<PricingSettings['uses_per_card']>
-  fx?: { currency: string; per_usd: string }
+  fx?: { currency: string; per_usd: string; confirm?: boolean }
 }
 export interface UnitRow {
   key: string
@@ -285,11 +288,18 @@ export interface UnitRow {
   recommended: { amount: string; minor: number; currency: string; usd: string; diff_minor: number; diff: string } | null
   incomplete: string[]
   cost_incomplete: boolean
+  fingerprint: string
+  fx_stale: boolean
+  large_drop: boolean
 }
 export interface UnitList extends Paginated<UnitRow> {
   fx: PricingSettings['fx']
+  truncated: boolean
 }
-export interface ActualRow extends MarginRow {
+export interface ActualRow extends Omit<MarginRow, 'margin'> {
+  paid: string
+  reasons: string[]
+  fee_estimated: boolean
   revenue_usd: string | null
   cost_usd: string | null
   channel_fee_usd: string | null
@@ -308,8 +318,16 @@ export function createPricingApi(c: ApiClient) {
     setTarget: (product_id: string, variant_id: string | null, margin: string | null) =>
       c.put<{ key: string; margin: string | null }>(`${base}/target`, { product_id, variant_id, margin }),
     units: (q: { page?: number; page_size?: number }) => c.get<UnitList>(`${base}/units`, clean(q)),
-    apply: (r: UnitRow) =>
-      c.post<{ applied: boolean }>(`${base}/apply`, { product_id: r.product_id, variant_id: r.variant_id, offer_id: r.offer_id, current_minor: r.price.minor }),
+    apply: (r: UnitRow, confirmLargeDrop = false) =>
+      c.post<{ applied: boolean; noop?: boolean }>(`${base}/apply`, {
+        product_id: r.product_id,
+        variant_id: r.variant_id,
+        offer_id: r.offer_id,
+        current_minor: r.price.minor,
+        recommended_minor: r.recommended?.minor,
+        fingerprint: r.fingerprint,
+        confirm_large_drop: confirmLargeDrop,
+      }),
     actual: (r: CostRange & { page?: number; page_size?: number }) => c.get<Paginated<ActualRow>>(`${base}/actual`, clean(r)),
     actualCsvUrl: (r: CostRange) => {
       const s = new URLSearchParams(clean(r) as Record<string, string>).toString()

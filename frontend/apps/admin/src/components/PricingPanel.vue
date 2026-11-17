@@ -4,7 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { Download, Refresh } from '@element-plus/icons-vue'
 import { formatDateTime, isApiError } from '@24goods/shared'
 import { client } from '../api'
-import { createPricingApi, type ActualRow, type PricingSettings, type PricingSettingsPatch, type UnitRow } from '../api-procurement'
+import { createPricingApi, type ActualRow, type PricingSettings, type PricingSettingsPatch, type PricingSettingsView, type UnitRow } from '../api-procurement'
 import { usePaged } from '../composables/usePaged'
 import { confirmBox, toastError, toastOk } from '../ui'
 
@@ -71,10 +71,17 @@ async function saveSettings() {
   for (const k of [...MONEY_KEYS, ...RATE_KEYS]) (body as Record<string, unknown>)[k] = form[k]
   for (const k of INT_KEYS) (body as Record<string, unknown>)[k] = Number(form[k])
   const rate = fx.per_usd.trim()
-  if (rate && rate !== loaded.value?.fx[fx.currency]?.per_usd) body.fx = { currency: fx.currency, per_usd: rate }
+  if (rate) body.fx = { currency: fx.currency, per_usd: rate }
   saving.value = true
   try {
-    const r = await api.saveSettings(body)
+    let r: PricingSettingsView
+    try {
+      r = await api.saveSettings(body)
+    } catch (e) {
+      if (!(isApiError(e) && e.code === 'fx_change_confirm' && body.fx)) throw e
+      if (!(await confirmBox(t('procurement.pricing.fxConfirm'), t('procurement.pricing.fx', { currency: fx.currency })))) return
+      r = await api.saveSettings({ ...body, fx: { ...body.fx, confirm: true } })
+    }
     channel.value = r.channel
     fill(r.settings)
     toastOk(t('procurement.pricing.saved'))
@@ -87,7 +94,13 @@ async function saveSettings() {
 }
 
 // ------------------------------------------------------------------ per-unit table
-const units = usePaged<UnitRow>((page, pageSize) => api.units({ page, page_size: pageSize }), 20)
+const truncated = ref(false)
+const units = usePaged<UnitRow>(async (page, pageSize) => {
+  const r = await api.units({ page, page_size: pageSize })
+  truncated.value = r.truncated
+  return r
+}, 20)
+const staleFx = computed(() => units.items.value.some((r) => r.fx_stale))
 const applying = ref('')
 const rowName = (r: UnitRow) => (r.variant_name ? `${r.title} · ${r.variant_name}` : r.title)
 const sourceName = (r: UnitRow) => `${r.source.supplier ?? t('procurement.pricing.manualCost')} (${r.source.kind})`
@@ -102,11 +115,19 @@ async function apply(r: UnitRow) {
   if (!ok) return
   applying.value = r.key
   try {
-    await api.apply(r)
+    try {
+      await api.apply(r)
+    } catch (e) {
+      if (!(isApiError(e) && e.code === 'confirm_large_drop')) throw e
+      if (!(await confirmBox(t('procurement.pricing.largeDrop'), t('procurement.pricing.apply')))) return
+      await api.apply(r, true)
+    }
     toastOk(t('procurement.pricing.applied'))
     void units.load()
   } catch (e) {
     fail(e)
+    // the price, the recommendation or the rate moved meanwhile: show the fresh numbers
+    if (isApiError(e) && ['recommendation_changed', 'fx_stale', 'offer_disabled'].includes(e.code)) void units.load()
   } finally {
     applying.value = ''
   }
@@ -188,6 +209,8 @@ onMounted(() => {
         <el-button :icon="Refresh" @click="units.load()">{{ t('procurement.refresh') }}</el-button>
       </div>
       <p class="muted small">{{ t('procurement.pricing.unitsHelp') }}</p>
+      <el-alert v-if="staleFx" type="warning" :closable="false" show-icon :title="t('procurement.pricing.fxStale')" class="bar" />
+      <el-alert v-if="truncated" type="warning" :closable="false" show-icon :title="t('procurement.pricing.truncated')" class="bar" />
       <el-table v-loading="units.loading.value" :data="units.items.value" row-key="key" :empty-text="t('procurement.cost.empty')" size="small">
         <el-table-column :label="t('procurement.pricing.col.unit')" min-width="200" fixed>
           <template #default="{ row }">
@@ -209,6 +232,7 @@ onMounted(() => {
               </div>
             </el-popover>
             <el-tag v-if="(row as UnitRow).cost_incomplete" size="small" type="warning" class="tag">{{ t('procurement.pricing.incomplete') }}</el-tag>
+            <el-tag v-if="(row as UnitRow).fx_stale" size="small" type="warning" class="tag">{{ t('procurement.pricing.fxStaleTag') }}</el-tag>
             <div v-if="(row as UnitRow).cost_incomplete" class="muted small">{{ reason(row as UnitRow) }}</div>
           </template>
         </el-table-column>
@@ -228,7 +252,7 @@ onMounted(() => {
         </el-table-column>
         <el-table-column :label="t('common.actions')" width="100" fixed="right">
           <template #default="{ row }">
-            <el-button size="small" :disabled="!(row as UnitRow).recommended || (row as UnitRow).cost_incomplete || (row as UnitRow).recommended!.diff_minor === 0" :loading="applying === row.key" @click="apply(row as UnitRow)">{{ t('procurement.pricing.apply') }}</el-button>
+            <el-button size="small" :disabled="!(row as UnitRow).recommended || (row as UnitRow).cost_incomplete || (row as UnitRow).fx_stale || (row as UnitRow).source.enabled === false || (row as UnitRow).recommended!.diff_minor === 0" :loading="applying === row.key" @click="apply(row as UnitRow)">{{ t('procurement.pricing.apply') }}</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -249,7 +273,7 @@ onMounted(() => {
       <p class="muted small">{{ t('procurement.pricing.actualHelp') }}</p>
       <el-table v-loading="actual.loading.value" :data="actual.items.value" row-key="order_id" :empty-text="t('procurement.cost.empty')" size="small">
         <el-table-column :label="t('procurement.job.order')" min-width="150"><template #default="{ row }"><span class="mono">{{ row.order_no }}</span></template></el-table-column>
-        <el-table-column :label="t('procurement.cost.revenue')" width="140"><template #default="{ row }"><span class="num">{{ row.revenue }} {{ row.revenue_currency }}</span><div class="muted small num">{{ usd(row.revenue_usd) }}</div></template></el-table-column>
+        <el-table-column :label="t('procurement.pricing.col.revenue')" width="140"><template #default="{ row }"><span class="num">{{ row.revenue }} {{ row.revenue_currency }}</span><div class="muted small num">{{ t('procurement.pricing.paid', { amount: (row as ActualRow).paid }) }}</div><div class="muted small num">{{ usd(row.revenue_usd) }}</div></template></el-table-column>
         <el-table-column :label="t('procurement.job.cost')" width="130"><template #default="{ row }"><span class="num">{{ usd(row.cost_usd) }}</span></template></el-table-column>
         <el-table-column :label="t('procurement.pricing.c.channel_fee')" width="130"><template #default="{ row }"><span class="num">{{ usd(row.channel_fee_usd) }}</span></template></el-table-column>
         <el-table-column :label="t('procurement.pricing.col.gross')" width="130"><template #default="{ row }"><span class="num">{{ usd(row.gross_usd) }}</span></template></el-table-column>
@@ -259,8 +283,12 @@ onMounted(() => {
             <div class="muted small num">{{ pctText(row.net_margin_pct) }}</div>
           </template>
         </el-table-column>
-        <el-table-column :label="t('procurement.pricing.col.state')" width="130">
-          <template #default="{ row }"><el-tag v-if="row.cost_incomplete" size="small" type="warning">{{ t('procurement.pricing.incomplete') }}</el-tag></template>
+        <el-table-column :label="t('procurement.pricing.col.state')" min-width="170">
+          <template #default="{ row }">
+            <el-tag v-if="row.cost_incomplete" size="small" type="warning">{{ t('procurement.pricing.incomplete') }}</el-tag>
+            <div v-if="row.cost_incomplete" class="muted small">{{ (row as ActualRow).reasons.map((c) => (te(`procurement.pricing.areason.${c}`) ? t(`procurement.pricing.areason.${c}`) : c)).join(', ') }}</div>
+            <div v-else-if="(row as ActualRow).fee_estimated" class="muted small">{{ t('procurement.pricing.feeEstimated') }}</div>
+          </template>
         </el-table-column>
       </el-table>
       <div class="pager">
