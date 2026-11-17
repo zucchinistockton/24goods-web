@@ -358,6 +358,8 @@ class CdkSetIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     code: str = Field(min_length=8, max_length=128, repr=False)
     confirm: Literal[True]  # the console asks first; the API refuses a request without it
+    # a code we did not sell (no card_stock fingerprint) is refused unless this is set as well
+    force_unsold: bool = False
 
 
 @router.post("/cdk/{action}")
@@ -373,11 +375,20 @@ async def cdk_set(
     tid, uid, role = admin.tenant_id, admin.id, admin.role
     code = _valid_code(body.code)
     masked = rl.display_mask(*rl.mask_code(code))
-    stock_order = await db.scalar(
-        select(CardStock.order_id).where(
-            CardStock.tenant_id == tid, CardStock.fingerprint == _fp(res, tid, code)
+    stock = (
+        await db.execute(
+            select(CardStock.id, CardStock.order_id).where(
+                CardStock.tenant_id == tid, CardStock.fingerprint == _fp(res, tid, code)
+            )
         )
-    )
+    ).first()
+    if stock is None and not body.force_unsold:
+        await db.rollback()
+        raise InvalidState(
+            "This code was not sold by this platform; confirm to force the change",
+            code="code_not_ours",
+        )
+    stock_order = stock.order_id if stock is not None else None
     order_no = (
         await db.scalar(
             select(Order.order_no).where(Order.id == stock_order, Order.tenant_id == tid)
@@ -424,6 +435,7 @@ async def cdk_set(
             "cdk_id": data.get("id"),
             "supplier_id": data.get("supplier"),
             "env": data.get("env"),
+            **({"force_unsold": True} if stock is None else {}),
         },
         severity="warning",
     )
@@ -493,6 +505,10 @@ async def put_settings(
     patch = body.model_dump(exclude_unset=True)
     if not patch:
         raise Validation("Nothing to change", code="nothing_to_change")
+    if rl.has_link(
+        *(patch.get(k) for k in patch if k.startswith(("announcement_", "maintenance_")))
+    ):
+        raise Validation("Links are not allowed in these texts", code="announcement_no_links")
     raw = await db.scalar(select(Tenant.redeem_settings).where(Tenant.id == tid).with_for_update())
     before = rl.normalize_settings(raw)
     merged: dict[str, Any] = {**before, "ip_limits": dict(before["ip_limits"])}

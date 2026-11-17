@@ -112,6 +112,10 @@ _ACCOUNT_INELIGIBLE = frozenset(
      "GPT_CREDIT_REQUIRES_SUBSCRIPTION", "grok_half_ineligible"}
 )  # fmt: skip
 
+# non-ok attempt rows one platform tenant may write a minute, whatever the client networks
+LOG_TENANT_PER_MIN = 600
+LOG_CLASS_PER_MIN = 30
+
 
 class RedeemError(Exception):
     """Carries only a code from :data:`ERRORS` (never vendor text, never buyer input)."""
@@ -411,13 +415,27 @@ def create_redeem_app(ctx: ProcurementContext) -> Starlette:
             tid, _ = await site()
             if tid is None:
                 return
-            if (
-                outcome != "ok"
-                and not (
-                    await hit(ctx.redis, "proc:redeem-log", ident("ip", ip or "unknown"), 30, 60)
-                )[0]
-            ):
-                return
+            if outcome != "ok":
+                # budget per client NETWORK (/24, /48), so rotating addresses inside one prefix
+                # share it; plus a per-tenant ceiling. Over either: dropped and counted, not written
+                cls = rl.ip_class_hash(ipkey, ip) or "unknown"
+                if not (
+                    await hit(
+                        ctx.redis, "proc:redeem-log", ident("cls", cls), LOG_CLASS_PER_MIN, 60
+                    )
+                )[0] or (
+                    not (
+                        await hit(
+                            ctx.redis,
+                            "proc:redeem-log-all",
+                            ident("tenant", str(tid)),
+                            LOG_TENANT_PER_MIN,
+                            60,
+                        )
+                    )[0]
+                ):
+                    state["log_dropped"] = int(state.get("log_dropped", 0)) + 1
+                    return
             m = meta or {}
             async with tenant_session(ctx.maker, tid) as db:
                 db.add(
@@ -592,12 +610,16 @@ def create_redeem_app(ctx: ProcurementContext) -> Starlette:
             tid, conf = await site()
             limit = conf["ip_limits"].get(step, ip_limits[step])
             await count(f"proc:redeem-ip-{step}", ident("ip", ip), limit, 60)
-            if conf["maintenance"]:
+            if conf["maintenance"] and step != "result":
                 raise RedeemError("maintenance")  # before any body is read or vendor is called
             # POST only, also for the result: a token never travels in a URL on our side
             parsed = parse_body(step, await read_json(request))
             body: dict[str, Any] | None = parsed
             token = parsed.get("redemption_token")
+            if conf["maintenance"] and recall(token) is None:
+                # a read for a token we issued before maintenance still works (no new vendor spend
+                # on a new code); any other token is blocked
+                raise RedeemError("maintenance")
             if step == "preview":
                 meta = code_meta(parsed["code"], tid, None)
                 await count(
@@ -660,7 +682,11 @@ def create_redeem_app(ctx: ProcurementContext) -> Starlette:
     def make_route(step: str):
         async def endpoint(request: Request) -> Response:
             resp = await (config(request) if step == "config" else handle(request, step))
-            resp.headers["Cache-Control"] = "no-store"
+            # the config is public display text: 30 s of caching bounds how long a maintenance
+            # switch takes to show; every other response is no-store
+            resp.headers["Cache-Control"] = (
+                "public, max-age=30" if step == "config" and resp.status_code == 200 else "no-store"
+            )
             resp.headers["X-Content-Type-Options"] = "nosniff"
             resp.headers["Referrer-Policy"] = "no-referrer"
             return resp

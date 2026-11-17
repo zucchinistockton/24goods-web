@@ -220,6 +220,34 @@ async def test_the_log_budget_bounds_failure_rows_per_client(env, stack):
     assert len(await _rows(env)) == 30  # 30 non-ok rows a minute per client class
 
 
+async def test_the_log_budget_is_per_network_and_the_tenant_has_a_ceiling(env, stack, monkeypatch):
+    import httpx
+
+    from app.procurement import redeem as rd
+    from app.procurement.redeem import create_redeem_app
+
+    rig = stack
+    rig.ctx.settings = replace(rig.ctx.settings, redeem_trusted_proxies="127.0.0.1/32")
+    app = create_redeem_app(rig.ctx)
+    c = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://redeem.test")
+    try:
+        # 40 addresses inside one /48 (and so one /64) share one budget of 30 rows
+        for i in range(40):
+            h = {"x-forwarded-for": f"2001:db8:1:2::{i + 1:x}"}
+            await c.post("/redeem/preview", json={"code": "x"}, headers=h)
+        assert len(await _rows(env)) == 30
+        # the tenant ceiling: 5 more rows across other networks, then nothing is written
+        await _sql(env, "DELETE FROM redeem_attempts")
+        await rig.ctx.redis.flushdb()
+        monkeypatch.setattr(rd, "LOG_TENANT_PER_MIN", 5)
+        for i in range(12):
+            h = {"x-forwarded-for": f"203.0.{i}.9"}
+            await c.post("/redeem/preview", json={"code": "x"}, headers=h)
+        assert len(await _rows(env)) == 5
+    finally:
+        await c.aclose()
+
+
 async def test_without_a_sealer_the_log_still_works_with_no_fingerprint(env, stack):
     stack.ctx.sealer = None
     await stack.walk()
@@ -268,6 +296,38 @@ async def test_maintenance_blocks_every_vendor_call_and_is_logged(env, stack):
     await _set_settings(env, {"maintenance": False})
     assert (await rig.post("preview", {"code": code})).status_code == 200
     assert rig.vendor_calls
+
+
+async def test_result_of_an_active_token_still_works_in_maintenance(env, stack):
+    rig = stack
+    code = rig.add_cdk()
+    tok = (await rig.post("preview", {"code": code})).json()["data"]["redemption_token"]
+    await _set_settings(env, {"maintenance": True})
+    rig.vendor_calls.clear()
+    r = await rig.post("result", {"redemption_token": tok})
+    assert r.status_code != 503, r.text  # a read of a session we issued
+    assert (await rig.post("result", {"redemption_token": "t" * 20})).status_code == 503
+    assert (await rig.post("preview", {"code": code})).status_code == 503
+    cfg = await rig.client.get("/redeem/config")
+    assert cfg.headers["cache-control"] == "public, max-age=30"
+    assert (await rig.post("preview", {"code": "x"})).headers["cache-control"] == "no-store"
+
+
+def test_text_filter_strips_invisible_characters_and_links_are_refused():
+    dirty = "a\u061cb\u180ec\u2060d\u2064e\ufff9f\U000e0041g\u202eh"
+    out = rl.clean_text(dirty, 100)
+    assert re.fullmatch(r"[a-h ]+", out), repr(out)
+    assert rl.has_link("see https://x.example", "") and rl.has_link("WWW.evil.test")
+    assert not rl.has_link("Back at 10:00 UTC", None)
+
+
+async def test_links_in_announcement_text_are_refused(env, stack):
+    admin, _ = await env.login("admin")
+    for k in ("announcement_en", "maintenance_zh"):
+        r = await admin.put(f"{API}/settings", json={k: "go to www.evil.test now"})
+        assert r.status_code == 422 and r.json()["error"]["code"] == "announcement_no_links"
+    r = await admin.put(f"{API}/settings", json={"announcement_en": "see http://x.test"})
+    assert r.status_code == 422
 
 
 async def test_public_config_serves_text_only_and_the_page_renders_it_as_text(env, stack):
@@ -581,9 +641,10 @@ async def test_disable_and_enable_are_confirmed_audited_and_never_store_the_code
     assert r.status_code == 200 and cdk["status"] == "unused"
     assert (
         await admin.post(
-            f"{API}/cdk/disable", json={"code": "MOCKPLUS-NOSUCHCODE9", "confirm": True}
+            f"{API}/cdk/disable",
+            json={"code": "MOCKPLUS-NOSUCHCODE9", "confirm": True, "force_unsold": True},
         )
-    ).status_code == 404
+    ).status_code == 404  # sold-check passed by force; the vendor has no such code
     rows = await _rows(
         env,
         "SELECT action, actor_id, before, after, detail, severity FROM audit_log WHERE action LIKE 'procurement.redeem_cdk_%' ORDER BY id",
@@ -611,9 +672,47 @@ async def test_disable_and_enable_are_confirmed_audited_and_never_store_the_code
     )
 
 
+async def test_disable_requires_that_we_sold_the_code_unless_forced_and_audited(env, stack):
+    rig = stack
+    code = rig.add_cdk()  # at the vendor, never sold by us
+    admin, _ = await env.login("admin")
+    for action in ("disable", "enable"):
+        r = await admin.post(f"{API}/cdk/{action}", json={"code": code, "confirm": True})
+        assert r.status_code == 409 and r.json()["error"]["code"] == "code_not_ours", action
+    assert not [x for x in rig.mock.requests if x[0] != "GET"]
+    assert (
+        await env.scalar(
+            "SELECT count(*) FROM audit_log WHERE action LIKE 'procurement.redeem_cdk_%'"
+        )
+        == 0
+    )
+    r = await admin.post(
+        f"{API}/cdk/disable", json={"code": code, "confirm": True, "force_unsold": True}
+    )
+    assert r.status_code == 200, r.text
+    (row,) = await _rows(
+        env,
+        "SELECT detail, severity FROM audit_log WHERE action = 'procurement.redeem_cdk_disabled'",
+    )
+    assert row["severity"] == "warning" and row["detail"]["force_unsold"] is True
+    assert code not in json.dumps(row, default=str)
+    # a code we sold carries no force marker
+    sold = rig.add_cdk()
+    await _sell(env, sold)
+    assert (
+        await admin.post(f"{API}/cdk/disable", json={"code": sold, "confirm": True})
+    ).status_code == 200
+    rows = await _rows(
+        env,
+        "SELECT detail FROM audit_log WHERE action = 'procurement.redeem_cdk_disabled' ORDER BY id",
+    )
+    assert "force_unsold" not in rows[1]["detail"]
+
+
 async def test_a_production_supplier_is_never_written_to(env, stack):
     rig = stack
     code = rig.add_cdk()
+    await _sell(env, code)
     await _sql(env, "UPDATE suppliers SET env = 'production'")
     assert rig.dup.ctx.settings.procurement_allow_production_writes is False
     admin, _ = await env.login("admin")

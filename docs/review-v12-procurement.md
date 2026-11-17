@@ -1608,14 +1608,14 @@ can trust). The code -> token link is kept only in the proxy's memory (keyed has
 carry the masked code without any Redis write (the Redis ACL is unchanged). A restart costs the masked code on the steps of an attempt in
 flight. Logged: every preview / preflight / redeem answer, every failure with its code, rate limits, maintenance; not logged: cross-origin
 and wrong-method noise, the normal "no result yet" (`not_found`) and non-terminal polls. The terminal `result` is logged once per attempt.
-Non-ok rows are capped at 30 per client class per minute (Redis counter), and a failed insert never changes the buyer's answer.
+Non-ok rows are capped at 30 per client class (/24 or /48, the same keyed hash as `ip_hash`) per minute and 600 per tenant per minute (Redis counters; over either the row is dropped and counted in memory, never written), and a failed insert never changes the buyer's answer.
 **Order reference:** resolved when the console reads (log rows join `card_stock.fingerprint` -> `orders.order_no` in the platform tenant),
 so it also works for rows written before the order existed. A code sold under another tenant is not resolved. **Retention:** rows older
 than 90 days are deleted by the procurement sweeper (`sweep_credentials`, throttled like the session sweep).
 
 **23.2 Staff API** (`modules/admin/procurement_redeem.py`, platform tenant only, rate limited, `/api/v1/admin/procurement/redeem`):
 `GET attempts` (staff: filters `q` masked code, `order_ref`, `outcome`, `step`, `date_from`, `date_to`, paging), `GET stats?days=` (staff),
-`POST lookup {code | order_ref}` (staff), `POST cdk/{disable|enable} {code, confirm: true}` (administrator, session only),
+`POST lookup {code | order_ref}` (staff), `POST cdk/{disable|enable} {code, confirm: true, force_unsold?}` (administrator, session only; the code must match a `card_stock` fingerprint of the platform tenant or the call is refused 409 `code_not_ours`; `force_unsold: true` with `confirm: true` bypasses that and the warning audit row carries `force_unsold`),
 `GET|PUT settings` (administrator). **Agents are staff**: they read; settings and vendor writes are administrator-only. **Lookup:** the pasted
 code is validated, fingerprinted in memory, sent once to the procurement internal API (`POST /internal/redeem/cdk-status`) and
 discarded; the answer is our order (number, status, paid / delivered, buyer masked as `a***@domain`), our recorded attempts for that
@@ -1638,7 +1638,7 @@ preflight 1-20, redeem 1-20, result 1-60 per minute per client IP; never above t
 default). Text is plain: control and bidi characters removed, whitespace collapsed, capped on write AND on read; the page sets it with
 `textContent`. The global shared budgets and the per-code / per-token limits stay environment-only (they protect the vendor budget).
 **Maintenance** is checked right after the per-IP counter and the origin check, before the body is read: every step answers 503
-`maintenance` and nothing reaches the vendor. The proxy caches the settings for `APP_REDEEM_SETTINGS_TTL_S` (15 s). A settings read
+`maintenance` and nothing reaches the vendor, except that `result` (a read) still works for a token the proxy issued before maintenance (present in the in-memory token map); new preview / preflight / redeem stay blocked. Announcement and maintenance texts are plain text: bidi, zero-width, tag and other invisible characters are stripped and `://` or `www.` is refused (422 `announcement_no_links`). `GET /redeem/config` is served with `Cache-Control: public, max-age=30`, so a switch is visible within 30 s of the proxy's own cache. The proxy caches the settings for `APP_REDEEM_SETTINGS_TTL_S` (15 s). A settings read
 failure keeps the last known settings. New public route `GET /redeem/config` (no cookies, `no-store`, 60 / min / IP; Caddy forwards it) returns
 `{maintenance, maintenance_message: {en, zh}, announcement: {en, zh}}`; the page shows the announcement (or the maintenance text) above
 the form. Changes write `procurement.redeem_settings_updated` with before / after (severity warning when maintenance changes).

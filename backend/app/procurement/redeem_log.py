@@ -42,7 +42,19 @@ DEFAULT_MAINTENANCE = {
     "zh": "兑换服务暂时不可用，请稍后再试。",
 }
 
-_UNSAFE = re.compile(r"[\x00-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]")
+_UNSAFE = re.compile(
+    r"[\x00-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff"
+    r"\u061c\u180e\u2060-\u2064\ufff9-\ufffb\U000e0000-\U000e007f]"
+)
+_LINK = re.compile(r"://|www\.", re.IGNORECASE)
+
+
+def has_link(*texts: str | None) -> bool:
+    """True when a display text carries something link-like (we never show clickable or copyable
+    URLs from an announcement: that is a phishing channel on a page buyers trust)."""
+    return any(_LINK.search(t or "") for t in texts)
+
+
 _SPACES = re.compile(r"\s+")
 _CODE_BAD = re.compile(r"[^A-Za-z0-9._:-]")
 
