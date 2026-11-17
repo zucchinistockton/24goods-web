@@ -336,6 +336,7 @@ class Source:
     supplier_price_usd: Decimal | None
     direct_product: str | None = None  # gpt | grok | claude
     card_tier: str = "standard"
+    vendor_switch: bool = False  # direct only: the vendor may retry a refused payment on a card
 
 
 @dataclass
@@ -345,6 +346,8 @@ class Estimate:
     topup_fee: Decimal = Decimal(0)
     card_share: Decimal = Decimal(0)
     failure_cost: Decimal = Decimal(0)
+    # vendor_switch only: expected extra failed-attempt fees of the vendor's card switches
+    switch_cost: Decimal = Decimal(0)
     channel_fee: Decimal = Decimal(0)
     sale_price_usd: Decimal | None = None
     gross: Decimal | None = None
@@ -355,7 +358,13 @@ class Estimate:
 
     @property
     def fees(self) -> Decimal:
-        return self.service_fee + self.topup_fee + self.card_share + self.failure_cost
+        return (
+            self.service_fee
+            + self.topup_fee
+            + self.card_share
+            + self.failure_cost
+            + self.switch_cost
+        )
 
     @property
     def total_cost(self) -> Decimal | None:
@@ -374,20 +383,39 @@ def fixed_cost(settings: dict[str, Any], src: Source) -> Decimal:
     return _components(settings, src)[0]
 
 
+# the vendor retries a refused payment on another card at most this many times (vendor default
+# ``max_auto_switches`` = 2, §6.18.3 card rules)
+VENDOR_MAX_SWITCHES = 2
+
+
+def switch_cost(settings: dict[str, Any]) -> Decimal:
+    """Expected extra cost per sale of letting the vendor switch card (``vendor_switch``): a
+    failed attempt (rate ``expected_failure_rate``) is retried up to ``VENDOR_MAX_SWITCHES`` times
+    and each failed attempt can be billed ``failed_fee``. The vendor bills failures only after the
+    first ``failed_free_count`` on a card, so the billed share is taken as ``1 / (free + 1)`` of
+    the extra attempts (0 free = every one). An ESTIMATE for the cost rows: it never changes a
+    price by itself."""
+    rate = Decimal(settings["expected_failure_rate"])
+    free = Decimal(int(settings["failed_free_count"]))
+    return rate * VENDOR_MAX_SWITCHES * Decimal(settings["failed_fee"]) / (free + 1)
+
+
 def _components(
     settings: dict[str, Any], src: Source
-) -> tuple[Decimal, Decimal, Decimal, Decimal, Decimal]:
+) -> tuple[Decimal, Decimal, Decimal, Decimal, Decimal, Decimal]:
     price = src.supplier_price_usd or Decimal(0)
-    service = topup = card = failure = Decimal(0)
+    service = topup = card = failure = switch = Decimal(0)
     if src.kind == "direct" and src.direct_product:
         service = Decimal(settings["service_fee_direct"].get(src.direct_product, "0"))
     if card_kind(src.kind):
         topup = price * Decimal(settings["topup_fee_rate"]) + Decimal(settings["topup_fee_fixed"])
         failure = Decimal(settings["expected_failure_rate"]) * Decimal(settings["failed_fee"])
+    if src.kind == "direct" and src.vendor_switch:
+        switch = switch_cost(settings)
     if src.kind == "vcc":  # only a source that opens a card per sale carries a share of its fee
         uses = settings["uses_per_card"].get(src.card_tier) or 1
         card = Decimal(settings["card_open_fee"]) / Decimal(uses)
-    return price + service + topup + card + failure, service, topup, card, failure
+    return price + service + topup + card + failure + switch, service, topup, card, failure, switch
 
 
 def estimate(
@@ -403,8 +431,8 @@ def estimate(
         est.incomplete.append("fx_rate")
     if src.kind == "direct" and not src.direct_product:
         est.incomplete.append("direct_product")
-    _t, est.service_fee, est.topup_fee, est.card_share, est.failure_cost = _components(
-        settings, src
+    _t, est.service_fee, est.topup_fee, est.card_share, est.failure_cost, est.switch_cost = (
+        _components(settings, src)
     )
     if sale_price_usd is not None:
         est.channel_fee = sale_price_usd * channel_rate

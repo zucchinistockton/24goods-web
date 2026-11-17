@@ -24,6 +24,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.suppliers.base import Outcome
+from app.suppliers.zovocard.direct import CARD_WAIT_CODES
 
 
 @dataclass(frozen=True)
@@ -115,6 +116,8 @@ TABLE: dict[tuple[int | None, str | None], Rule] = {
     # preflight throttled (60/min/user): back off, re-preflight, resubmit under the SAME key
     (None, "GPT_PREFLIGHT_RATE_LIMITED"): _RETRY,
     # ---- A.5 CDK
+    # no card can pay the order now (review-v12 §21.3): refused before any order exists
+    **{(None, code): _UNAV for code in sorted(CARD_WAIT_CODES)},
     (None, "CDK_DISABLE_REJECTED"): _FATAL,  # already used or unknown: cannot void
     # the key was already used with ANOTHER body: the first request may have executed, so the
     # engine keeps the job flagged as maybe charged (payment audit L7); never "still running"

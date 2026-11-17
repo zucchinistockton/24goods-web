@@ -809,12 +809,52 @@ class ZovoCardSupplier:
             cost = await self._direct_cost(offer)
         except SupplierError:
             cost = None
+        if spec.card_mode != "fixed":
+            return await self._auto_card_availability(spec, cost, now)
+        assert spec.card_id is not None
         problem, mask = await self._funding_card_problem(spec, cost)
         if problem is not None:
             return Availability(
                 False, problem, cost_estimate=cost, checked_at=now, funding_mask=mask
             )
         return Availability(True, cost_estimate=cost, checked_at=now, funding_mask=mask)
+
+    async def _auto_card_availability(
+        self, spec: dr.DirectSpec, cost: Money | None, now: datetime
+    ) -> Availability:
+        """Card mode ``auto_existing`` (review-v12 §21.1): ask the vendor which card it would pick
+        for this plan (``GET /gpt-direct/card-pool/schedule``, a read; nothing is reserved), then
+        run OUR checks on the pick and, when it fails them, on the next candidates that carry no
+        ``skip_reason`` (at most :data:`dr.MAX_CARD_TRIES` cards in all). The cards that pass go
+        back to the engine, which still enforces "one order in flight per card" before the send.
+        No pick, or no usable card, is a WAIT (never a failure): the job parks."""
+        try:
+            resp = await self.client.get(
+                "/gpt-direct/card-pool/schedule",
+                params={"product": spec.product, "plan": spec.plan, "card_mode": "auto_existing"},
+            )
+        except SupplierError as exc:
+            if exc.reason in dr.CARD_WAIT_CODES:  # the vendor itself says "no card"
+                return Availability(False, dr.NO_CARD_PICK, cost_estimate=cost, checked_at=now)
+            return Availability(False, exc.reason, cost_estimate=cost, checked_at=now)
+        ids = dr.parse_schedule(resp.data)
+        if not ids:
+            return Availability(False, dr.NO_CARD_PICK, cost_estimate=cost, checked_at=now)
+        usable: list[tuple[str, str | None]] = []
+        busy = False
+        for cid in ids:
+            probe = dr.DirectSpec(
+                spec.product, spec.plan, cid, spec.country, spec.currency, spec.card_mode
+            )
+            problem, mask = await self._funding_card_problem(probe, cost)
+            if problem is None:
+                usable.append((str(cid), dr.last4_of((mask or "")[-4:])))
+            else:
+                busy = busy or problem == "funding_card_busy"
+        if not usable:
+            reason = dr.CARD_POOL_BUSY if busy else dr.NO_CARD_PICK
+            return Availability(False, reason, cost_estimate=cost, checked_at=now)
+        return Availability(True, cost_estimate=cost, checked_at=now, card_candidates=tuple(usable))
 
     async def _funding_card_problem(
         self, spec: dr.DirectSpec, cost: Money | None
@@ -917,6 +957,8 @@ class ZovoCardSupplier:
         rid = dr.client_request_id(job.job_id)
         if ref is not None:
             return await self._direct_status(spec, ref, rid, None, job.account_mask)
+        if spec.card_id is None:  # auto_existing: the engine must have picked a card first
+            return Result(Outcome.FATAL, error_code="card_not_selected")
         if not job.credential:
             return Result(Outcome.FATAL, error_code="credential_missing")
         try:
@@ -1054,7 +1096,14 @@ class ZovoCardSupplier:
             )
         if phase == "done":
             return await self._direct_status(spec, ref, rid, seen.get("account_mask"), None)
-        return Result(Outcome.ACCEPTED_PENDING, upstream_ref=ref, **seen)
+        card_id, card_last4 = dr.order_card(data)
+        return Result(
+            Outcome.ACCEPTED_PENDING,
+            upstream_ref=ref,
+            card_id=card_id,
+            card_last4=card_last4,
+            **seen,
+        )
 
     async def _direct_status(
         self,
@@ -1086,6 +1135,7 @@ class ZovoCardSupplier:
         status = order.get("status")
         phase = dr.order_phase(status)
         detail = _order_detail(order)
+        card_id, card_last4 = dr.order_card(order)  # the card that paid (vendor_switch may move it)
         if phase == "done" and not (
             isinstance(crid, str)
             and crid == rid
@@ -1111,16 +1161,25 @@ class ZovoCardSupplier:
                 upstream_ref=ref,
                 account_mask=mask,
                 detail=detail,
+                card_id=card_id,
+                card_last4=card_last4,
             )
         if phase == "pending":
             return Result(
-                Outcome.ACCEPTED_PENDING, upstream_ref=ref, account_mask=mask, detail=detail
+                Outcome.ACCEPTED_PENDING,
+                upstream_ref=ref,
+                account_mask=mask,
+                detail=detail,
+                card_id=card_id,
+                card_last4=card_last4,
             )
         return Result(
             Outcome.OK,
             upstream_ref=ref,
             account_mask=mask,
             detail=detail,
+            card_id=card_id,
+            card_last4=card_last4,
             secrets=(dr.delivery_text(spec, mask, ref),),  # plan, masked account, order: no secret
             cost=_order_cost(order),
         )

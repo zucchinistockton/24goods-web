@@ -279,7 +279,8 @@ def _source(offer: SupplierOffer | None, st: dict[str, Any], cost_minor: int | N
     if offer.cost_estimate is not None and offer.cost_estimate > 0:
         per = cm.rate_for(st, offer.currency)
         usd = Decimal(offer.cost_estimate) / per if per else None
-    src = cm.Source(offer.kind, usd, direct if direct in cm.DIRECT_PRODUCTS else None, tier)
+    switch = offer.kind == "direct" and p.get("vendor_switch") is True
+    src = cm.Source(offer.kind, usd, direct if direct in cm.DIRECT_PRODUCTS else None, tier, switch)
     return src, (None if usd is not None else "supplier_price")
 
 
@@ -357,6 +358,7 @@ def _row(
             "topup_fee": cm.q(est.topup_fee),
             "card_share": cm.q(est.card_share),
             "failure_cost": cm.q(est.failure_cost),
+            "switch_cost": cm.q(est.switch_cost),
             "channel_fee": cm.q(est.channel_fee),
             "total": cm.q(est.total_cost),
         },

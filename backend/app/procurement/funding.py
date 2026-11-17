@@ -81,7 +81,9 @@ async def card_in_flight(
                     & ProcurementJob.upstream_ref.is_not(None)
                     & ProcurementJob.next_poll_at.is_not(None)
                 ),
-                SupplierOffer.params["card_id"].astext == str(card_id),
+                # the card the job really uses (auto modes record it on the job), else the offer's
+                func.coalesce(ProcurementJob.card_id, SupplierOffer.params["card_id"].astext)
+                == str(card_id),
             )
         )
         or 0

@@ -167,6 +167,11 @@ class Result:
     account_mask: str | None = None
     preflight_expires_at: datetime | None = None
     funding_mask: str | None = None  # availability only; never recorded on a job
+    # direct: the card the vendor order paid with (id + last four only, never a number), and, from
+    # a precheck, the cards that passed our checks (``auto_existing``), best first
+    card_id: str | None = None
+    card_last4: str | None = None
+    card_candidates: tuple[tuple[str, str | None], ...] = ()
     # direct: short machine summary of the vendor order (``status:fee_status``), shown to staff
     detail: str | None = None
 
@@ -230,6 +235,8 @@ class Availability:
     # direct: masked number of the funding card (first 6 + last 4), so the caller can refuse a card
     # that was bought for a buyer
     funding_mask: str | None = None
+    # direct, ``auto_existing``: cards that passed our checks, best first (id, last four or None)
+    card_candidates: tuple[tuple[str, str | None], ...] = ()
 
 
 @dataclass(frozen=True)

@@ -50,6 +50,13 @@ queued -> running -> completed over successive reads, the 1st still saying queue
 ``POST /gpt-direct/orders/{id}/cancel`` (200 only while ``queued``, else ``409`` without
 error_code). The session is NEVER stored: only a digest.
 
+Card modes (issue #29): ``GET /gpt-direct/card-pool/schedule`` (``data.pick`` + ``data.candidates``
+with ``skip_reason``; knobs ``card_pool``, ``schedule_skip``, ``schedule_none`` = "no card
+available"), ``GET`` / ``PUT /gpt-direct/card-rules``, ``POST /gpt-direct/cards/reset-usage``;
+``direct_no_card_next`` makes the next order POSTs answer the "no card" refusal,
+``direct_switch_to`` simulates the vendor switching card (only when ``no_auto_card_switch`` is
+false). Orders show ``card_id`` and ``card_last_four``.
+
 Force a quirk from tests with ``MockZovo.force(path, name)`` or, on a running dev server,
 ``POST /__mock/force {"path": "/balance", "quirk": "429"}``. Refuses to start unless
 ``APP_ENV`` is dev or test.
@@ -305,6 +312,18 @@ class MockZovo:
     direct_quote_error: str = ""  # a non-empty quote_error on the preflight
     direct_half_eligible: bool = True  # False: the preflight quotes no ``*_half`` plan
     direct_cancelled: int = 0
+    # card modes (issue #29): ``card-pool/schedule`` preview, card rules, usage reset
+    card_pool: list[int] = field(default_factory=list)  # funding cards in the vendor's pick order
+    schedule_none: bool = False  # "no card available": the schedule has no pick, no candidates
+    schedule_skip: dict[int, str] = field(default_factory=dict)  # card -> ``skip_reason``
+    schedule_calls: int = 0
+    direct_no_card_next: int = 0  # the next N order POSTs answer the "no card" refusal
+    direct_no_card_code: str = "NO_CARD_AVAILABLE"
+    direct_switch_to: int | None = None  # vendor_switch: the order finally pays with this card
+    direct_switch_seen: list[bool] = field(default_factory=list)  # ``no_auto_card_switch`` as sent
+    direct_cards_sent: list[int] = field(default_factory=list)  # ``card_id`` of every order POST
+    card_rules: dict[str, dict[str, Any]] = field(default_factory=dict)
+    usage_resets: list[dict[str, Any]] = field(default_factory=list)
     direct_product_seen: list[str] = field(default_factory=list)  # product exactly as sent
 
     def __post_init__(self) -> None:
@@ -601,6 +620,8 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
             "final_amount_minor": o["amount"] if o["status"] == "completed" else None,
             "account_email": "b***@example.test",
             "card_id": o["card_id"],
+            # the vendor shows the last four only, never a number (§6.18.8a)
+            "card_last_four": str(mock.cards.get(o["card_id"], {}).get("card_number", ""))[-4:],
             "service_fee_status": "settled"
             if o["status"] == "completed"
             else mock.direct_fee_status,
@@ -644,6 +665,13 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
             return JSONResponse(
                 {"code": 400, "error_code": "GPT_PRICE_UNCONFIRMED", "msg": "re-preflight"}, 400
             )
+        mock.direct_switch_seen.append(body.get("no_auto_card_switch") is True)
+        mock.direct_cards_sent.append(body["card_id"])
+        if mock.direct_no_card_next > 0:  # refused before any order exists: nothing executed
+            mock.direct_no_card_next -= 1
+            return JSONResponse(
+                {"code": 400, "error_code": mock.direct_no_card_code, "msg": "no card"}, 400
+            )
         mock.direct_executions += 1
         mock.next_direct += 1
         oid = mock.next_direct
@@ -656,7 +684,9 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
             "polls": 0,
             "currency": row["checkout_currency"],
             "amount": row["checkout_amount_minor"],
-            "card_id": body["card_id"],
+            "card_id": mock.direct_switch_to
+            if body.get("no_auto_card_switch") is False and mock.direct_switch_to
+            else body["card_id"],
             "cred": hashlib.sha256(cred["session"].encode()).hexdigest()[:16],
         }
         return JSONResponse(
@@ -665,6 +695,22 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
                      "quoted_amount_minor": row["checkout_amount_minor"]}, msg="accepted"),
             status_code=202,
         )  # fmt: skip
+
+    def _schedule() -> dict[str, Any]:
+        """``GET /gpt-direct/card-pool/schedule``: ``pick`` (the card the rules would choose) and
+        ``candidates`` (the other cards, each with a ``skip_reason`` or ``""``). Card ids come
+        from ``card_pool`` (else every funding card); ``schedule_none`` empties both."""
+        if mock.schedule_none:
+            return {"pick": None, "candidates": []}
+        ids = mock.card_pool or [
+            c for c, v in mock.cards.items() if v.get("product_code") == "FUND"
+        ]
+        usable = [c for c in ids if c not in mock.schedule_skip]
+        pick = usable[0] if usable else None
+        rest = [
+            {"card_id": c, "skip_reason": mock.schedule_skip.get(c, "")} for c in ids if c != pick
+        ]
+        return {"pick": {"card_id": pick} if pick is not None else None, "candidates": rest}
 
     def _cancel_order(oid: int) -> JSONResponse:
         o = mock.direct_orders.get(oid)
@@ -696,6 +742,22 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
         m_cancel = re.fullmatch(r"/gpt-direct/orders/([0-9]{1,12})/cancel", path)
         if m_cancel:
             return _cancel_order(int(m_cancel.group(1)))
+        if path == "/gpt-direct/cards/reset-usage":
+            ids = body.get("card_ids")
+            mock.usage_resets.append(
+                {"card_ids": ids if isinstance(ids, list) else [], "scope": body.get("scope")}
+            )
+            for cid in ids if isinstance(ids, list) else list(mock.usage_remaining):
+                if isinstance(cid, int):
+                    mock.usage_remaining.pop(cid, None)
+                    mock.usage_busy.discard(cid)
+            return JSONResponse(_env(0, {"reset": len(ids) if isinstance(ids, list) else 0}))
+        if path == "/gpt-direct/card-rules" and request.method == "PUT":
+            prod = body.get("product")
+            if prod not in ("gpt", "claude", "grok"):
+                return JSONResponse({"code": 400, "error_code": "INVALID_REQUEST"}, 400)
+            mock.card_rules[prod] = {**body, "is_default": False}
+            return JSONResponse(_env(0, mock.card_rules[prod]))
         if path == "/cards/open":
             return _open_card(body)
         if path == "/cards/recharge":
@@ -818,6 +880,21 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
                          "count_failures": True, "cooling": False,
                          "decline_count": 0, "busy": cid in mock.usage_busy})
             )  # fmt: skip
+        if path == "/gpt-direct/card-pool/schedule":
+            mock.schedule_calls += 1
+            return JSONResponse(_env(0, _schedule()))
+        if path == "/gpt-direct/card-rules":
+            prod = request.query_params.get("product")
+            rules = {
+                p: mock.card_rules.get(
+                    p, {"product": p, "count_failures": True, "light_max_uses": 5,
+                        "pro20_max_uses": 3, "select_mode": "default", "is_default": True}
+                )
+                for p in ("gpt", "claude", "grok")
+            }  # fmt: skip
+            if prod in rules:
+                return JSONResponse(_env(0, rules[prod]))
+            return JSONResponse(_env(0, {"list": list(rules.values())}))
         m_order = re.fullmatch(r"/gpt-direct/orders/([0-9]{1,12})", path)
         if m_order:
             return _read_order(int(m_order.group(1)))

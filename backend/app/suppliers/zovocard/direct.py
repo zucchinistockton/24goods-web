@@ -44,13 +44,25 @@ NOT_CHARGED = frozenset({"cancelled", "failed_precharge"})
 NOTHING_HELD_FEE = frozenset({"released", "refunded", "none"})
 
 
+# issue #29 / review-v12 §21: how the funding card of a direct order is chosen
+CARD_MODES = ("fixed", "auto_existing")
+CARD_MODE_RESERVED = "auto_issue"  # issuing a NEW card per order: reserved, refused (§21.4)
+# params key the ENGINE injects for the card it picked for a job (never an admin parameter)
+PICKED_CARD_KEY = "picked_card_id"
+MAX_CARD_TRIES = 3
+
+
 @dataclass(frozen=True)
 class DirectSpec:
     product: str
     plan: str  # registry[].key (without the product prefix), what the order takes
-    card_id: int  # the funding card (a card of OUR account) the supplier pays with
+    # the funding card (a card of OUR account) the supplier pays with. ``fixed``: the offer's
+    # ``card_id``. ``auto_existing``: ``None`` until the engine has picked a card for the job
+    card_id: int | None
     country: str | None
     currency: str | None
+    card_mode: str = "fixed"
+    vendor_switch: bool = False  # True: let the vendor switch card after a refused payment
 
 
 def _card_id(v: Any) -> int | None:
@@ -82,16 +94,25 @@ def direct_spec(offer: OfferSpec) -> DirectSpec | None:
         return None
     if plan.endswith("_renew") or plan.startswith("credit"):
         return None
-    card = _card_id(p.get("card_id"))
-    if card is None:
+    mode = p.get("card_mode", "fixed")
+    if mode not in CARD_MODES:  # ``auto_issue`` and anything else: refused
         return None
+    switch = p.get("vendor_switch", False)
+    if not isinstance(switch, bool):
+        return None
+    if mode == "fixed":
+        card = _card_id(p.get("card_id"))
+        if card is None:
+            return None
+    else:  # auto_existing: the offer's own card_id is never used; only the engine's pick
+        card = _card_id(p.get(PICKED_CARD_KEY))
     country, currency = p.get("payment_country"), p.get("payment_currency")
     if product in USD_PRODUCTS:
         if country not in (None, "US") or currency not in (None, "USD"):
             return None
-        return DirectSpec(product, plan, card, "US", "USD")
+        return DirectSpec(product, plan, card, "US", "USD", mode, switch)
     if country is None and currency is None:
-        return DirectSpec(product, plan, card, None, None)  # the vendor's own GPT default
+        return DirectSpec(product, plan, card, None, None, mode, switch)  # vendor default
     if (
         not isinstance(country, str)
         or not _COUNTRY_RE.fullmatch(country)
@@ -99,7 +120,7 @@ def direct_spec(offer: OfferSpec) -> DirectSpec | None:
         or not _CURRENCY_RE.fullmatch(currency)
     ):
         return None
-    return DirectSpec(product, plan, card, country, currency)
+    return DirectSpec(product, plan, card, country, currency, mode, switch)
 
 
 def is_half_plan(plan: object) -> bool:
@@ -148,8 +169,9 @@ def order_body(
         "card_id": spec.card_id,
         "credential": {"mode": "session", "session": credential},
         "client_request_id": request_id,
-        # a refused payment must stay refused (money control), not hop to another card
-        "no_auto_card_switch": True,
+        # a refused payment stays refused (money control), not hop to another card, unless the
+        # source opted in to ``vendor_switch`` (extra failed attempts cost ``failed_fee``, §21.2)
+        "no_auto_card_switch": not spec.vendor_switch,
     }
     if spec.country:
         body["payment_country"] = spec.country
@@ -281,6 +303,73 @@ def usage_remaining(data: Any, plan: str) -> int | None:
     return rem
 
 
+# Vendor refusals that mean "no card can pay this order right now": the order is not created, no
+# money moves, the job waits (review-v12 §21.3). [V] = in the vendor's list of owner-card refusals
+# (§6.18.8a, written for the CDK owner path, applied here by analogy [I]); the three marked [I]
+# are our own guesses at the wording of "no card / pool empty / supplier busy": NOT in the docs.
+CARD_WAIT_CODES = frozenset(
+    {
+        "CARD_FUNDING_BUSY",  # [V]
+        "CARD_IN_USE",  # [V]
+        "CARD_CAPACITY_REACHED",  # [V]
+        "CARD_CAPACITY_PRO20",  # [V]
+        "CARD_COOLING_DOWN",  # [V]
+        "NO_CARD_AVAILABLE",  # [I]
+        "CARD_POOL_EMPTY",  # [I]
+        "SUPPLIER_BUSY",  # [I]
+    }
+)
+# reasons of our own availability answer that park a job (never a failover, never a failure)
+NO_CARD_PICK = "no_card_pick"  # the vendor picked none, or every candidate failed
+CARD_POOL_BUSY = "card_pool_busy"  # candidates exist but are busy / cooling / in flight
+WAIT_REASONS = frozenset({NO_CARD_PICK, CARD_POOL_BUSY, *CARD_WAIT_CODES})
+
+
+def _id_of(v: Any) -> int | None:
+    if isinstance(v, Mapping):
+        for key in ("card_id", "id"):
+            n = _card_id(v.get(key))
+            if n is not None:
+                return n
+        return None
+    return _card_id(v)
+
+
+def parse_schedule(data: Any) -> list[int]:
+    """``GET /gpt-direct/card-pool/schedule`` -> card ids to try, best first: ``data.pick`` then
+    the ``data.candidates`` that carry no ``skip_reason`` (vendor §6.18.8, [I] field spelling: the
+    id is ``card_id`` or ``id``). At most :data:`MAX_CARD_TRIES`; unreadable -> empty."""
+    if not isinstance(data, Mapping):
+        return []
+    out: list[int] = []
+    pick = _id_of(data.get("pick"))
+    if pick is not None:
+        out.append(pick)
+    cands = data.get("candidates")
+    for item in cands if isinstance(cands, list) else []:
+        if isinstance(item, Mapping) and item.get("skip_reason"):
+            continue
+        cid = _id_of(item)
+        if cid is not None and cid not in out:
+            out.append(cid)
+    return out[:MAX_CARD_TRIES]
+
+
+def last4_of(v: Any) -> str | None:
+    """Four digits or ``None``: the only part of a card number we ever record."""
+    s = str(v or "").strip()
+    return s if re.fullmatch(r"[0-9]{4}", s) else None
+
+
+def order_card(order: Any) -> tuple[str | None, str | None]:
+    """The card an order really paid with: ``(card_id, last four)`` from the order object
+    (vendor §6.18.8a: ``card_id`` and ``card_last_four``; the last four may be empty)."""
+    if not isinstance(order, Mapping):
+        return None, None
+    cid = _card_id(order.get("card_id"))
+    return (str(cid) if cid is not None else None), last4_of(order.get("card_last_four"))
+
+
 def clean_reason(v: Any) -> str:
     """``blocking_reason`` is vendor text: only its presence matters; keep a machine-safe stub."""
     s = str(v or "").strip()
@@ -328,6 +417,8 @@ def delivery_text(spec: DirectSpec, account_mask: str | None, order_ref: str) ->
 
 __all__ = [
     "CANCELLABLE",
+    "CARD_MODES",
+    "CARD_WAIT_CODES",
     "DIRECT_PRODUCTS",
     "DONE",
     "FAILED",
