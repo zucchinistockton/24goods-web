@@ -65,6 +65,14 @@ function confirm() {
         autocapitalize="none"
         autocorrect="off"
         spellcheck="false"
+        writingsuggestions="false"
+        data-gramm="false"
+        data-gramm_editor="false"
+        data-enable-grammarly="false"
+        data-lpignore="true"
+        data-1p-ignore="true"
+        data-bwignore="true"
+        data-form-type="other"
       />
       <p class="note">{{ t('direct.note') }}</p>
       <van-button block round type="primary" size="large" native-type="submit" :disabled="!ready">{{ t('direct.continue') }}</van-button>
