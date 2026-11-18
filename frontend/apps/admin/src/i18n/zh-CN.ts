@@ -358,6 +358,7 @@ const zhCN: AdminMessages = {
       polling: '实时更新已暂停：每几秒自动刷新',
       noJob: '暂无供应方任务（付款后开始）。',
       updated: '更新于 {at}',
+    },
     shared: {
       title: '买家共享的会话',
       kept: '自 {since} 起为客服保存',

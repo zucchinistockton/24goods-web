@@ -359,6 +359,7 @@ export default {
       polling: 'Live updates paused: refreshing every few seconds',
       noJob: 'No supplier job yet (it starts after payment).',
       updated: 'Updated {at}',
+    },
     shared: {
       title: 'Session shared by the buyer',
       kept: 'Kept for support since {since}',
