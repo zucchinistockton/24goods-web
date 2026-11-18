@@ -297,9 +297,9 @@ async def test_availability_reads_the_closed_catalog_and_names_a_usd_cost(env):
 # ------------------------------------------------------------------ preflight refresh
 async def test_stale_preflight_token_is_refreshed_under_the_same_key(env, dup):
     vendor = _vendor()
-    vendor.direct_expire_next = 1  # the first token is already expired when the order arrives
     await _zovo(dup, vendor, CLAUDE)
     buyer, order = await dup.paid_direct(claude_session(new_marker()))
+    vendor.direct_expire_next = 1  # the engine's first token is already expired at the order
     await _drive(env, dup, order, buyer)
     job = await _job(dup, order)
     assert job.state == "fulfilled"

@@ -1045,7 +1045,9 @@ async def test_account_binding_is_keyed_and_compared_in_procurement_before_any_s
     await hp.run()
     job = await _job(hp, order)
     assert job.state == "needs_manual" and job.error_code == "half_check_account_mismatch"
-    assert vendor.direct_executions == 0 and vendor.preflights == 1  # only the check's own read
+    # nothing at execution: the binding refused before the engine's own preflight (the check's
+    # read and the checkout pre-check came before the order and are not counted here)
+    assert vendor.direct_executions == 0 and vendor.preflights == 0
     # the matching account goes through
     chk2 = (await _check(buyer, hp, mine)).json()
     ok = (await _order(buyer, hp, _session_for(new_marker(), "acct-mine"), chk2["id"])).json()
