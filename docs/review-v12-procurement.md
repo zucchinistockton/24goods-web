@@ -355,6 +355,12 @@ supplier's fixtures from these shapes, not from the prose docs.
 
 ## 12. Sandbox
 
+> **Status 2026-11-18: the sandbox is NOT available and cannot be used for the time being.** The sandbox token
+> and test account expired (authenticated API 401 since at least 2026-11-18 04:38 UTC), the testing period ended
+> and the support-ticket deadline passed. The demo is back on the simulator (`deploy/sandbox-off.sh`). From now on
+> proceed on the vendor's documentation and on what was verified against the sandbox on 2026-11-16/17; everything still marked [I] stays unconfirmed and keeps its fail-closed handling. Every "run in the sandbox" step in this document (§21.8, §22) is therefore
+> not possible now; see the notes there. Sandbox results recorded on 2026-11-16/17 ([V]) remain valid evidence.
+
 Access is by support ticket (1–2 business days; account lives 3 days; **scanning the API is forbidden** —
 run only the scripted probe and the named scenario tests, no fuzzing, no enumeration). Until it arrives
 everything is built and tested against `suppliers/mock` + `app/devtools/mock_zovocard.py` (same envelope,
@@ -1469,7 +1475,9 @@ advisory only: it changes no behaviour and blocks nothing.
 
 **Not yet exercised (M2): per-order override of the vendor rule.** The docs state ([V] doc line) that `no_auto_card_switch: true` on an
 order overrides the vendor rule `auto_switch_on_fail`; we rely on it for every order without `vendor_switch` but have never seen
-it hold. Run in the vendor SANDBOX before real money: set the rule `auto_switch_on_fail=true, max_auto_switches=10` for the product,
+it hold. (**Not possible any more: the sandbox is unavailable since 2026-11-18, §12.** Until this can be shown, keep the vendor
+rule at `auto_switch_on_fail=false` for production products, so the per-order flag is not the only protection.) The original
+procedure, for a future sandbox or a written vendor confirmation: set the rule `auto_switch_on_fail=true, max_auto_switches=10` for the product,
 place an order with `no_auto_card_switch=true` on a card that declines, and confirm the order shows NO switch (the card used stays
 the card sent, no `direct_switch_to`). If it switches, the rule must stay `auto_switch_on_fail=false` and §21.5 costs are understated.
 
@@ -1542,7 +1550,9 @@ ours follows.
 (matched by substrings `fund`, `card_select`, `dispatch`, `running`, `processing`, `action`, `pending`, `paid`, `submitted`);
 that every `*review*` status keeps processing; the id key of a `data.events` item (`timeline_event_id`, else `id`, else
 `event_id`); that an unknown status with no other signal means `queued`. An unknown value never maps to `completed` or `failed`.
-Run the sandbox once per status before real money to confirm the table.
+This table cannot be confirmed in a sandbox any more (unavailable since 2026-11-18, §12); it stays [I], and the
+fail-closed mapping above is the safeguard. Confirm values only from real production orders (owner's go-ahead) or a
+written vendor answer.
 
 **22.2 Staff timeline.** Stored on the job, not in a new table: `procurement_jobs.progress` (jsonb, migration `0034_job_progress`)
 holds `v` (last vendor fields), `events` (the timeline), `seen` (vendor event ids), `reached` (first time of each step) and `pub`
