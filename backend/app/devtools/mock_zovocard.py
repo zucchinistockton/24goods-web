@@ -29,6 +29,10 @@ same-key replay returns the code), ``scn_409`` (first attempt 409, then executes
 (executed, first answer ``202`` without an envelope), ``scn_503`` (always ``503
 channel_unavailable``, nothing charged).
 
+Full catalogue (``MockZovo.catalog_full`` / ``APP_MOCKZOVO_CATALOG=full``, demo showcase only):
+every documented GPT direct plan is on sale (``pro_20x`` enabled, ``pro_5x`` and ``pro_50x``
+added) with synthetic PHP prices; the default fixture is unchanged.
+
 Public redemption (``/api/v1/cdk/{preview,preflight,redeem,result}``, no API key, review-v12
 §8/§12): tokens are bound to the ``X-Redemption-Device`` header of the preview (another device
 answers ``400 REDEMPTION_SESSION_INVALID``); ``preflight`` returns a token plus payment
@@ -155,12 +159,16 @@ SCENARIO_PLANS = ("scn_lost", "scn_409", "scn_202", "scn_503")
 
 
 MOCK_GPT_REGIONS = (("PH", "PHP"), ("EG", "EGP"), ("CL", "CLP"), ("JP", "JPY"), ("US", "USD"))
+# the full catalogue (``MockZovo.catalog_full`` / ``APP_MOCKZOVO_CATALOG=full``, demo showcase)
+FULL_GPT_EXTRA = (("pro_5x", "Pro 5x", 550000), ("pro_50x", "Pro 50x", 2750000))
 
 
-def plans_fixture(product: str, scenarios: bool = False) -> dict[str, Any]:
+def plans_fixture(product: str, scenarios: bool = False, full: bool = False) -> dict[str, Any]:
     """Synthetic plans payload. GPT: ``plus`` and ``go`` purchasable; ``pro_5x_renew`` has
     ``purchasable: false``; ``pro_20x`` has the registry flag but its plan is disabled;
-    ``credit250`` lacks ``purchasable`` entirely. Claude/Grok keys differ from acc_plan_key."""
+    ``credit250`` lacks ``purchasable`` entirely. Claude/Grok keys differ from acc_plan_key.
+    ``full`` (demo showcase only): every documented GPT direct plan is on sale, i.e. ``pro_20x``
+    enabled plus ``pro_5x`` and ``pro_50x`` (synthetic PHP prices, not the vendor's)."""
     if product == "claude":
         plans = {
             "claude_pro": _plan("claude_pro", "Claude Pro", "USD", 2000),
@@ -199,6 +207,11 @@ def plans_fixture(product: str, scenarios: bool = False) -> dict[str, Any]:
             credit,
         ]
         regions = [{"country": c, "currency": cur} for c, cur in MOCK_GPT_REGIONS]
+        if full:
+            plans["pro_20x"]["enabled"] = True
+            for key, label, amount in FULL_GPT_EXTRA:
+                plans[key] = _plan(key, label, "PHP", amount)
+                registry.append(_reg(key, "gpt", key, "PHP", amount))
         if scenarios:
             for key in SCENARIO_PLANS:
                 plans[key] = _plan(key, key, "PHP", 30000)
@@ -269,6 +282,7 @@ class MockZovo:
     next_cdk: int = 1000
     balance_logs: list[dict[str, Any]] = field(default_factory=list)  # newest first
     scenarios: bool = False  # E2E scenario plans (scn_*), see the module docstring
+    catalog_full: bool = False  # every documented GPT direct plan on sale (demo showcase)
     scn_seen: set[str] = field(default_factory=set)
     executions: int = 0  # how many issue requests really ran (tests: never twice per key)
     # public redemption: token -> session; (step, device, has_credential) per call, no secrets
@@ -400,7 +414,7 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
             return JSONResponse({"code": 400, "msg": "funding must be confirmed"}, status_code=400)
         if not isinstance(count, int) or not 1 <= count <= 50:
             return JSONResponse({"code": 400, "msg": "at most 50 per request"}, status_code=400)
-        gpt = plans_fixture("gpt", mock.scenarios)
+        gpt = plans_fixture("gpt", mock.scenarios, mock.catalog_full)
         reg = {r["key"]: r for r in gpt["registry"]}
         row = reg.get(plan) if isinstance(plan, str) else None
         if row is None or row.get("purchasable") is not True:
@@ -570,7 +584,7 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
         currency = body.get("payment_currency") or ("USD" if country == "US" else "PHP")
         quotes: dict[str, Any] = {}
         for prod in ("gpt", "claude", "grok"):
-            for row in plans_fixture(prod, mock.scenarios)["registry"]:
+            for row in plans_fixture(prod, mock.scenarios, mock.catalog_full)["registry"]:
                 if row["key"].endswith("_half") and not mock.direct_half_eligible:
                     continue
                 if row["checkout_amount_minor"]:
@@ -648,7 +662,10 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
         if product not in ("gpt", "claude", "grok"):
             product = "gpt"  # vendor pitfall 1: an unknown product is silently a GPT order
         plan = body.get("plan")
-        reg = {r["key"]: r for r in plans_fixture(str(product), mock.scenarios)["registry"]}
+        reg = {
+            r["key"]: r
+            for r in plans_fixture(str(product), mock.scenarios, mock.catalog_full)["registry"]
+        }
         row = reg.get(plan) if isinstance(plan, str) else None
         if row is None or row.get("purchasable") is not True:
             return JSONResponse(
@@ -971,7 +988,7 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
                     {"code": 400, "error_code": "INVALID_REQUEST", "msg": "unknown product"},
                     status_code=400,
                 )
-            return JSONResponse(_env(0, plans_fixture(product, mock.scenarios)))
+            return JSONResponse(_env(0, plans_fixture(product, mock.scenarios, mock.catalog_full)))
         if path == "/gpt-direct/card-products":
             items = [
                 {
@@ -1181,6 +1198,7 @@ async def _main() -> None:
     scenarios = os.environ.get("APP_MOCKZOVO_SCENARIOS", "") == "1"
     state = MockZovo(
         scenarios=scenarios,
+        catalog_full=os.environ.get("APP_MOCKZOVO_CATALOG", "") == "full",
         result_404=os.environ.get("APP_MOCKZOVO_RESULT_404", "") == "1",
         direct_polls=2 if scenarios else 3,  # the E2E smoke waits for the order: keep it short
     )

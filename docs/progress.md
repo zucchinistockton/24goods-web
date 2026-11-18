@@ -21,6 +21,12 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
   still labelled `zovocard · Sandbox`. **Demo showcase (2026-11-18, set up through the admin API, audited):** the
   direct product is live as "ChatGPT Plus · direct top-up (demo)" with four plan × region variants (Plus and Plus
   half price × Philippines / US; 99 / 69 / 169 / 139 CNY), all sources on the simulator's funding card `1`.
+  **Demo catalogue (2026-11-18, owner request):** the simulator runs with `APP_MOCKZOVO_CATALOG=full` (demo
+  `deploy/env/mockzovo.env` only): every documented GPT direct plan is on sale (Go, Plus, Plus half price, Pro 5x,
+  Pro 20x, Pro 50x; synthetic PHP prices) in the five regions PH / US / JP / CL / EG. The category "ChatGPT Direct
+  Top-up (Demo)" holds one product per plan with one variant per region (half price on Plus only), for the owner to
+  pick what goes to production. Renewal (`*_renew`) and Codex credit plans are not direct top-ups (the adapter
+  refuses them) and are not listed.
 - **The ZovoCard sandbox is NOT available and cannot be used for the time being (2026-11-18).** The sandbox
   token and test account have expired (the authenticated API answers 401 since at least 04:38 UTC), the testing
   period has ended and the support-ticket deadline has passed, so no new sandbox can be requested now. **Rule
