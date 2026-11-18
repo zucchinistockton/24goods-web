@@ -1067,7 +1067,7 @@ def v12_redeem(base: str, host: str, code: str) -> None:
     check(
         "localStorage" not in js
         and "innerHTML" not in js
-        and js.count("sessionStorage") == 3
+        and js.count("sessionStorage") == 4  # the header comment + set, remove, get
         and "var REF_KEY = 'redeem-ref-v1'" in js
         and "saveRef({ token: st.token, rid: st.requestId, at: st.startedAt })" in js,
         "redeem js",
