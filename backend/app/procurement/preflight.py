@@ -83,13 +83,12 @@ async def _source(
             )
         ).first()
         kind = await db.scalar(select(Tenant.kind).where(Tenant.id == tenant_id))
-        await db.rollback()
-    if row is None or kind != service.PLATFORM:
-        return None
-    params, s = row
-    return service.SupplierRef(s.id, s.tenant_id, s.code, s.adapter, s.env, s.health), dict(
-        params or {}
-    )
+        if row is None or kind != service.PLATFORM:
+            return None
+        params, s = row
+        # primitives BEFORE the session ends: a rollback expires every ORM attribute
+        ref = service.SupplierRef(s.id, s.tenant_id, s.code, s.adapter, s.env, s.health)
+        return ref, dict(params or {})
 
 
 async def _ask_vendor(
