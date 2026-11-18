@@ -1062,10 +1062,14 @@ def v12_redeem(base: str, host: str, code: str) -> None:
             f"redeem asset {asset} not served ({a.status_code})",
         )
     js = rc.get("/app.js").text
+    # no persistent storage and no HTML injection; the tab-only sessionStorage entry holds the
+    # redemption REFERENCE only (token, request id, start time), never the code or the session
     check(
         "localStorage" not in js
-        and "sessionStorage" not in js
-        and "innerHTML" not in js,
+        and "innerHTML" not in js
+        and js.count("sessionStorage") == 3
+        and "var REF_KEY = 'redeem-ref-v1'" in js
+        and "saveRef({ token: st.token, rid: st.requestId, at: st.startedAt })" in js,
         "redeem js",
     )
     check("MOCKPLUS" not in page.text, "no code on the static page")
