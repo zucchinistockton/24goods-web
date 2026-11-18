@@ -778,3 +778,31 @@ def test_production_unknown_code_answer_maps_to_code_unavailable():
 
     assert map_upstream_error("preview", 400, "not_found") == "code_unavailable"
     assert map_upstream_error("result", 400, "not_found") == "not_found"
+
+
+async def test_showcase_simulator_redemption_moves_through_its_stages(rig, monkeypatch):
+    """Demo showcase (``catalog_full``): a redemption is "processing" for ~20 s with advancing
+    stages and progress, then succeeds, so the redemption page shows its progress screen."""
+    import time as _time
+    from types import SimpleNamespace
+
+    from app.devtools import mock_zovocard as mz
+
+    rig.mock.catalog_full = True
+    t0 = _time.monotonic()
+    clock = {"now": t0}
+    # only the simulator's clock moves (asyncio and the proxy keep the real one)
+    monkeypatch.setattr(
+        mz, "time", SimpleNamespace(monotonic=lambda: clock["now"], time=_time.time)
+    )
+    _code, (_r1, _r2, r3, r4), tok, _pf = await rig.walk()
+    d3, d4 = r3.json()["data"], r4.json()["data"]
+    assert d3["status"] == "processing" and d3["terminal"] is False
+    assert d4["status"] == "processing" and d4["progress"]["outcome"] == "active"
+    first = d4["progress"]["percent"]
+    clock["now"] = t0 + 13
+    d5 = (await rig.client.post("/redeem/result", json={"redemption_token": tok})).json()["data"]
+    assert d5["status"] == "processing" and d5["progress"]["percent"] > first
+    clock["now"] = t0 + 25
+    d6 = (await rig.client.post("/redeem/result", json={"redemption_token": tok})).json()["data"]
+    assert d6["status"] == "succeeded" and d6["progress"]["outcome"] == "completed"

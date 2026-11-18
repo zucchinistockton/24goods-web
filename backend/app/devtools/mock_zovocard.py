@@ -1091,6 +1091,24 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
             and "invalid" not in cred["session"]
         )
 
+    REDEEM_STAGES = (  # showcase timeline (seconds since the redeem call) -> vendor stage
+        (6.0, "awaiting_card_funding"),
+        (12.0, "dispatch_running"),
+        (18.0, "payment_submitted"),
+    )
+
+    def _redeem_view(order: dict[str, Any]) -> dict[str, Any]:
+        view = {k: v for k, v in order.items() if k != "started"}
+        started = order.get("started")
+        if started is None:
+            view.setdefault("stage", "completed")
+            return view
+        age = time.monotonic() - started
+        for until, stage in REDEEM_STAGES:
+            if age < until:
+                return {**view, "status": "processing", "stage": stage}
+        return {**view, "status": "succeeded", "stage": "completed"}
+
     async def cdk_step(request: Request) -> JSONResponse:
         step = request.path_params["step"]
         if step == "result":
@@ -1108,8 +1126,10 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
                 _env(
                     0,
                     {
-                        "order": {**order, "stage": "completed", "cdk_status": "unused"},
-                        "events": [{"type": "order.succeeded", "created_at": order["created_at"]}],
+                        "order": {**_redeem_view(order), "cdk_status": "unused"},
+                        "events": [{"type": "order.succeeded", "created_at": order["created_at"]}]
+                        if _redeem_view(order)["status"] == "succeeded"
+                        else [],
                     },
                 )
             )
@@ -1195,13 +1215,17 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
                 return _rerr(400, "CDK_UNAVAILABLE", "code unavailable")
             order = {
                 "order_id": f"SBXORD-{secrets.token_hex(6).upper()}",
-                "status": "succeeded",
+                # showcase mode: the redemption takes ~20 s and moves through its stages, so the
+                # demo shows the progress screen (tests keep the instant "succeeded")
+                "status": "processing" if mock.catalog_full else "succeeded",
                 "sandbox_mock": True,
                 "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             }
+            if mock.catalog_full:
+                order["started"] = time.monotonic()
             sess["order"] = order
             mock.redeem_orders[rid] = {"fp": fingerprint, "order": order}
-            return JSONResponse(_env(0, {"order": order}))
+            return JSONResponse(_env(0, {"order": _redeem_view(order)}))
         return _rerr(404, "not_found", "unknown step")
 
     async def force(request: Request) -> JSONResponse:
