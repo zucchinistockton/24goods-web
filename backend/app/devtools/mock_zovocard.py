@@ -326,6 +326,7 @@ class MockZovo:
     usage_remaining: dict[int, int] = field(default_factory=dict)  # funding card -> remaining uses
     list_cap: int = 100  # rows per page the order list really returns (paging tests)
     direct_current_plan: str = "free"  # what the preflight reports as the account's plan
+    reject_sessions: bool = False  # every session is refused (it stopped working after checkout)
     direct_quote_error: str = ""  # a non-empty quote_error on the preflight
     direct_half_eligible: bool = True  # False: the preflight quotes no ``*_half`` plan
     direct_cancelled: int = 0
@@ -565,7 +566,36 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
             and isinstance(cred.get("session"), str)
             and 8 <= len(cred["session"])
             and "invalid" not in cred["session"].lower()
+            and not mock.reject_sessions
         )
+
+    def _session_account(session: str) -> dict[str, Any]:
+        """Showcase mode (``catalog_full``): the account state comes from the pasted session, so
+        the demo can show every pre-check outcome. ``account.planType`` is the current plan; an
+        e-mail tag ``+active`` / ``+blocked`` / ``+wait`` / ``+recover`` sets the vendor field."""
+        try:
+            data = json.loads(session[session.find("{") :])
+        except ValueError:
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        acc, user = data.get("account"), data.get("user")
+        plan = acc.get("planType") if isinstance(acc, dict) else None
+        email = str(user.get("email") or "") if isinstance(user, dict) else ""
+        over: dict[str, Any] = {}
+        if "+active@" in email:
+            over["subscription_has_active"] = True
+        if "+blocked@" in email:
+            over["blocking_reason"] = "risk_control"
+        if "+wait@" in email:
+            over["can_purchase_at"] = (datetime.now(timezone.utc) + timedelta(days=3)).isoformat()
+        if "+recover@" in email:
+            over["subscription_recovery_required"] = True
+        return {
+            "plan": plan.lower() if isinstance(plan, str) else None,
+            "email": email if "@" in email else None,
+            "over": over,
+        }
 
     def _preflight(body: dict[str, Any]) -> JSONResponse:
         cred = body.get("credential")
@@ -574,6 +604,7 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
                 {"code": 400, "error_code": "GPT_SESSION_INVALID", "msg": "bad session"}, 400
             )
         mock.preflights += 1
+        account = _session_account(cred["session"]) if mock.catalog_full else {}
         token = "pf-" + secrets.token_hex(12)
         expires = time.monotonic() + DIRECT_TOKEN_TTL_S
         if mock.direct_expire_next > 0:
@@ -598,8 +629,8 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
             _env(
                 0,
                 {
-                    "email": MOCK_EMAIL,
-                    "currentPlan": mock.direct_current_plan,
+                    "email": account.get("email") or MOCK_EMAIL,
+                    "currentPlan": account.get("plan") or mock.direct_current_plan,
                     "credentialMode": "session",
                     "preflight_token": token,
                     "preflight_expires_at": (
@@ -613,6 +644,7 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
                     "subscription_has_active": False,
                     "subscription_recovery_required": False,
                     **mock.preflight_over,
+                    **account.get("over", {}),
                     "quote_error": mock.direct_quote_error,
                 },
             )

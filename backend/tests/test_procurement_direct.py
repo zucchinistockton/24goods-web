@@ -106,9 +106,17 @@ class DUp(Up):
             await db.commit()
         return sid, oid
 
+    def forget_checkout_preflight(self) -> None:
+        """Every direct order runs ONE vendor preflight at checkout (the account pre-check,
+        review-v12 §24, tested in ``test_direct_preflight.py``); the engine tests count the
+        preflights of the EXECUTION, so the checkout one is taken off the mock's counter."""
+        for v in getattr(self, "vendors", []):
+            v.preflights = 0
+
     async def paid_direct(self, session: str, *, product=None):
         buyer, _user = await self.env.login("buyer")
         order = await buy(buyer, product or self.product, 1, session=session)
+        self.forget_checkout_preflight()
         await pay_order(self.env, buyer, order)
         assert await self.env.drain() >= 1  # delivery: order.paid -> procure.requested
         return buyer, order
@@ -303,9 +311,10 @@ async def test_stale_preflight_token_is_refreshed_under_the_same_key(env, dup):
 
 async def test_plan_already_active_is_stopped_before_any_order(env, dup):
     vendor = _vendor()
-    vendor.direct_current_plan = "pro"  # the account already is on the plan being sold
     await _zovo(dup, vendor, CLAUDE)
     _buyer, order = await dup.paid_direct(claude_session(new_marker()))
+    # the account took the plan AFTER the checkout pre-check passed (the execution re-reads it)
+    vendor.direct_current_plan = "pro"
     await dup.run()
     job = await _job(dup, order)
     assert job.state == "needs_manual" and job.error_code == "plan_already_active"
@@ -398,7 +407,8 @@ async def test_a_declined_order_holds_the_order_and_is_never_recreated(env, dup)
 async def test_session_the_vendor_rejects_is_fatal_without_an_order(env, dup):
     vendor = _vendor()
     await _zovo(dup, vendor, CLAUDE)
-    _buyer, order = await dup.paid_direct(claude_session("INVALID" + new_marker()))
+    _buyer, order = await dup.paid_direct(claude_session(new_marker()))
+    vendor.reject_sessions = True  # the session stopped working after the checkout pre-check
     await dup.run()
     job = await _job(dup, order)
     assert job.state == "needs_manual" and job.error_code == "GPT_SESSION_INVALID"

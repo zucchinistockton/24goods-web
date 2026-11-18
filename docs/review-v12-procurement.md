@@ -1672,3 +1672,48 @@ agent, admin, other tenant); tenant isolation (RLS and lookup by another tenant'
 resolution; stats from rows; lookup (ours, not ours, unknown, by order, unreachable procurement); disable / enable (confirmation, audit
 before / after, no code in rows, logs or audit, vendor refusal); the production-write guard in both directions; internal routes need the
 token; settings (admin only, validation, merge, audit, reaches the proxy); column grants of `tenants`. Vitest: `test/redeem-admin.test.ts`.
+
+## 24. Account pre-check before payment for every direct order (owner decision 2026-11-18)
+
+**Why.** The owner's test (2026-11-18) showed that a direct order could be paid and only then fail
+on the account: a signed-out session, an account that already holds the plan, or a vendor block.
+The half-price check (§20) read the account before payment for half-price plans only.
+
+**What.** `POST /orders` (and the session resupply of a paid order) for an `upstream_direct`
+product runs the vendor's preflight BEFORE the order exists:
+
+1. The API validates the session as before (`direct.prepare`), seals it with the procurement PUBLIC
+   key under the AAD `preflight:<random nonce>` (a namespace no order id or half-price check id can
+   take) and posts the blob to `POST /internal/direct-preflight` (internal token, 200 KB body cap,
+   300 checks per tenant per 10 minutes). Nothing is stored.
+2. Procurement opens it in memory, re-validates it, picks the target's primary enabled direct source
+   on an enabled ZovoCard supplier (never a sandbox supplier in production, S-L1) and calls
+   `ZovoCardSupplier.account_check`: the same `POST /gpt-direct/preflight` the execution uses
+   (read-only upstream, obeys the production-write gate). Outcome: `passed`, `blocked` with
+   `session_invalid` (vendor `*_SESSION_INVALID` / `SESSION_REQUIRED`, or local validation),
+   `plan_active` (`currentPlan` equals the plan or its full-price base, or
+   `subscription_has_active`), `purchase_not_yet` (`can_purchase_at` in the future),
+   `account_blocked` (`blocking_reason`, `subscription_recovery_required`, or any unknown block),
+   else `unavailable` (timeout, vendor error, `quote_error`, no source, no key). Only the outcome,
+   the masked account and the vendor's plan name return; the session and the vendor's free text do
+   not.
+3. The API creates the order only on `passed` (`DirectSeal.preflight == "passed"`, which
+   `create_order` requires). A refusal is audited (`order.direct_preflight_refused`, reason keys
+   only) and answered with `preflight_<reason>` (422) or `preflight_unavailable` (503, fail closed).
+
+**Not changed.** Half-price eligibility is still judged by the half-price check with the owner's
+method (a `manual` method is not overridden by the vendor's quotes here). The execution keeps every
+gate of its own (`plan_already_active`, `_account_problem`, `quote_error`, the half-price second
+line, the account binding), because the account can change between checkout and payment.
+
+**Abuse bounds.** The buyer learns the state of the very account whose session they just pasted
+(its `planType` is in that session already); 12 checks per buyer per 10 minutes plus the order
+creation throttle bound its use as an oracle; every check is one vendor read.
+
+**Demo.** The simulator in showcase mode (`APP_MOCKZOVO_CATALOG=full`) takes the account's current
+plan from the pasted session's `account.planType`, and an e-mail tag `+active`, `+blocked`, `+wait`
+or `+recover` sets the matching vendor field, so every outcome can be shown on the demo.
+
+**Tests.** `tests/test_direct_preflight.py` (pass, each refusal, vendor and procurement down,
+rate limit, resupply, AAD namespace, no session in logs or audit) and the E2E smoke (a session the
+supplier rejects is refused at checkout).

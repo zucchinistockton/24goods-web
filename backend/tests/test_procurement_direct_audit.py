@@ -469,9 +469,9 @@ async def test_direct_refund_after_success_needs_an_explicit_acknowledgement(env
 
 async def test_resupply_must_be_the_same_account(env, dup):
     vendor = _vendor()
-    vendor.direct_current_plan = "plus"  # plan_already_active: a held job with a recorded mask
     await _zovo(dup, vendor, GPT)
     buyer, order = await dup.paid_direct(gpt_session(new_marker()))
+    vendor.direct_current_plan = "plus"  # plan_already_active: a held job with a recorded mask
     await dup.run()
     await env.drain()
     job = await _job(dup, order)

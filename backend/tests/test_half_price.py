@@ -77,7 +77,9 @@ async def _order(client, hp: DUp, session: str, check_id: str | None, confirm: b
     if check_id:
         body["half_check_id"] = check_id
         body["half_check_confirm"] = confirm
-    return await client.post(f"{API}/orders", json=body)
+    r = await client.post(f"{API}/orders", json=body)
+    hp.forget_checkout_preflight()  # the account pre-check at checkout is not counted here
+    return r
 
 
 async def _status(env, check_id: str) -> tuple[str, str | None, bool]:

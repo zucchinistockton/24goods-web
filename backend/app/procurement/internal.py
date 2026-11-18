@@ -8,6 +8,8 @@ calls it for the admin "Test connection" button, so the API never holds supplier
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hmac
 import json
 import logging
@@ -21,12 +23,13 @@ from starlette.routing import Route
 
 from app.core.errors import error_body
 from app.core.ratelimit import hit
-from app.procurement import cardpool, engine, halfcheck, redeem_admin, service
+from app.procurement import cardpool, engine, halfcheck, preflight, redeem_admin, service
 from app.procurement.context import ProcurementContext
 
 log = logging.getLogger("app.procurement.internal")
 
 MAX_BODY = 4096
+MAX_PREFLIGHT_BODY = 200_000  # a sealed session (<= 64 KiB plaintext) in base64 + ids
 NO_STORE = {"Cache-Control": "no-store"}
 
 
@@ -144,6 +147,33 @@ def create_procurement_app(ctx: ProcurementContext) -> Starlette:
         except LookupError:
             return _err(404, "not_found", "Check not found")
         return JSONResponse({"status": out.status, "reason": out.reason}, headers=NO_STORE)
+
+    async def direct_preflight(request: Request) -> JSONResponse:
+        """``POST /internal/direct-preflight {"tenant_id", "product_id", "variant_id", "nonce",
+        "blob"}``: the account pre-check before payment (review-v12 §24). ``blob`` is the sealed
+        session (base64, AAD ``preflight:<nonce>``), opened here in memory and never stored."""
+        if not _token_ok(request):
+            return _err(401, "unauthorized", "Bad internal token")
+        body = await request.body()
+        if len(body) > MAX_PREFLIGHT_BODY:
+            return _err(422, "validation", "body too large")
+        try:
+            data = json.loads(body)
+            tenant_id = uuid.UUID(str(data["tenant_id"]))
+            product_id = uuid.UUID(str(data["product_id"]))
+            variant_id = uuid.UUID(str(data["variant_id"])) if data.get("variant_id") else None
+            nonce = uuid.UUID(str(data["nonce"]))
+            blob = base64.b64decode(str(data["blob"]), validate=True)
+        except (ValueError, KeyError, TypeError, binascii.Error):
+            return _err(422, "validation", "tenant_id, product_id, nonce and blob are required")
+        finally:
+            body = b""
+        allowed, reset = await hit(ctx.redis, "proc:preflight", str(tenant_id), 300, 600)
+        if not allowed:
+            return _err(429, "rate_limited", "Too many checks", {"Retry-After": str(reset)})
+        out = await preflight.run(ctx, tenant_id, product_id, variant_id, nonce, blob)
+        blob = b""
+        return JSONResponse(out.view(), headers=NO_STORE)
 
     async def direct_order(request: Request) -> JSONResponse:
         """Read-only state of a direct job's supplier order (the console's hand-fulfil guard)."""
@@ -332,6 +362,7 @@ def create_procurement_app(ctx: ProcurementContext) -> Starlette:
             Route("/internal/direct-order", direct_order, methods=["POST"]),
             Route("/internal/regions", regions, methods=["POST"]),
             Route("/internal/half-check", half_check, methods=["POST"]),
+            Route("/internal/direct-preflight", direct_preflight, methods=["POST"]),
             Route("/healthz", healthz),
             Route("/internal/probe", probe, methods=["POST"]),
             Route("/internal/check-offer", check_offer, methods=["POST"]),

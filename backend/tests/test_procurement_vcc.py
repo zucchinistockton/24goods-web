@@ -48,6 +48,7 @@ async def _zovo(up: Up, vendor: MockZovo, params: dict, code: str = "zovocard", 
         ),
     )
     up.vendor_http = http
+    up.vendors = [*getattr(up, "vendors", []), vendor]  # see DUp.paid_direct
     return await up.supplier(
         supplier, code=code, adapter="zovocard", params=params, priority=priority
     )

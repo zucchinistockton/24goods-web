@@ -11,12 +11,14 @@ Nothing in this module logs, audits or returns the session; ``DirectSeal`` hides
 
 from __future__ import annotations
 
+import base64
 import logging
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import httpx
 from sqlalchemy import func, insert, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import audit
 from app.core.credvault import CredentialSealer
 from app.core.errors import Conflict, InvalidState, NotFound, Unavailable, Validation
+from app.core.ratelimit import enforce
 from app.models import HalfPriceCheck, Order, ProcurementCredential, ProcurementJob, SupplierOffer
 from app.modules.catalog import upstream
 from app.modules.common.modes import MAX_DIRECT_QTY
@@ -40,6 +43,8 @@ class DirectSeal:
     product: str
     email_masked: str | None
     text: str = field(repr=False)
+    # the account pre-check before payment (review-v12 §24): ``passed`` or not yet run
+    preflight: str | None = None
 
 
 STALL_MARGIN = timedelta(minutes=30)  # past the 6 h ceiling before checkout is paused
@@ -93,6 +98,95 @@ async def prepare(
     except CredentialError as exc:
         raise Validation("The account session cannot be used", code=f"session_{exc.code}") from None
     return DirectSeal(vendor_product, checked.email_masked, checked.canonical)
+
+
+PREFLIGHT_LIMIT = (12, 600)  # account pre-checks per buyer per 10 minutes (each is a vendor read)
+# what a buyer is told: a reason KEY only (the vendor's text and the rest of the account state stay
+# in procurement). The buyer pasted this account's session a moment ago, so its own plan state is
+# no secret to them; the per-buyer budget bounds its use as an oracle on other sessions.
+PREFLIGHT_BLOCKS = frozenset(
+    {"session_invalid", "plan_active", "purchase_not_yet", "account_blocked"}
+)
+
+
+async def preflight(
+    db: AsyncSession,
+    sealer: CredentialSealer,
+    procurement: httpx.AsyncClient | None,
+    token: str,
+    redis: Any,
+    *,
+    user_id: uuid.UUID,
+    user_role: str,
+    tenant_id: uuid.UUID,
+    product_id: uuid.UUID,
+    variant_id: uuid.UUID | None,
+    seal: DirectSeal,
+    ip: str | None,
+    order_id: uuid.UUID | None = None,
+) -> DirectSeal:
+    """The account pre-check BEFORE payment (review-v12 §24), for every direct order: the vendor's
+    preflight, read by procurement with the session sealed for this one call (AAD
+    ``preflight:<nonce>``; nothing is stored). Returns the seal marked ``passed``; otherwise raises
+    ``preflight_<reason>`` (422: ``session_invalid`` / ``plan_active`` / ``purchase_not_yet`` /
+    ``account_blocked``) or ``preflight_unavailable`` (503: procurement or the vendor could not
+    answer; fail closed, the buyer tries again). A refusal is audited (reason only)."""
+    if redis is not None:
+        await enforce(redis, "order:preflight", str(user_id), *PREFLIGHT_LIMIT)
+    nonce = uuid.uuid4()
+    blob = sealer.seal(seal.text, tenant_id=str(tenant_id), order_id=f"preflight:{nonce}")
+    out: dict[str, Any] | None = None
+    if procurement is not None and len(token) >= 32:
+        try:
+            resp = await procurement.post(
+                "/internal/direct-preflight",
+                json={
+                    "tenant_id": str(tenant_id),
+                    "product_id": str(product_id),
+                    "variant_id": str(variant_id) if variant_id else None,
+                    "nonce": str(nonce),
+                    "blob": base64.b64encode(blob).decode(),
+                },
+                headers={"X-Internal-Token": token},
+                timeout=40.0,
+            )
+            if resp.status_code == 200 and isinstance(resp.json(), dict):
+                out = resp.json()
+        except (httpx.HTTPError, ValueError):
+            out = None
+    del blob
+    status = str((out or {}).get("status") or "unavailable")
+    reason = str((out or {}).get("reason") or "")
+    if status == "passed":
+        return replace(seal, preflight="passed")
+    if status == "blocked":
+        reason = reason if reason in PREFLIGHT_BLOCKS else "account_blocked"
+    else:
+        reason = "unavailable"
+    await audit(
+        db,
+        tenant_id=tenant_id,
+        action="order.direct_preflight_refused",
+        actor_id=user_id,
+        actor_role=user_role,
+        target=f"order:{order_id}" if order_id else f"product:{product_id}",
+        detail={
+            "reason": reason,
+            "vendor_reason": str((out or {}).get("reason") or "")[:48] or None,
+            "variant_id": str(variant_id) if variant_id else None,
+        },  # never the session
+        ip=ip,
+    )
+    await db.commit()
+    plan = (out or {}).get("current_plan")
+    extra = {"current_plan": str(plan)[:40]} if status == "blocked" and plan else None
+    if reason == "unavailable":
+        raise Unavailable(
+            "The account check is not available right now", code="preflight_unavailable"
+        )
+    raise Validation(
+        "This account cannot take the plan now", code=f"preflight_{reason}", extra=extra
+    )
 
 
 async def store(db: AsyncSession, sealer: CredentialSealer, order: Order, seal: DirectSeal) -> None:
@@ -244,6 +338,9 @@ async def resupply(
     *,
     actor_id: uuid.UUID,
     ip: str | None,
+    procurement: httpx.AsyncClient | None = None,
+    token: str = "",
+    redis: Any = None,
 ) -> None:
     """The buyer replaces a session that expired or was rejected (the stored one is gone: the
     sweeper deletes it at a terminal state or after its maximum age). Only for the buyer's own
@@ -286,9 +383,25 @@ async def resupply(
             "This session belongs to another account than the first one",
             code="session_other_account",
         )
-    await store(
-        db, sealer, order, DirectSeal(vendor_product, checked.email_masked, checked.canonical)
-    )
+    seal = DirectSeal(vendor_product, checked.email_masked, checked.canonical)
+    if order.product_id is not None:
+        # the new session gets the same account pre-check as at checkout (review-v12 §24)
+        await preflight(
+            db,
+            sealer,
+            procurement,
+            token,
+            redis,
+            user_id=actor_id,
+            user_role="buyer",
+            tenant_id=order.tenant_id,
+            product_id=order.product_id,
+            variant_id=order.variant_id,
+            seal=seal,
+            ip=ip,
+            order_id=order.id,
+        )
+    await store(db, sealer, order, seal)
     await audit(
         db,
         tenant_id=order.tenant_id,
