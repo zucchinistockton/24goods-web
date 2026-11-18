@@ -1209,8 +1209,8 @@ async def test_n3_precheck_reads_a_fresh_catalog_not_the_cache(monkeypatch):
     assert (await s.availability(offer)).available  # fills the 60 s cache
     real = mock_zovocard.plans_fixture
 
-    def paused(product, scenarios=False):
-        data = real(product, scenarios)
+    def paused(product, scenarios=False, full=False):
+        data = real(product, scenarios, full)
         for row in data["registry"]:
             if row["key"] == "plus":
                 row["purchasable"] = False
