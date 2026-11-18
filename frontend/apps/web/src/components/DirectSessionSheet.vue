@@ -4,25 +4,55 @@
  * plan to the buyer's own account, which needs this text once. It is handed to the parent in
  * memory, sent with the order, sealed by the server and deleted when the order ends. Nothing is
  * stored in the browser.
+ *
+ * A paste is taken out of the text box at once and replaced by a short confirmation (account,
+ * plan, validity). The long token text is never rendered: some browser extensions freeze the page
+ * while scanning kilobytes of text in a text box, and the token stays off the screen.
  */
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { DirectProduct } from '@24goods/shared'
 import { api } from '../api'
+import { summariseSession, type SessionSummary } from '../lib/sessionSummary'
 
 /** `check`: the session is read only to check half-price eligibility (not applied to an order) */
 const props = defineProps<{ show: boolean; productId: string | null; known?: DirectProduct | null; purpose?: 'order' | 'check' }>()
 const emit = defineEmits<{ 'update:show': [v: boolean]; confirm: [session: string] }>()
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const text = ref('')
 const kind = ref<DirectProduct | null>(null)
 const SESSION_URL = 'https://chatgpt.com/api/auth/session'
-const ready = computed(() => text.value.trim().length >= 8)
+/** longer input (a paste the paste event missed, a drop) is taken out of the box as well */
+const TAKE_AT = 200
+let held = '' // the pasted session: plain variable, never reactive, never rendered
+const summary = ref<SessionSummary | null>(null)
+const ready = computed(() => (summary.value ? !summary.value.problem : text.value.trim().length >= 8))
 
+function forget() {
+  held = ''
+  summary.value = null
+  text.value = ''
+}
+function take(raw: string) {
+  const v = raw.trim()
+  text.value = ''
+  if (!v) return
+  held = v
+  summary.value = summariseSession(v, kind.value)
+}
+function onPaste(e: ClipboardEvent) {
+  const v = e.clipboardData?.getData('text/plain') ?? ''
+  if (!v) return // nothing readable: let the browser paste, the input watch takes it
+  e.preventDefault()
+  take(v)
+}
+watch(text, (v) => {
+  if (v.length > TAKE_AT) take(v)
+})
 watch(
   () => props.show,
   async (v) => {
-    text.value = '' // every opening starts empty; closing forgets what was pasted
+    forget() // every opening starts empty; closing forgets what was pasted
     if (!v) return
     kind.value = props.known ?? null
     if (kind.value || !props.productId) return
@@ -35,10 +65,12 @@ watch(
 )
 function confirm() {
   if (!ready.value) return
-  const v = text.value.trim()
-  text.value = ''
+  const v = summary.value ? held : text.value.trim()
+  forget()
   emit('confirm', v)
 }
+const size = (bytes: number) => (bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`)
+const when = (ms: number) => new Intl.DateTimeFormat(locale.value, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(ms))
 </script>
 
 <template>
@@ -56,12 +88,35 @@ function confirm() {
         <li>{{ t('direct.how3') }}</li>
       </ol>
       <label class="label" for="direct-session">{{ t('direct.label') }}</label>
+      <div v-if="summary" class="held" :class="{ bad: summary.problem }" role="status" data-testid="session-summary">
+        <template v-if="!summary.problem">
+          <p class="held-title">{{ t('direct.received', { size: size(summary.bytes) }) }}</p>
+          <dl class="held-facts">
+            <div v-if="summary.account">
+              <dt>{{ t('direct.account') }}</dt>
+              <dd>{{ summary.account }}</dd>
+            </div>
+            <div v-if="summary.plan">
+              <dt>{{ t('direct.currentPlan') }}</dt>
+              <dd>{{ summary.plan }}</dd>
+            </div>
+            <div v-if="summary.validUntil">
+              <dt>{{ t('direct.validUntil') }}</dt>
+              <dd>{{ when(summary.validUntil) }}</dd>
+            </div>
+          </dl>
+        </template>
+        <p v-else class="held-title">{{ t(`direct.problem.${summary.problem}`) }}</p>
+        <van-button plain round size="small" native-type="button" class="again" @click="forget">{{ t('direct.pasteAgain') }}</van-button>
+      </div>
       <textarea
+        v-else
         id="direct-session"
         v-model="text"
         class="area"
         rows="5"
         maxlength="65536"
+        :placeholder="t('direct.placeholder')"
         autocomplete="off"
         autocapitalize="none"
         autocorrect="off"
@@ -74,6 +129,7 @@ function confirm() {
         data-1p-ignore="true"
         data-bwignore="true"
         data-form-type="other"
+        @paste="onPaste"
       />
       <p class="note">{{ purpose === 'check' ? t('halfcheck.sessionNote') : t('direct.note') }}</p>
       <van-button block round type="primary" size="large" native-type="submit" :disabled="!ready">{{ t('direct.continue') }}</van-button>
@@ -128,6 +184,44 @@ function confirm() {
   font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   word-break: break-all;
   resize: vertical;
+}
+.held {
+  padding: 12px;
+  border: 1px solid var(--c-fill-strong);
+  border-radius: 10px;
+  background: var(--c-fill);
+}
+.held.bad {
+  border-color: var(--c-danger);
+}
+.held-title {
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+.held-facts {
+  margin: 0 0 10px;
+  font-size: 13px;
+}
+.held-facts > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 0;
+}
+.held-facts dt {
+  color: var(--c-text-2);
+}
+.held-facts dd {
+  margin: 0;
+  font-weight: 600;
+  text-align: end;
+  word-break: break-all;
+}
+.again {
+  min-height: 44px;
+  padding: 0 16px;
 }
 .note {
   margin: 12px 0 16px;

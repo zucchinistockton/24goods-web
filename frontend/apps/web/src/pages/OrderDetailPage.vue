@@ -127,7 +127,9 @@ const hint = computed(() => {
     case 'paid':
       return o.delivery_mode === 'manual' ? t('order.waitingDelivery') : t('order.waitingAuto')
     case 'manual_review':
-      return t('order.reviewHint')
+      // a direct top-up in review is about applying the plan, not the payment: point at the
+      // progress panel, which says why and whether the buyer has to do anything
+      return o.delivery_mode === 'upstream_direct' ? t('order.reviewHintDirect') : t('order.reviewHint')
     case 'cancelled':
       return t('order.cancelledHint')
     case 'expired':

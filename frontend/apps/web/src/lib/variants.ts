@@ -1,4 +1,5 @@
 import type { ProductSummary, ProductVariant } from '@24goods/shared'
+import { defaultOptionVariant, usesOptions } from './variantOptions'
 
 /** v11 W1: a product with active variants is bought through one of them. */
 export function hasVariants(p: Pick<ProductSummary, 'variants'> | null | undefined): boolean {
@@ -12,6 +13,7 @@ function soldOutVariant(v: ProductVariant): boolean {
 /** The variant to preselect: the first one in stock, else the first. */
 export function defaultVariantId(variants: readonly ProductVariant[] | undefined): string | null {
   if (!variants?.length) return null
+  if (usesOptions(variants)) return defaultOptionVariant(variants)?.id ?? variants[0]!.id
   return (variants.find((v) => !soldOutVariant(v)) ?? variants[0])!.id
 }
 

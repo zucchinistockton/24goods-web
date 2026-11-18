@@ -3,7 +3,7 @@
  * What the buyer may see of a direct order: the masked account, the plan and where it stands.
  * When the first session expired or was refused, the buyer can supply a fresh one here.
  */
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { DirectOrderInfo } from '@24goods/shared'
 import { api } from '../api'
@@ -55,6 +55,8 @@ async function resupply(session: string) {
     sending.value = false
   }
 }
+/** the server says the order is waiting for a fresh session (coarse reason key `account`) */
+const needsSession = computed(() => info.value?.progress?.reason === 'account')
 const stateText = (s: string | null) => (s && te(`direct.state.${s}`) ? t(`direct.state.${s}`) : t('direct.state.working'))
 </script>
 
@@ -77,8 +79,8 @@ const stateText = (s: string | null) => (s && te(`direct.state.${s}`) ? t(`direc
       </div>
     </dl>
     <template v-if="canResupply && info.state === 'needs_manual'">
-      <p class="hint">{{ t('direct.resupplyHint') }}</p>
-      <van-button plain round block :loading="sending" @click="asking = true">{{ t('direct.resupply') }}</van-button>
+      <p v-if="!needsSession" class="hint">{{ t('direct.resupplyHint') }}</p>
+      <van-button :plain="!needsSession" type="primary" round block :loading="sending" @click="asking = true">{{ t('direct.resupply') }}</van-button>
     </template>
     <DirectSessionSheet v-model:show="asking" :product-id="productId" @confirm="resupply" />
   </div>

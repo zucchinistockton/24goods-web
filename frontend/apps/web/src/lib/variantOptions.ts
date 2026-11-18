@@ -25,8 +25,23 @@ export function plansOf(variants: readonly ProductVariant[]): { plan: string; so
   return [...out].map(([plan, soldOut]) => ({ plan, soldOut }))
 }
 
+/** The regions a plan is sold in, cheapest first (ties keep the staff's order). Owner rule: the
+ * low-price regions lead, the full-price ones (usually the US) come last. */
 export function regionsOf(variants: readonly ProductVariant[], plan: string): ProductVariant[] {
-  return variants.filter((v) => v.options?.plan === plan)
+  return variants
+    .map((v, i) => ({ v, i, price: Number(v.price) }))
+    .filter((r) => r.v.options?.plan === plan)
+    .sort((a, b) => (Number.isFinite(a.price) && Number.isFinite(b.price) && a.price !== b.price ? a.price - b.price : a.i - b.i))
+    .map((r) => r.v)
+}
+
+/** Plan x region products preselect the first plan's cheapest region that is in stock. */
+export function defaultOptionVariant(variants: readonly ProductVariant[]): ProductVariant | null {
+  const plans = plansOf(variants)
+  const plan = plans.find((p) => !p.soldOut) ?? plans[0]
+  if (!plan) return null
+  const rows = regionsOf(variants, plan.plan)
+  return rows.find((v) => !soldOutVariant(v)) ?? rows[0] ?? null
 }
 
 /** `plus_half` -> "Plus Half" unless the locale has `plan.<key>` (looked up by the caller). */

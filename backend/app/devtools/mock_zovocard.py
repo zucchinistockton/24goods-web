@@ -1202,6 +1202,11 @@ async def _main() -> None:
         result_404=os.environ.get("APP_MOCKZOVO_RESULT_404", "") == "1",
         direct_polls=2 if scenarios else 3,  # the E2E smoke waits for the order: keep it short
     )
+    # a long-running demo restarts this process: vendor ids must never repeat across restarts
+    # (a real vendor never reuses an order id; a repeated one would collide with a delivered
+    # order and park the new one in manual review). Tests keep the small fixed defaults.
+    base = int(time.time())
+    state.next_direct, state.next_card, state.next_cdk = base, base, base
     server = uvicorn.Server(
         uvicorn.Config(
             create_mock_zovocard(state),
