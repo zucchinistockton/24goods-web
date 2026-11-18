@@ -10,7 +10,6 @@ import {
   goBack,
   isApiError,
   moneyParts,
-  safeLinkUrl,
   type Product,
   type ProductSummary,
   isInstantMode,
@@ -99,7 +98,6 @@ const isAuto = computed(() => isInstantMode(product.value?.delivery_mode))
 const soldOut = computed(() => (product.value ? isSoldOut(product.value) : false))
 const as = computed(() => afterSalesLabel(product.value?.after_sales_hours, product.value?.after_sales_months))
 const labels = computed(() => formatLabels(product.value?.delivery_format, product.value?.delivery_separator))
-const redeem = computed(() => safeLinkUrl(product.value?.redeem_url))
 
 /** CS entry: /chat creates an instant account when needed (no login redirect). */
 function chat() {
@@ -237,9 +235,9 @@ function back() {
         <SafeHtml v-if="product.description_html" class="desc-html" :html="product.description_html" @click="previewDesc" />
         <p v-else class="desc-text">{{ product.description || t('product.noDescription') }}</p>
       </section>
-      <section v-if="redeem || product.usage_html" class="section card desc">
+      <!-- the redemption page is shown with the delivered code, not before purchase (owner rule 2026-11-18) -->
+      <section v-if="product.usage_html" class="section card desc">
         <h2>{{ t('delivery.howToUse') }}</h2>
-        <a v-if="redeem" :href="redeem" target="_blank" rel="noopener noreferrer" class="redeem">{{ t('delivery.redeem') }} ↗</a>
         <SafeHtml v-if="product.usage_html" class="usage" :html="product.usage_html" />
       </section>
       <MiniStrip :title="t('product.related')" :items="related" />

@@ -358,5 +358,15 @@
   window.addEventListener('pagehide', function () { $('code').value = ''; $('session').value = '' })
   paint()
   show(0)
+  // the shop's "Redeem now" button passes the code in the URL FRAGMENT (#code=...): it never reaches
+  // a server or a log. Fill it in, then drop it from the address bar and the history entry at once.
+  ;(function prefill() {
+    var m = /(?:^|[#&])code=([^&]*)/.exec(location.hash || '')
+    if (!m) return
+    try { history.replaceState(null, '', location.pathname + location.search) } catch (e) {}
+    var code = ''
+    try { code = decodeURIComponent(m[1]).trim().slice(0, 128) } catch (e) { return }
+    if (code) { $('code').value = code; $('code').focus() }
+  })()
   loadSite()
 })()

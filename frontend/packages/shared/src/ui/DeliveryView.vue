@@ -41,6 +41,25 @@ onBeforeUnmount(() => clearInterval(timer))
 
 const cards = computed(() => props.codes.map((c) => splitCard(c, props.info)))
 const redeemUrl = computed(() => safeLinkUrl(props.info?.redeem_url))
+/** One code: the redemption page opens with it filled in. It travels in the URL FRAGMENT, which the
+ *  browser never sends to any server (no access log, no Referer); our redemption page reads it and
+ *  removes it from the address bar at once. The button also copies the code, for any other page. */
+const singleCode = computed(() => (props.codes.length === 1 ? props.codes[0].trim() : ''))
+const redeemHref = computed(() => {
+  const u = redeemUrl.value
+  if (!u || !singleCode.value) return u ?? undefined
+  return `${u.split('#')[0]}#code=${encodeURIComponent(singleCode.value)}`
+})
+const redeemHost = computed(() => {
+  try {
+    return redeemUrl.value ? new URL(redeemUrl.value).host : ''
+  } catch {
+    return ''
+  }
+})
+function openRedeem() {
+  if (singleCode.value) void copyText(singleCode.value)
+}
 const usage = computed(() => props.info?.usage_html || '')
 const hasContent = computed(() => props.codes.length > 0 || !!props.manualText)
 const showHow = computed(() => hasContent.value && (!!redeemUrl.value || !!usage.value))
@@ -130,9 +149,10 @@ function download() {
 
     <section v-if="showHow" class="dv-block dv-how">
       <h3>{{ t('delivery.howToUse') }}</h3>
-      <a v-if="redeemUrl" class="dv-btn primary wide" :href="redeemUrl" target="_blank" rel="noopener noreferrer">{{
-        t('delivery.redeem')
+      <a v-if="redeemUrl" class="dv-btn primary wide" :href="redeemHref" target="_blank" rel="noopener noreferrer" data-testid="redeem-link" @click="openRedeem">{{
+        singleCode ? t('delivery.redeemWithCode') : t('delivery.redeem')
       }}</a>
+      <p v-if="redeemHost" class="dv-muted dv-host">{{ t('delivery.redeemAt', { host: redeemHost }) }}</p>
       <SafeHtml v-if="usage" class="dv-usage" :html="usage" />
     </section>
 
@@ -306,5 +326,10 @@ function download() {
 }
 .compact .dv-head {
   min-height: 36px;
+}
+.dv-host {
+  margin: 6px 0 0;
+  font-size: 12px;
+  text-align: center;
 }
 </style>

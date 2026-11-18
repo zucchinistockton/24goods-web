@@ -21,6 +21,8 @@ from tests.conftest import CRED_KID, CRED_PRIV
 from tests.test_procurement_direct import (
     GPT,
     _creds,
+    _drive,
+    _job,
     _vendor,
     dup,  # noqa: F401
     gpt_session,
@@ -222,3 +224,16 @@ def test_the_opener_refuses_the_pre_check_namespace_for_an_order_blob():
     assert opener.open(blob, tenant_id="t", order_id=f"preflight:{n}") == "x" * 80
     with pytest.raises(Exception):  # noqa: B017  (any vault error)
         opener.open(blob, tenant_id="t", order_id=str(n))
+
+
+async def test_showcase_simulator_delivers_an_order_for_the_pasted_account(env, dup):
+    """Demo regression (owner test 2026-11-18): in showcase mode the simulator's preflight reports
+    the pasted account, so its order must report the same account, or every order is held as
+    ``order_mismatch``."""
+    vendor = _vendor()
+    vendor.catalog_full = True
+    await _zovo(dup, vendor, GPT)
+    buyer, order = await dup.paid_direct(gpt_session(new_marker(), email="someone.real@gmail.com"))
+    await _drive(env, dup, order, buyer)
+    job = await _job(dup, order)
+    assert job.state == "fulfilled" and job.account_mask == "s***@gmail.com"

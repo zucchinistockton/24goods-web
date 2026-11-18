@@ -83,9 +83,12 @@ const when = (ms: number) => new Intl.DateTimeFormat(locale.value, { dateStyle: 
       <p class="lead">{{ purpose === 'check' ? t('halfcheck.sessionLead') : t('direct.lead') }}</p>
       <ol class="how">
         <li>{{ t('direct.how1') }}</li>
-        <li v-if="kind === 'gpt'">
+        <li v-if="kind !== 'claude' && kind !== 'grok'">
           {{ t('direct.how2gpt') }}
-          <a :href="SESSION_URL" target="_blank" rel="noopener noreferrer">chatgpt.com/api/auth/session</a>
+          <a :href="SESSION_URL" target="_blank" rel="noopener noreferrer" class="open-session" data-testid="open-session-page">
+            <span>{{ t('direct.openSessionPage') }}</span>
+            <span class="url">https://chatgpt.com/api/auth/session</span>
+          </a>
         </li>
         <li v-else>{{ t('direct.how2other') }}</li>
         <li>{{ t('direct.how3') }}</li>
@@ -241,5 +244,25 @@ const when = (ms: number) => new Intl.DateTimeFormat(locale.value, { dateStyle: 
   min-height: 44px;
   font-size: 13px;
   line-height: 1.5;
+}
+.open-session {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  min-height: 44px;
+  margin: 8px 0 4px;
+  padding: 8px 12px;
+  border: 1px solid var(--c-primary, #1677ff);
+  border-radius: 10px;
+  color: var(--c-primary, #1677ff);
+  font-weight: 600;
+  text-decoration: none;
+  word-break: break-all;
+}
+.open-session .url {
+  font-weight: 400;
+  font-size: 12px;
+  opacity: 0.85;
 }
 </style>
