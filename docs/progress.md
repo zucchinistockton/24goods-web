@@ -49,6 +49,9 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
   change. Times show seconds everywhere (buyer and console). The console's order drawer shows the supplier
   progress of a direct order live (staff stream `order_progress`), the Procurement job drawer refreshes live. The
   storefront shows "Bought in the last hour" (real deliveries, masked buyer, `GET /recent-purchases`).
+  **Audit issue #54 (2026-11-18):** all seven findings reproduced and fixed (review-v12 §25): backup fencing of
+  procurement, verified off-site pulls, the console order read after rollback, staff release of late-paid supplier
+  orders, half-price CDKs kept out of the cart, the settings link, card-list pagination.
 - **The ZovoCard sandbox is NOT available and cannot be used for the time being (2026-11-18).** The sandbox
   token and test account have expired (the authenticated API answers 401 since at least 04:38 UTC), the testing
   period has ended and the support-ticket deadline has passed, so no new sandbox can be requested now. **Rule
