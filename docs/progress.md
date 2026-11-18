@@ -27,6 +27,17 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
   Top-up (Demo)" holds one product per plan with one variant per region (half price on Plus only), for the owner to
   pick what goes to production. Renewal (`*_renew`) and Codex credit plans are not direct top-ups (the adapter
   refuses them) and are not listed.
+  **Owner test 2026-11-18 (11:46–11:55 UTC) and fixes:** order GGDZ26YVZJAN6 went to manual review with
+  `duplicate_code`: the demo simulator restarted at the 11:20 deploy and reused vendor order id 801 (already
+  delivered at 10:38); the engine correctly refused a second delivery. The simulator now seeds its vendor ids from
+  the clock at start-up. The owner's Chrome froze while pasting the session (Incognito worked: an extension in the
+  normal profile scanning the long text); the session sheet now takes a paste out of the text box at once and shows
+  a confirmation (masked account, current plan, validity, size) or a clear problem (cut off, token only, missing
+  part, expired) instead of rendering the token. Regions are listed cheapest first and the cheapest region in stock
+  is preselected (owner rule). A direct order in manual review now points the buyer to the progress panel (not
+  "checking the payment"), and the fresh-session button is primary when the server asks for a new session.
+  **Next (owner-agreed):** vendor preflight before payment for every direct order (not only half price), so a
+  logged-out session, an account that already has the plan or a vendor block stops checkout before the buyer pays.
 - **The ZovoCard sandbox is NOT available and cannot be used for the time being (2026-11-18).** The sandbox
   token and test account have expired (the authenticated API answers 401 since at least 04:38 UTC), the testing
   period has ended and the support-ticket deadline has passed, so no new sandbox can be requested now. **Rule
