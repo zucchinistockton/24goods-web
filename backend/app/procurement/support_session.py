@@ -27,36 +27,44 @@ log = logging.getLogger("app.procurement.support_session")
 SUPPORT_WINDOW = timedelta(hours=72)
 SOLVED = ("delivered", "completed")  # the order went through after all: nothing to investigate
 
-_COPY = (
+# fixed statements (bound parameters only, nothing interpolated)
+COPY_ONE = text(
     "INSERT INTO support_sessions (id, tenant_id, order_id, product, kid, blob, email_masked, "
     "reason) "
     "SELECT gen_random_uuid(), c.tenant_id, c.order_id, c.product, c.kid, c.blob, c.email_masked, "
     "left((SELECT j.error_code FROM procurement_jobs j WHERE j.order_id = c.order_id "
     "AND j.tenant_id = c.tenant_id AND j.kind = 'direct' ORDER BY j.updated_at DESC LIMIT 1), 48) "
     "FROM procurement_credentials c "
-    "WHERE c.tenant_id = :t AND c.share_with_support {extra} "
+    "WHERE c.tenant_id = :t AND c.share_with_support "
+    "AND c.order_id = :o "
     "ON CONFLICT (order_id) DO NOTHING"
 )
-_FAILING = (
+COPY_FAILING = text(
+    "INSERT INTO support_sessions (id, tenant_id, order_id, product, kid, blob, email_masked, "
+    "reason) "
+    "SELECT gen_random_uuid(), c.tenant_id, c.order_id, c.product, c.kid, c.blob, c.email_masked, "
+    "left((SELECT j.error_code FROM procurement_jobs j WHERE j.order_id = c.order_id "
+    "AND j.tenant_id = c.tenant_id AND j.kind = 'direct' ORDER BY j.updated_at DESC LIMIT 1), 48) "
+    "FROM procurement_credentials c "
+    "WHERE c.tenant_id = :t AND c.share_with_support "
     "AND (EXISTS (SELECT 1 FROM orders o WHERE o.id = c.order_id AND o.tenant_id = c.tenant_id "
     "AND o.status = 'manual_review') OR EXISTS (SELECT 1 FROM procurement_jobs j "
     "WHERE j.order_id = c.order_id AND j.tenant_id = c.tenant_id AND j.kind = 'direct' "
-    "AND j.state IN ('needs_manual', 'failed', 'voided')))"
+    "AND j.state IN ('needs_manual', 'failed', 'voided'))) "
+    "ON CONFLICT (order_id) DO NOTHING"
 )
 
 
 async def keep_for_order(db: AsyncSession, tenant_id: uuid.UUID, order_id: uuid.UUID) -> None:
     """Engine hook (tenant-pinned session of the job's transaction): the job of this order is
     going to staff. Copies the sealed session if, and only if, the buyer consented."""
-    await db.execute(
-        text(_COPY.format(extra="AND c.order_id = :o")), {"t": tenant_id, "o": order_id}
-    )
+    await db.execute(COPY_ONE, {"t": tenant_id, "o": order_id})
 
 
 async def keep_failing(db: AsyncSession, tenant_id: uuid.UUID) -> int:
     """Sweeper (tenant-pinned, BEFORE the credentials are deleted): every consented session of an
     order in review or with a failed / held direct job."""
-    res = await db.execute(text(_COPY.format(extra=_FAILING)), {"t": tenant_id})
+    res = await db.execute(COPY_FAILING, {"t": tenant_id})
     return int(res.rowcount or 0)  # type: ignore[attr-defined]
 
 
