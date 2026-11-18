@@ -275,6 +275,8 @@ export interface PricingSettings {
   chargeback_tier2_deposit: string
   expected_failure_rate: string
   target_margin: string
+  /** above 0: recommended price = cost x (1 + markup), target_margin unused (owner rule 2026-11-18) */
+  target_markup: string
   round_step_minor: number
   service_fee_direct: Record<'gpt' | 'grok' | 'claude', string>
   uses_per_card: Record<'standard' | 'pro20x', number>

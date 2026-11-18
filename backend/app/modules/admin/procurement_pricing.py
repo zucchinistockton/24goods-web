@@ -85,6 +85,7 @@ class SettingsIn(BaseModel):
     chargeback_tier2_deposit: str | None = Field(None, max_length=16)
     expected_failure_rate: str | None = Field(None, max_length=16)
     target_margin: str | None = Field(None, max_length=16)
+    target_markup: str | None = Field(None, max_length=16)
     round_step_minor: int | None = None
     service_fee_direct: dict[str, str] | None = None
     uses_per_card: dict[str, int] | None = None

@@ -1008,6 +1008,7 @@ report. Code: `app/core/costmodel.py` (pure `Decimal` formulas), `app/modules/ad
 | `chargeback_tier1_*` | 15 % over 100 tx: +0.30 per tx | informational |
 | `chargeback_tier2_*` | 30 %: 200 deposit frozen | informational |
 | `target_margin` | 0.30 (net margin on the sale price) | recommendation; per product / variant override via `PUT /target` |
+| `target_markup` | 0 (off) | owner rule 2026-11-18 ("12 % on ChatGPT", cost 100 -> 112): above 0 the recommendation is the price-independent cost (supplier price + service / top-up / failure fees) x (1 + markup), per source, so per region; `target_margin` and the channel fee are then not used (the buyer pays the channel fee on top at checkout) |
 | `round_step_minor` | 10 | recommendation is rounded **up** to a multiple of this (shop-currency minor units) |
 | `fx_bands`, `fx_max_age_days`, `fx_max_change` | CNY 3..15, 7 days, 0.2 | FX sanity (see 19.3) |
 | `fx` | none | `{CNY: {per_usd, updated_at, updated_by}}`, staff-entered; no rate service yet |

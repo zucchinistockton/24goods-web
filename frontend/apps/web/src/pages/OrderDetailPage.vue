@@ -94,6 +94,38 @@ const offs = [
     if (order.value && !TERMINAL.has(order.value.status)) void fetchOrder(true)
   }),
 ]
+// The page's first fetch can happen before the live stream is open (a full page load right after
+// paying): an automatic delivery finishing in that gap would never reach the page (owner report
+// 2026-11-18, code delivered 0.4 s after the fetch). So: one catch-up fetch when the stream opens,
+// and while an automatic order is still "paid", a quiet look every 4 s for up to 10 minutes.
+watch(
+  () => rt.state,
+  (s, old) => {
+    if (s === 'open' && old !== 'open' && order.value && !TERMINAL.has(order.value.status)) void fetchOrder(true)
+  },
+)
+const AUTO_POLL_MS = 4000
+const AUTO_POLL_FOR_MS = 10 * 60_000
+let autoSince: number | null = null
+let autoLast = 0
+let autoBusy = false
+watch(now, async (t) => {
+  const o = order.value
+  const waiting = !!o && o.status === 'paid' && o.delivery_mode !== 'manual'
+  if (!waiting) {
+    autoSince = null
+    return
+  }
+  autoSince ??= t
+  if (t - autoSince > AUTO_POLL_FOR_MS || t - autoLast < AUTO_POLL_MS || autoBusy || document.visibilityState === 'hidden') return
+  autoLast = t
+  autoBusy = true
+  try {
+    await fetchOrder(true)
+  } finally {
+    autoBusy = false
+  }
+})
 void site.loadChannels()
 onBeforeUnmount(() => {
   offs.forEach((off) => off())

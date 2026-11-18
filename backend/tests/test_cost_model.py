@@ -1028,3 +1028,17 @@ def test_delivery_worker_gets_only_the_deadline_settings():
 
     assert "cost_model" not in _DEADLINE_KEYS
     assert {"after_sales_default", "auto_confirm_hours"} <= _DEADLINE_KEYS
+
+
+def test_markup_on_cost_replaces_the_net_margin_rule():
+    """Owner rule 2026-11-18: 12 % on cost (cost 100 -> price 112), whatever the margin target
+    and the channel fee say; 0 keeps the net-margin rule."""
+    D = Decimal
+    s = cm.normalize({"target_markup": "0.12", "target_margin": "0.30"})
+    src = cm.Source("direct", D("20"), "gpt")
+    cost = cm.fixed_cost(s, src)
+    assert cm.recommend_usd(s, src, D("0.05"), D("0.30")) == cost * D("1.12")
+    off = cm.normalize({"target_markup": "0"})
+    assert cm.recommend_usd(off, src, D("0"), D("0.30")) == cost / D("0.70")
+    with pytest.raises(cm.CostSettingsError):
+        cm.validate_patch({"target_markup": "1.5"})

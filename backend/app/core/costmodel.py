@@ -40,6 +40,10 @@ _RATE_FIELDS: dict[str, str] = {
     "chargeback_tier2_rate": "0.30",
     "expected_failure_rate": "0.05",
     "target_margin": "0.30",
+    # owner rule 2026-11-18 ("12 % profit on ChatGPT": cost 100 -> price 112): when above 0, the
+    # recommendation is the price-independent cost x (1 + target_markup) and ``target_margin`` is
+    # not used; the payment channel fee is not added (the buyer pays it on top at checkout)
+    "target_markup": "0",
     "fx_max_change": "0.2",
 }
 _INT_FIELDS: dict[str, tuple[int, int, int]] = {  # default, lo, hi
@@ -449,9 +453,13 @@ def recommend_usd(
     settings: dict[str, Any], src: Source, channel_rate: Decimal, margin: Decimal
 ) -> Decimal | None:
     """Sale price (USD) whose NET margin is ``margin``: ``P = C / (1 - g - m)`` with ``C`` the
-    price-independent cost and ``g`` the channel fee rate. ``None`` when unreachable."""
+    price-independent cost and ``g`` the channel fee rate; or, with a ``target_markup`` above 0,
+    ``P = C x (1 + markup)``. ``None`` when unreachable."""
     if src.supplier_price_usd is None or src.supplier_price_usd <= 0:
         return None
+    markup = Decimal(settings.get("target_markup") or 0)
+    if markup > 0:
+        return _components(settings, src)[0] * (Decimal(1) + markup)
     denom = Decimal(1) - channel_rate - margin
     if denom <= 0:
         return None

@@ -54,6 +54,15 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
   (ticked by default) whether support may see the session if the top-up fails; a consented session of an order
   that goes to staff or fails is kept sealed for 72 h and shown in the console's order drawer after a written
   reason (audited). Migration `0036_support_sessions`.
+  **Owner feedback 2026-11-18 (evening):** the session sheet shows a full-width button that opens
+  `https://chatgpt.com/api/auth/session` in a new tab; buyer pages never mention a supplier (progress steps,
+  pre-check texts and the privacy note reworded, EN and zh-CN); the order page catches a delivery that finished
+  before its live stream opened (one catch-up fetch on open, and a 4 s look while an automatic order is "paid");
+  the cost model takes a markup on cost (`target_markup`, 0.12 for ChatGPT on the demo); the redemption link is
+  no longer on the product page: after delivery the code comes first, then "Redeem now", which opens our own
+  redemption page with the code filled in through the URL fragment (never sent to a server) and copied. The
+  demo simulator's orders now report the pasted account (showcase mode), which had held the owner's demo direct
+  orders as `order_mismatch`.
 - **The ZovoCard sandbox is NOT available and cannot be used for the time being (2026-11-18).** The sandbox
   token and test account have expired (the authenticated API answers 401 since at least 04:38 UTC), the testing
   period has ended and the support-ticket deadline has passed, so no new sandbox can be requested now. **Rule

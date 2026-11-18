@@ -24,7 +24,7 @@ function fail(e: unknown) {
 
 // ------------------------------------------------------------------ fee schedule
 const MONEY_KEYS = ['card_open_fee', 'topup_fee_fixed', 'failed_fee', 'chargeback_tier1_surcharge', 'chargeback_tier2_deposit'] as const
-const RATE_KEYS = ['topup_fee_rate', 'auth_reversal_rate', 'chargeback_tier1_rate', 'chargeback_tier2_rate', 'expected_failure_rate', 'target_margin'] as const
+const RATE_KEYS = ['topup_fee_rate', 'auth_reversal_rate', 'chargeback_tier1_rate', 'chargeback_tier2_rate', 'expected_failure_rate', 'target_margin', 'target_markup'] as const
 const INT_KEYS = ['failed_free_count', 'max_auto_switches', 'chargeback_tier1_min_tx', 'round_step_minor'] as const
 const INFO = new Set(['failed_free_count', 'auth_reversal_rate', 'chargeback_tier1_rate', 'chargeback_tier1_min_tx', 'chargeback_tier1_surcharge', 'chargeback_tier2_rate', 'chargeback_tier2_deposit'])
 const DIRECT = ['gpt', 'grok', 'claude'] as const

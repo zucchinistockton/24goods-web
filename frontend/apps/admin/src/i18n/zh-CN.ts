@@ -1104,6 +1104,7 @@ const zhCN: AdminMessages = {
         chargeback_tier2_deposit: '拒付第二档：冻结保证金（美元）',
         expected_failure_rate: '预期失败率（小数）',
         target_margin: '默认目标净利率（小数）',
+        target_markup: '成本加价（小数，0.12 = 成本 × 1.12；0 = 使用净利率）',
         round_step_minor: '建议价向上取整到（最小单位）',
         service_fee_direct: '代充服务费：{product}（美元）',
         uses_per_card: '每卡可用次数：{tier}',

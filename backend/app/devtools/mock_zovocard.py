@@ -569,6 +569,12 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
             and not mock.reject_sessions
         )
 
+    def _masked(email: Any) -> str | None:
+        if not isinstance(email, str) or "@" not in email:
+            return None
+        local, _, domain = email.partition("@")
+        return f"{local[:1]}***@{domain}" if local and domain else None
+
     def _session_account(session: str) -> dict[str, Any]:
         """Showcase mode (``catalog_full``): the account state comes from the pasted session, so
         the demo can show every pre-check outcome. ``account.planType`` is the current plan; an
@@ -668,7 +674,9 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
             "currency": o["currency"],
             "quoted_amount_minor": o["amount"],
             "final_amount_minor": o["amount"] if o["status"] == "completed" else None,
-            "account_email": "b***@example.test",
+            # the account the order was placed for, masked like the vendor does (showcase mode
+            # takes it from the pasted session, so it matches what the preflight reported)
+            "account_email": o.get("account_email") or "b***@example.test",
             "card_id": o["card_id"],
             # the vendor shows the last four only, never a number (§6.18.8a)
             "card_last_four": str(mock.cards.get(o["card_id"], {}).get("card_number", ""))[-4:],
@@ -741,6 +749,9 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
             if body.get("no_auto_card_switch") is False and mock.direct_switch_to
             else body["card_id"],
             "cred": hashlib.sha256(cred["session"].encode()).hexdigest()[:16],
+            "account_email": _masked(_session_account(cred["session"]).get("email"))
+            if mock.catalog_full
+            else None,
         }
         return JSONResponse(
             _env(0, {"id": oid, "plan": plan, "source": "api", "status": "queued",

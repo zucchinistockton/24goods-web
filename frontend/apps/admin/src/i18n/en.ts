@@ -1105,6 +1105,7 @@ export default {
         chargeback_tier2_deposit: 'Chargeback tier 2: deposit frozen (USD)',
         expected_failure_rate: 'Expected failure rate (fraction)',
         target_margin: 'Default target net margin (fraction)',
+        target_markup: 'Markup on cost (fraction, 0.12 = cost × 1.12; 0 = use the net margin)',
         round_step_minor: 'Round suggested prices up to (minor units)',
         service_fee_direct: 'Direct service fee: {product} (USD)',
         uses_per_card: 'Uses per card: {tier}',
