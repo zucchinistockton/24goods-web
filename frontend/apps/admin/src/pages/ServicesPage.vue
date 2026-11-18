@@ -2,6 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
+import { formatDateTime } from '@24goods/shared'
 import { client } from '../api'
 import { useAuthStore } from '../stores/auth'
 import { useSave } from '../composables/useSave'
@@ -127,7 +128,7 @@ async function createRecord() {
 }
 
 /** Browser-local rendering of an ISO timestamp (never the raw string). */
-const when = (iso: string | null | undefined) => (iso ? new Date(iso).toLocaleString(locale.value) : '—')
+const when = (iso: string | null | undefined) => formatDateTime(iso, locale.value)
 const dueTag = (row: Service) => {
   if (row.status !== 'active' || row.days_left == null) return null
   if (row.days_left > 0) return { type: row.days_left <= 7 ? 'warning' : 'info', text: t('servicesV7.daysLeft', { n: row.days_left }) }

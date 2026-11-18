@@ -20,6 +20,7 @@ const zhCN: WebMessages = {
     zh: '中文',
   },
   home: {
+    recentPurchases: { title: '最近一小时成交', bought: '{buyer} 购买了' },
     searchPlaceholder: '搜索游戏、礼品卡、充值…',
     allCategories: '全部',
     sold: '已售 {n}',

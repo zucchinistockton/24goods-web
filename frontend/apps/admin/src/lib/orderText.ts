@@ -34,5 +34,5 @@ export function buildBuyerTemplate(i: BuyerTemplateInput): string {
 export function clockTime(iso: string, locale: string): string {
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return ''
-  return new Intl.DateTimeFormat(locale, { hour: '2-digit', minute: '2-digit' }).format(d)
+  return new Intl.DateTimeFormat(locale, { hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).format(d)
 }

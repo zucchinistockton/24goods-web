@@ -58,7 +58,7 @@ const iso = (at: string | number | null): string | undefined => {
 function when(at: string | number | null): string {
   const ms = stepTime(at)
   if (ms === null) return ''
-  return new Intl.DateTimeFormat(locale.value, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(ms))
+  return new Intl.DateTimeFormat(locale.value, { dateStyle: 'medium', timeStyle: 'medium', hourCycle: 'h23' }).format(new Date(ms))
 }
 </script>
 

@@ -470,7 +470,7 @@ function gotCode() {
       </section>
 
       <section v-if="order.delivery_mode === 'upstream_direct' && ['paid', 'manual_review', 'delivered', 'completed'].includes(order.status)" class="section card pad">
-        <DirectOrderPanel :order-id="order.id" :product-id="order.product_id" :can-resupply="['paid', 'manual_review'].includes(order.status)" />
+        <DirectOrderPanel :order-id="order.id" :product-id="order.product_id" :version="order.version" :can-resupply="['paid', 'manual_review'].includes(order.status)" />
       </section>
 
       <section v-if="order.can_reveal || secrets.length || order.manual_delivery || ['delivered', 'completed'].includes(order.status)" class="section card pad">

@@ -10,7 +10,7 @@ from app.core.deps import Page, get_db, get_lang, get_page, get_res, get_tenant_
 from app.core.errors import OutOfStock
 from app.core.resources import Resources
 from app.core.storefront import Storefront, get_storefront
-from app.modules.catalog import service
+from app.modules.catalog import recent, service
 from app.modules.catalog.categories import enabled_categories, public_view
 from app.modules.catalog.upstream import direct_target_product
 
@@ -81,6 +81,20 @@ async def product(
         except OutOfStock:
             out["direct_product"] = None
     return out
+
+
+@router.get("/recent-purchases")
+async def recent_purchases(
+    lang: str = Depends(get_lang),
+    tenant_id: uuid.UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+    res: Resources = Depends(get_res),
+    sf: Storefront | None = Depends(get_storefront),
+) -> dict:
+    """Orders delivered in the last hour (product, option, time, masked buyer), newest first."""
+    if sf is not None:  # a reseller storefront shows none of the platform's sales
+        return {"items": []}
+    return {"items": await recent.recent_purchases(db, res.redis, tenant_id, lang)}
 
 
 @router.get("/support/status")

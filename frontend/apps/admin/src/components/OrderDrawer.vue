@@ -29,6 +29,7 @@ import { marginMinor, minorToYuan, yuanToMinor } from '../lib/money'
 import CloseOrderDialog from './CloseOrderDialog.vue'
 import { buildBuyerTemplate, clockTime, htmlToText } from '../lib/orderText'
 import OrderStatusTag from './OrderStatusTag.vue'
+import DirectJobLive from './DirectJobLive.vue'
 import { confirmBox, toastError, toastOk } from '../ui'
 import { client } from '../api'
 
@@ -518,6 +519,8 @@ defineExpose({ reload: () => props.orderId && load(props.orderId) })
             />
           </el-descriptions-item>
         </el-descriptions>
+
+        <DirectJobLive v-if="order.delivery_mode === 'upstream_direct'" :order-id="order.id" :version="order.version" />
 
         <h3 class="h3">{{ t('orders.timeline') }}</h3>
         <el-timeline v-if="order.events.length">

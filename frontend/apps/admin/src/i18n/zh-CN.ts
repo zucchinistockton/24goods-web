@@ -352,6 +352,13 @@ const zhCN: AdminMessages = {
     },
     detail: '订单 {no}',
     timeline: '时间线',
+    live: {
+      title: '供应方进度（实时）',
+      on: '实时更新已开启',
+      polling: '实时更新已暂停：每几秒自动刷新',
+      noJob: '暂无供应方任务（付款后开始）。',
+      updated: '更新于 {at}',
+    },
     noEvents: '暂无事件',
     by: '操作人 {actor}',
     info: {

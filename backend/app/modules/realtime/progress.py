@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.db import tenant_session
 from app.models import Order, ProcurementJob, SupplierOffer
-from app.modules.realtime.publish import publish_order_progress
+from app.modules.realtime.publish import publish_order_progress, publish_staff_progress
 from app.suppliers import direct_progress as dp
 
 log = logging.getLogger("app.realtime")
@@ -94,6 +94,7 @@ async def handle_message(
             return False
         buyer_id, data = found
         await publish_order_progress(redis, buyer_id, data)
+        await publish_staff_progress(redis, tenant_id, data)
         return True
     except Exception as exc:
         log.error("progress relay failed error=%s", type(exc).__name__)

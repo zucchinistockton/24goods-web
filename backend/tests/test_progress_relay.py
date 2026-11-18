@@ -17,6 +17,7 @@ from redis.exceptions import ResponseError
 from app.modules.realtime.hub import RealtimeHub
 from app.modules.realtime.progress import handle_message
 from app.modules.realtime.publish import (
+    staff_channel,
     user_channel,
 )
 from app.procurement import engine
@@ -56,18 +57,21 @@ async def test_procurement_publish_reaches_the_buyer_channel(env, dup):  # noqa:
     buyer_id = await _buyer_id(env, order)
     hub = _hub(env)
     sub = hub.subscribe([user_channel(buyer_id)])
+    staff = hub.subscribe([staff_channel(job.tenant_id)])
     await hub.wait_ready()
-    # procurement side (real Redis) -> API subscriber -> buyer channel
+    # procurement side (real Redis) -> API subscriber -> buyer channel (and the staff channel)
     assert await notify_progress_changed(dup.ctx.redis, job.tenant_id, job.order_id) is True
-    item = await asyncio.wait_for(sub.queue.get(), 3)
-    assert item["event"] == "order_progress"
-    assert item["data"] == {
+    want = {
         "order_id": order["id"],
         "step": "completed",
         "percent": 100,
         "outcome": "completed",
         "reason": None,
     }
+    item = await asyncio.wait_for(sub.queue.get(), 3)
+    assert item["event"] == "order_progress" and item["data"] == want
+    item = await asyncio.wait_for(staff.queue.get(), 3)
+    assert item["event"] == "order_progress" and item["data"] == want
     await hub.stop()
 
 

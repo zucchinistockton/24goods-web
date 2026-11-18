@@ -64,6 +64,12 @@ async def publish_order_progress(redis: Redis, buyer_id: uuid.UUID, data: dict[s
     await publish(redis, user_channel(buyer_id), "order_progress", data)
 
 
+async def publish_staff_progress(redis: Redis, tenant_id: uuid.UUID, data: dict[str, Any]) -> None:
+    """The same coarse step on the tenant's staff channel, so the console follows a direct order
+    live (owner request 2026-11-18); the console refetches the job detail it is allowed to see."""
+    await publish(redis, staff_channel(tenant_id), "order_progress", data)
+
+
 async def publish_after_sales(
     redis: Redis,
     tenant_id: uuid.UUID,

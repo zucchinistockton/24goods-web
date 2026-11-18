@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ArrowDown, ArrowUp, Download, Plus, Refresh } from '@element-plus/icons-vue'
-import { formatDateTime, isApiError, type AdminVariant } from '@24goods/shared'
+import { createCoalescer, formatDateTime, isApiError, type AdminVariant } from '@24goods/shared'
 import { apiV3, client } from '../api'
 import type { AdminProductV3 } from '../api-v3'
 import {
@@ -29,6 +29,7 @@ import RedeemPanel from '../components/RedeemPanel.vue'
 import { createSuppliersApi, type AdminSupplier } from '../api-suppliers'
 import { usePaged } from '../composables/usePaged'
 import { useAuthStore } from '../stores/auth'
+import { useRealtimeStore } from '../stores/realtime'
 import { confirmBox, toastError, toastOk } from '../ui'
 
 const api = createProcurementApi(client)
@@ -85,6 +86,28 @@ async function refreshJob(id: string) {
   }
   void jobs.load()
 }
+// the open job follows the supplier live (owner request 2026-11-18): a progress event of its order,
+// or a polling tick while it is not finished, reloads it (debounced, never two loads at once)
+const LIVE_STATES = new Set(['queued', 'submitting', 'accepted_pending', 'void_pending', 'needs_manual'])
+const liveJob = createCoalescer(async () => {
+  const d = detail.value
+  if (!drawer.value || !d) return
+  const fresh = await api.jobs.get(d.id)
+  if (drawer.value && detail.value?.id === fresh.id) detail.value = fresh
+}, 400)
+const rt = useRealtimeStore()
+const liveOffs = [
+  rt.on('order_progress', (e) => {
+    if (drawer.value && detail.value?.order.id === e.order_id) liveJob.trigger()
+  }),
+  rt.on('sync', () => {
+    if (drawer.value && detail.value && LIVE_STATES.has(detail.value.state)) liveJob.trigger()
+  }),
+]
+onBeforeUnmount(() => {
+  liveOffs.forEach((off) => off())
+  liveJob.cancel()
+})
 const can = (a: JobAction) => !!detail.value?.actions.includes(a) && (a !== 'void' || auth.isAdmin)
 
 const dlg = reactive({ open: false, action: 'fulfil' as 'fulfil' | 'void' | 'fail', code: '', cardId: '', reason: '', error: '' })

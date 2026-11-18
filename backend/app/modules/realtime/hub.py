@@ -35,7 +35,9 @@ class Subscription:
         self.channels = frozenset(channels)
         self.queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=QUEUE_MAX)
         self.overflowed = False
+        self.evicted = False  # replaced by a newer stream of the same account
         self.budget_keys: tuple[tuple[str, str], ...] = ()
+        self.account: str | None = None
 
     def offer(self, item: dict[str, Any]) -> None:
         try:
@@ -58,6 +60,7 @@ class RealtimeHub:
         self._ready = asyncio.Event()
         self._admitted: set[Subscription] = set()
         self._counts: dict[tuple[str, str], int] = {}
+        self._by_account: dict[str, list[Subscription]] = {}  # oldest first
 
     def ensure_started(self) -> None:
         if self._task is None or self._task.done():
@@ -84,6 +87,14 @@ class RealtimeHub:
         account: str | None = None,
         ip: str | None = None,
     ) -> Subscription:
+        if account is not None and self._counts.get(("account", account), 0) >= (
+            MAX_ACCOUNT_SUBSCRIBERS
+        ):
+            # the account's OLDEST stream makes room (a reload, a new tab, or a stream whose
+            # client vanished behind a proxy and is not yet noticed): the newest connection of a
+            # person always gets live updates instead of a 429 and the polling fallback. Only the
+            # same account's own streams are ever closed this way; the cap itself stays.
+            self._evict(self._by_account[account][0])
         if len(self._admitted) >= MAX_SUBSCRIBERS:
             raise Unavailable("Realtime capacity reached", headers={"Retry-After": "15"})
         budgets = (
@@ -101,6 +112,9 @@ class RealtimeHub:
         self.ensure_started()
         sub = Subscription(channels)
         sub.budget_keys = tuple(keys)
+        sub.account = account
+        if account is not None:
+            self._by_account.setdefault(account, []).append(sub)
         self._admitted.add(sub)
         for key in keys:
             self._counts[key] = self._counts.get(key, 0) + 1
@@ -108,7 +122,20 @@ class RealtimeHub:
             self._subs.setdefault(ch, set()).add(sub)
         return sub
 
+    def _evict(self, sub: Subscription) -> None:
+        """Close a stream from the server side: its generator stops at once (a wake-up item)."""
+        sub.evicted = True
+        self.unsubscribe(sub)
+        with contextlib.suppress(asyncio.QueueFull):
+            sub.queue.put_nowait({"event": "_evicted"})
+
     def unsubscribe(self, sub: Subscription) -> None:
+        if sub.account is not None:
+            mine = self._by_account.get(sub.account)
+            if mine is not None and sub in mine:
+                mine.remove(sub)
+                if not mine:
+                    self._by_account.pop(sub.account, None)
         if sub in self._admitted:
             self._admitted.remove(sub)
             for key in sub.budget_keys:
@@ -186,7 +213,7 @@ async def sse_events(
     deadline = time.monotonic() + heartbeat_s
     try:
         yield "retry: 4000\n\n"
-        while not sub.overflowed:
+        while not sub.overflowed and not sub.evicted:
             if time.monotonic() >= deadline:
                 if alive is not None and not await alive():
                     break
@@ -201,6 +228,8 @@ async def sse_events(
                 deadline = time.monotonic() + heartbeat_s
                 yield ": ping\n\n"
                 continue
+            if sub.evicted:
+                break  # a newer stream of the same account took this one's place
             if time.monotonic() >= deadline:
                 if alive is not None and not await alive():
                     break

@@ -6,6 +6,7 @@ import {
   type AgentStatus,
   type Conversation,
   type Order,
+  type OrderProgressEvent,
   type RealtimeState,
   type StreamMessageEvent,
   type TypingEvent,
@@ -20,6 +21,8 @@ type Events = {
   agent_status: AgentStatus
   typing: TypingEvent
   after_sales: AfterSalesTicket
+  /** a direct order's step changed (coarse keys only): open views refetch what they show */
+  order_progress: OrderProgressEvent
   sync: void
 }
 
@@ -40,6 +43,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
         agent_status: (s) => bus.emit('agent_status', s),
         typing: (e) => bus.emit('typing', e),
         after_sales: (t) => bus.emit('after_sales', t as unknown as AfterSalesTicket),
+        order_progress: (e) => bus.emit('order_progress', e),
         poll: () => bus.emit('sync', undefined),
         resync: () => bus.emit('sync', undefined),
         state: (s) => (state.value = s),
