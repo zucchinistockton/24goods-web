@@ -1066,3 +1066,28 @@ async def test_order_list_not_found_needs_the_vendor_total_and_distinct_ids(env)
     sup.client.get = scripted([{"total": 2, "list": [row(1), row(2)]}])
     res = await sup.query(spec)
     assert res.outcome.value == "unavailable" and res.error_code == "order_not_found"
+
+
+# ------------------------------------------------------------------ issue #54 F3
+@pytest.mark.parametrize("failure", ["timeout", "no_ref_in_answer"])
+async def test_the_console_order_read_survives_the_rollback(env, dup, monkeypatch, failure):
+    """``direct_order_state`` rolls its session back before the vendor call; every later path
+    must use the reference captured before it (a rollback expires the ORM attributes)."""
+    from app.procurement import engine
+    from app.suppliers.base import Outcome, Result
+
+    _v, _buyer, order = await _paid(dup)
+    await dup.run()
+    job = await _job(dup, order)
+    assert job.upstream_ref
+
+    class _Sup:
+        async def query(self, spec):
+            if failure == "timeout":
+                raise TimeoutError
+            return Result(Outcome.ACCEPTED_PENDING)  # an answer without its own reference
+
+    monkeypatch.setattr(engine, "engine_supplier", lambda ctx, r: _Sup())
+    out = await engine.direct_order_state(dup.ctx, dup.product.tenant_id, job.id)
+    want = "unknown" if failure == "timeout" else "pending"
+    assert out == {"state": want, "upstream_ref": job.upstream_ref}

@@ -213,13 +213,20 @@ async def read_cards(
     masked number is in ``exclude_masks`` carry ``buyer_mask=True``."""
     rows: list[dict[str, Any]] = []
     seen: set[int] = set()
+    read = 0  # RAW vendor rows read so far (deleted / invalid ones included)
     for page in range(1, MAX_PAGES + 1):
         resp = await client.get("/cards", params={"page": str(page), "page_size": str(PAGE_SIZE)})
-        got, total = parse_card_rows(resp.data, exclude_masks)
+        data = resp.data
+        raw = data.get("list") if isinstance(data, Mapping) else None
+        n_raw = len(raw) if isinstance(raw, list) else 0
+        got, total = parse_card_rows(data, exclude_masks)
         fresh = [r for r in got if r["id"] not in seen]
         seen.update(r["id"] for r in fresh)
         rows.extend(fresh)
-        if not got or (total is not None and len(seen) >= total) or len(got) < PAGE_SIZE:
+        read += n_raw
+        # the end of the list is decided by the RAW page (issue #54 F7): filtering a deleted row
+        # out of a full page must not hide the pages after it
+        if n_raw < PAGE_SIZE or (total is not None and read >= total):
             break
     return rows
 

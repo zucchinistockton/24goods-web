@@ -110,6 +110,14 @@ function report() {
   void support(router)
 }
 
+/** Direct top-ups (they need the buyer's session) and half-price plans (they need a check, one unit
+ *  per order) are bought with Buy now only (issue #54 F5): no cart button for them. */
+const buyNowOnly = computed(() => {
+  const x = product.value
+  if (!x) return false
+  if (x.delivery_mode === 'upstream_direct') return true
+  return variant.value ? variant.value.half_price === true : x.half_price === true
+})
 function addToCart() {
   if (!product.value || soldOut.value) return
   if (product.value.buyer_input?.enabled) {
@@ -247,7 +255,7 @@ function back() {
           to="/cart"
         />
         <van-action-bar-button
-          v-if="site.features.cart"
+          v-if="site.features.cart && !buyNowOnly"
           type="warning"
           :text="t('product.addToCart')"
           :disabled="soldOut"

@@ -112,7 +112,9 @@ function reasonText(r: string | null | undefined): string {
     r === 'unpublished' ||
     r === 'out_of_stock' ||
     r === 'variant_required' ||
-    r === 'variant_unavailable'
+    r === 'variant_unavailable' ||
+    r === 'direct_buy_now_only' ||
+    r === 'half_check_buy_now'
     ? t(`cart.reason.${r}`)
     : t('cart.unavailable')
 }

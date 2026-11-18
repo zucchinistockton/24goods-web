@@ -587,6 +587,8 @@ const zhCN: WebMessages = {
       out_of_stock: '已售罄',
       variant_required: '请选择规格',
       variant_unavailable: '该规格已下架',
+      direct_buy_now_only: '请在商品页通过「立即购买」下单',
+      half_check_buy_now: '半价套餐：请在商品页通过「立即购买」下单（每单一件）',
     },
     title: '购物车',
     empty: '购物车是空的',

@@ -2544,14 +2544,16 @@ async def direct_order_state(
             return {"state": "not_sent", "upstream_ref": job.upstream_ref}
         offer = await _offer_any(db, job)
         spec = _spec(job, offer, "query", ctx.settings.direct_quote_tolerance) if offer else None
+        # the rollback expires every attribute of ``job`` (issue #54 F3): keep the primitive
+        known_ref = job.upstream_ref
         await db.rollback()
     if offer is None or spec is None:
-        return {"state": "unknown", "upstream_ref": job.upstream_ref}
+        return {"state": "unknown", "upstream_ref": known_ref}
     try:
         res = await engine_supplier(ctx, offer.ref).query(spec)
     except Exception as exc:
         log.error("direct order read failed error=%s", type(exc).__name__)
-        return {"state": "unknown", "upstream_ref": job.upstream_ref}
+        return {"state": "unknown", "upstream_ref": known_ref}
     state = {
         Outcome.OK: "completed",
         Outcome.ACCEPTED_PENDING: "pending",
@@ -2560,7 +2562,7 @@ async def direct_order_state(
     }.get(res.outcome, "unknown")
     if res.outcome is Outcome.FATAL and res.error_code in ("order_mismatch", "plan_mismatch"):
         state = "unknown"
-    return {"state": state, "upstream_ref": res.upstream_ref or job.upstream_ref}
+    return {"state": state, "upstream_ref": res.upstream_ref or known_ref}
 
 
 async def due_jobs(ctx: ProcurementContext, limit: int = 20) -> list[tuple[uuid.UUID, uuid.UUID]]:

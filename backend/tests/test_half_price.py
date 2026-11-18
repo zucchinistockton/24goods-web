@@ -1143,6 +1143,16 @@ async def test_cdk_half_price_order_with_a_passed_check_succeeds(env):
         )  # fmt: skip
         assert r.status_code == 200, r.text
         assert await env.scalar("SELECT order_id IS NOT NULL FROM half_price_checks") is True
+        # issue #54 F5: the cart flags a half-price CDK (buy-now only) instead of offering it,
+        # so it never blocks the other lines of a cart
+        q = (
+            await buyer.post(
+                f"{API}/cart/quote", json={"items": [{"product_id": str(up.product.id), "qty": 2}]}
+            )
+        ).json()
+        (line,) = q["lines"]
+        assert line["available"] is False and line["unavailable_reason"] == "half_check_buy_now"
+        assert line["max_qty"] == 0
     finally:
         await up.close()
 

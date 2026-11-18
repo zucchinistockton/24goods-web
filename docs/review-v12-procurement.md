@@ -1717,3 +1717,16 @@ or `+recover` sets the matching vendor field, so every outcome can be shown on t
 **Tests.** `tests/test_direct_preflight.py` (pass, each refusal, vendor and procurement down,
 rate limit, resupply, AAD namespace, no session in logs or audit) and the E2E smoke (a session the
 supplier rejects is refused at checkout).
+## 25. Audit issue #54 (external code audit of `45e411a`, checked 2026-11-18)
+
+All seven findings were reproduced against `main` and fixed:
+
+| ID | Finding | Fix |
+| --- | --- | --- |
+| F1 | `deploy/backup.sh` did not fence the procurement worker | `procurement` is stopped with the other writers before `pg_dump` and restarted only if it was running (`scripts/test_backup_v6.py`). |
+| F2 | `scripts/pull-prod-backups.sh` treated an interrupted copy as complete | copies go to `.partial-nightly-<stamp>`, all three members are checked against the remote checksums, then `COMPLETE` + `SHA256SUMS` are written and the directory is moved into place; only sets with `COMPLETE` are skipped or counted for retention (`scripts/test_pull_backups.py`). |
+| F3 | `direct_order_state` read `job.upstream_ref` after the rollback | the reference is captured before the rollback. |
+| F4 | a late-paid upstream order had no release path (L3 above) | staff "accept" of a held order now releases an upstream order whose only hold is `late_payment` and that has no procurement job: one `order.paid` under the order lock, the half-price gate re-checked; an order with jobs is still decided through them. |
+| F5 | half-price CDKs could go into the cart / be bought in quantity | the cart quote flags them `half_check_buy_now` (never blocking the other lines), the product page shows no cart button for direct or half-price targets, the buy sheet caps their quantity at one. |
+| F6 | instant buyers of a half-price plan were sent to `/settings` (404) | named route `settings` (`/me/settings`). |
+| F7 | a filtered (deleted) row on a full card page ended the card list | the end of the list is decided by the raw page size and the vendor total, never by the filtered rows. |

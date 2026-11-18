@@ -32,7 +32,7 @@ cleanup() { resume; rm -rf -- "$STAGE"; }
 trap cleanup EXIT
 # Fencing writers gives a consistent PG/media/provider capture. Preserve stopped services.
 mapfile -t ACTIVE < <("${DC[@]}" ps --status running --services)
-for svc in api delivery bepusdt; do
+for svc in api delivery procurement bepusdt; do
   for active in "${ACTIVE[@]}"; do [[ "$active" != "$svc" ]] || RUNNING+=("$svc"); done
 done
 if ((${#RUNNING[@]})); then "${DC[@]}" stop -t 45 "${RUNNING[@]}" >/dev/null; fi

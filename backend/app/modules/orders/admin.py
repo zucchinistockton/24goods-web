@@ -25,6 +25,7 @@ from app.models import (
     Outbox,
     Payment,
     PaymentAttempt,
+    ProcurementJob,
     Product,
     ProductVariant,
     User,
@@ -38,6 +39,7 @@ from app.modules.common.sitedefaults import delivery_deadlines, order_terms
 from app.modules.common.views import iso
 from app.modules.content.site import tenant_settings
 from app.modules.orders import cancel as cancel_svc
+from app.modules.orders import halfcheck
 from app.modules.orders.events import add_event, snapshot
 from app.modules.orders.service import (
     available_stock,
@@ -437,13 +439,26 @@ async def _accept_held(
     if order.kind == "reseller_signup":
         raise InvalidState("A held sign-up order cannot be released here; refund it instead")
     if order.delivery_mode in UPSTREAM_MODES:
-        # TODO(v12-M3): a late-payment upstream order held in manual_review has no procurement
-        # job to act on (L3 of the M2 payment audit); give it a staff "release into procurement".
-        # its procurement jobs decide (retry / switch source / fulfil manually, review-v12)
-        raise InvalidState(
-            "Release supplier-sourced orders through their procurement jobs",
-            code="use_procurement_actions",
+        # an order that already has procurement jobs is decided there (retry / switch source /
+        # fulfil manually, review-v12). An order held ONLY because its payment arrived late has
+        # none (L3 of the M2 payment audit, issue #54 F4): staff release it into procurement
+        # below, which emits exactly one ``order.paid`` (the order row is locked, the status
+        # moves once, and procurement creates its jobs only for a ``paid`` order).
+        held, _by = await hold_reason(db, order)
+        jobs = await db.scalar(
+            select(func.count())
+            .select_from(ProcurementJob)
+            .where(ProcurementJob.tenant_id == order.tenant_id, ProcurementJob.order_id == order.id)
         )
+        if held != "late_payment" or int(jobs or 0) > 0:
+            raise InvalidState(
+                "Release supplier-sourced orders through their procurement jobs",
+                code="use_procurement_actions",
+            )
+        # a half-price plan still needs its usable check (the engine refuses one without it); a
+        # direct order whose session was swept while it was expired waits for the buyer's new
+        # session in procurement (``credential_missing``) and nothing is bought without it
+        await halfcheck.order_gate(db, order)
     pay = await _verified_payment(db, order)
     # #72 audit M3: count the sale from state (never entered ``paid`` before), for every mode
     count_sale = order.product_id is not None and not await _sale_counted(db, order)
