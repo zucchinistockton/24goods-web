@@ -73,6 +73,18 @@ class HalfCheck:
 
 
 @dataclass(frozen=True)
+class AccountCheck:
+    """Outcome of :meth:`ZovoCardSupplier.account_check` (no secret in it). ``reason`` for a
+    ``blocked`` account: ``session_invalid`` | ``plan_active`` | ``purchase_not_yet`` |
+    ``account_blocked``; for ``unavailable`` a cleaned vendor / transport code (staff only)."""
+
+    status: str  # passed | blocked | unavailable
+    reason: str = ""
+    account_mask: str | None = None
+    current_plan: str | None = None
+
+
+@dataclass(frozen=True)
 class PlanCatalog:
     product: str
     version: int | None
@@ -951,6 +963,43 @@ class ZovoCardSupplier:
             current_plan=pf.current_plan,
             promotions=pf.promotions,
         )
+
+    async def account_check(
+        self,
+        product: str,
+        plan: str,
+        country: str | None,
+        currency: str | None,
+        credential: str,
+    ) -> AccountCheck:
+        """Can the buyer's account take this direct plan NOW (pre-payment gate, review-v12 §24):
+        the session works, the account does not already hold the plan or another subscription,
+        and the vendor reports no block. The same preflight fields the execution reads
+        (``_direct_run``), so a pass here and a refusal there only differ by time. Half-price
+        eligibility is NOT judged here (the half-price check owns it, with the owner's method).
+        Never raises for a vendor answer."""
+        if product not in dr.DIRECT_PRODUCTS or not dr._PLAN_RE.fullmatch(plan):
+            return AccountCheck("unavailable", "invalid_offer")
+        pf = await self._preflight(dr.DirectSpec(product, plan, 1, country, currency), credential)
+        if isinstance(pf, Result):
+            code = pf.error_code or "preflight_failed"
+            if code in ("GPT_SESSION_INVALID", "CLAUDE_SESSION_INVALID", "SESSION_REQUIRED"):
+                return AccountCheck("blocked", "session_invalid")
+            return AccountCheck("unavailable", clean_detail(code))
+        seen = {"account_mask": pf.account_mask, "current_plan": pf.current_plan}
+        base = plan[: -len("_half")] if dr.is_half_plan(plan) else plan
+        if pf.current_plan is not None and pf.current_plan in (plan, base):
+            return AccountCheck("blocked", "plan_active", **seen)
+        problem = _account_problem(pf)
+        if problem == "subscription_active":
+            return AccountCheck("blocked", "plan_active", **seen)
+        if problem == "purchase_not_yet":
+            return AccountCheck("blocked", "purchase_not_yet", **seen)
+        if problem is not None:  # preflight_blocked / subscription_recovery_required
+            return AccountCheck("blocked", "account_blocked", **seen)
+        if pf.quote_error:  # the vendor: no order while quote_error is set (temporary)
+            return AccountCheck("unavailable", "quote_error", **seen)
+        return AccountCheck("passed", "", **seen)
 
     async def _direct_run(self, job: JobSpec) -> Result:
         """Preflight, then ONE order POST under the job's key; afterwards only reads.

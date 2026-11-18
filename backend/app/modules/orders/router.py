@@ -51,6 +51,7 @@ async def buy_now(
         redis=res.redis,
         half_check_id=body.half_check_id,
         half_check_confirm=body.half_check_confirm,
+        procurement=res.procurement,
     )
     code = getattr(order, "access_code_plain", None)  # shown exactly once
     await service.broadcast_order(res, db, order, [msg])
@@ -184,7 +185,15 @@ async def direct_session(
     await enforce(res.redis, "order:direct-session", str(user.id), 5, 3600)
     order = await service.get_owned(db, ref, user)
     await direct_svc.resupply(
-        db, res.cred_sealer, order, body.session, actor_id=user.id, ip=client_ip(request)
+        db,
+        res.cred_sealer,
+        order,
+        body.session,
+        actor_id=user.id,
+        ip=client_ip(request),
+        procurement=res.procurement,
+        token=res.settings.procurement_token,
+        redis=res.redis,
     )
     await db.commit()
     return {"ok": True}

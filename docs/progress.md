@@ -36,8 +36,12 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
   part, expired) instead of rendering the token. Regions are listed cheapest first and the cheapest region in stock
   is preselected (owner rule). A direct order in manual review now points the buyer to the progress panel (not
   "checking the payment"), and the fresh-session button is primary when the server asks for a new session.
-  **Next (owner-agreed):** vendor preflight before payment for every direct order (not only half price), so a
-  logged-out session, an account that already has the plan or a vendor block stops checkout before the buyer pays.
+  **Account pre-check before payment (owner decision 2026-11-18, review-v12 §24, ADR-045):** every direct
+  checkout (and every session resupply) asks the supplier's preflight first; a signed-out session, an account
+  that already has the plan (or another subscription), a "not yet" or a vendor block is refused with a clear
+  message BEFORE any order exists, and an unanswered check refuses too (fail closed). On the demo the
+  simulator takes the account's plan from the pasted session (`account.planType`; e-mail tags `+active`,
+  `+blocked`, `+wait`, `+recover` for the other outcomes).
 - **The ZovoCard sandbox is NOT available and cannot be used for the time being (2026-11-18).** The sandbox
   token and test account have expired (the authenticated API answers 401 since at least 04:38 UTC), the testing
   period has ended and the support-ticket deadline has passed, so no new sandbox can be requested now. **Rule

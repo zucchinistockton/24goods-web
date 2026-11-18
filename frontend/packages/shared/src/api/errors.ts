@@ -100,6 +100,13 @@ export const API_ERROR_CODES = [
   'direct_buy_now_only',
   'direct_not_quotable',
   'direct_not_on_storefront',
+  // review-v12 §24: the account pre-check before payment
+  'preflight_session_invalid',
+  'preflight_plan_active',
+  'preflight_purchase_not_yet',
+  'preflight_account_blocked',
+  'preflight_unavailable',
+  'preflight_required',
   // issue #27 half-price check, plan x region variants
   'half_check_required',
   'half_check_invalid',

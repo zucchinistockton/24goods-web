@@ -1387,6 +1387,20 @@ def v12_procurement(
         no_session.json()["error"]["code"] == "session_required",
         "a direct product needs the account session at checkout",
     )
+    rejected = buyer.req(
+        "POST",
+        "orders",
+        json={
+            "product_id": pd["id"],
+            "qty": 1,
+            "session": f"sk-ant-sid01-INVALID{marker}-" + "A" * 40,
+        },
+        expect=422,
+    )
+    check(
+        rejected.json()["error"]["code"] == "preflight_session_invalid",
+        "the account pre-check must stop a rejected session before any order or payment",
+    )
     od = buyer.j("POST", "orders", json={"product_id": pd["id"], "qty": 1, "session": session})
     check(od["buyer_input"] is None, "the session must not be kept as plaintext buyer input")
     pay_with_simulator(buyer, od["id"])

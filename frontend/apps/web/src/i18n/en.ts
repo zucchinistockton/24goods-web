@@ -291,6 +291,11 @@ export default {
     currentPlan: 'Current plan',
     validUntil: 'Valid until',
     pasteAgain: 'Paste again',
+    preflight: {
+      title: 'Account check',
+      checking: 'Checking your account with the supplier…',
+      planActive: 'This account already has an active {plan} plan, so it cannot take this one now. You have not been charged.',
+    },
     problem: {
       incomplete: 'This is not the complete session. Open the page again, select everything and copy it once more.',
       access_token_only: 'Only part of the session was copied. Copy everything the page shows, not just the token.',

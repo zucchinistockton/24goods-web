@@ -291,6 +291,11 @@ const zhCN: WebMessages = {
     currentPlan: '当前套餐',
     validUntil: '有效期至',
     pasteAgain: '重新粘贴',
+    preflight: {
+      title: '账号检测',
+      checking: '正在向供应商检测您的账号…',
+      planActive: '该账号已有生效中的 {plan} 套餐，暂时无法开通此套餐。您尚未被扣款。',
+    },
     problem: {
       incomplete: '这不是完整的会话。请重新打开该页面，全选后再复制一次。',
       access_token_only: '只复制了会话的一部分。请复制页面显示的全部内容，而不只是令牌。',

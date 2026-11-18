@@ -321,6 +321,13 @@ async def create_order(
         # an order for a supplier-performed subscription is never created without the buyer's
         # sealed session (every caller other than buy-now has none)
         raise Validation("This product needs the account session", code="session_required")
+    if (
+        delivery_mode == "upstream_direct"
+        and kind == "goods"
+        and (direct is None or direct.preflight != "passed")
+    ):
+        # nor without the account pre-check before payment (review-v12 §24)
+        raise Validation("The account check is required", code="preflight_required")
     if enforce_cap:
         await enforce_payables_cap(db, settings, buyer)
     half_claimed: uuid.UUID | None = None
@@ -475,6 +482,7 @@ async def buy_now(
     redis: Any = None,
     half_check_id: uuid.UUID | None = None,
     half_check_confirm: bool = False,
+    procurement: Any = None,
 ) -> tuple[Order, Message | None]:
     product = await get_active_product(db, product_id)
     if product.delivery_mode == "upstream_direct" and storefront is not None:
@@ -505,6 +513,23 @@ async def buy_now(
             variant_id=variant.id if variant else None,
             qty=qty,
             session=session,
+        )
+        # every direct order: the vendor's account pre-check runs BEFORE the order exists, so a
+        # logged-out session, an account that holds the plan or a vendor block stops here, never
+        # after the buyer paid (review-v12 §24)
+        direct = await direct_svc.preflight(
+            db,
+            cred_sealer,  # type: ignore[arg-type]  # prepare() refused a missing sealer
+            procurement,
+            settings.procurement_token,
+            redis,
+            user_id=buyer.id,
+            user_role=buyer.role,
+            tenant_id=buyer.tenant_id,
+            product_id=product.id,
+            variant_id=variant.id if variant else None,
+            seal=direct,
+            ip=ip,
         )
     del session
     if (

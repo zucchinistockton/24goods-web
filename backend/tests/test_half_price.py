@@ -77,7 +77,9 @@ async def _order(client, hp: DUp, session: str, check_id: str | None, confirm: b
     if check_id:
         body["half_check_id"] = check_id
         body["half_check_confirm"] = confirm
-    return await client.post(f"{API}/orders", json=body)
+    r = await client.post(f"{API}/orders", json=body)
+    hp.forget_checkout_preflight()  # the account pre-check at checkout is not counted here
+    return r
 
 
 async def _status(env, check_id: str) -> tuple[str, str | None, bool]:
@@ -1043,7 +1045,9 @@ async def test_account_binding_is_keyed_and_compared_in_procurement_before_any_s
     await hp.run()
     job = await _job(hp, order)
     assert job.state == "needs_manual" and job.error_code == "half_check_account_mismatch"
-    assert vendor.direct_executions == 0 and vendor.preflights == 1  # only the check's own read
+    # nothing at execution: the binding refused before the engine's own preflight (the check's
+    # read and the checkout pre-check came before the order and are not counted here)
+    assert vendor.direct_executions == 0 and vendor.preflights == 0
     # the matching account goes through
     chk2 = (await _check(buyer, hp, mine)).json()
     ok = (await _order(buyer, hp, _session_for(new_marker(), "acct-mine"), chk2["id"])).json()

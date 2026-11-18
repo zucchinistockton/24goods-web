@@ -41,6 +41,16 @@ export async function confirm(title: string, message: string): Promise<boolean> 
   }
 }
 
+/** Promise-based dialog with one or two buttons; resolves true for the main button. */
+export async function ask(title: string, message: string, main: string, cancel?: string): Promise<boolean> {
+  try {
+    await showConfirmDialog({ title, message, confirmButtonText: main, showCancelButton: Boolean(cancel), cancelButtonText: cancel })
+    return true
+  } catch {
+    return false
+  }
+}
+
 /** SmartText URL chip: show the FULL url and let the user decide (review-v4 §7). */
 export async function confirmOpenLink(url: string): Promise<boolean> {
   const t = i18n.global.t

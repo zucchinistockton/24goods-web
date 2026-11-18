@@ -31,7 +31,8 @@ import { usePow, isPowAbort } from '../composables/usePow'
 import { useTurnstile } from '../composables/useTurnstile'
 import CredentialsSheet from './CredentialsSheet.vue'
 import PowStatus from './PowStatus.vue'
-import { showToast, toastError } from '../ui'
+import { ask, errorText, showToast, toastError } from '../ui'
+import { isApiError, type ApiError } from '@24goods/shared'
 import { isSoldOut, maxOrderQty } from '../lib/stock'
 import { siteAccessCleared } from '../lib/securityChallenge'
 
@@ -173,9 +174,23 @@ async function placeOrder() {
     emit('update:show', false)
     await router.push(`/orders/${encodeURIComponent(order.id)}`)
   } catch (e) {
-    toastError(e)
+    if (isApiError(e) && e.code.startsWith('preflight_')) void preflightRefused(e)
+    else toastError(e)
   } finally {
     submitting.value = false
+  }
+}
+/** The account pre-check refused (review-v12 §24): no order exists and nothing was paid. Explain
+ *  it in a dialog (not a toast that vanishes) and offer a fresh paste when the session is the problem. */
+async function preflightRefused(e: ApiError) {
+  const raw = (e.details as { current_plan?: unknown } | null)?.current_plan
+  const plan = typeof raw === 'string' && /^[a-z0-9_ -]{1,40}$/i.test(raw) ? raw : null
+  const msg = e.code === 'preflight_plan_active' && plan ? t('direct.preflight.planActive', { plan }) : errorText(e)
+  const repaste = e.code === 'preflight_session_invalid'
+  const again = await ask(t('direct.preflight.title'), msg, repaste ? t('direct.pasteAgain') : t('common.ok'), repaste ? t('common.cancel') : undefined)
+  if (again && repaste && isDirect.value) {
+    pendingGuest = false
+    showSession.value = true
   }
 }
 
@@ -323,7 +338,7 @@ async function credsDone() {
       </div>
 
       <template v-if="auth.loggedIn">
-        <van-button block round type="primary" size="large" :loading="submitting || resolving" :disabled="!canSubmit" @click="begin(false)">
+        <van-button block round type="primary" size="large" :loading="submitting || resolving" :loading-text="isDirect && submitting ? t('direct.preflight.checking') : undefined" :disabled="!canSubmit" @click="begin(false)">
           {{ t('product.placeOrder') }}
         </van-button>
       </template>
