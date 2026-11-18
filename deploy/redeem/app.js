@@ -1,5 +1,8 @@
-/* Redemption flow: code -> account session -> confirm -> result. No framework, no storage, no
- * third-party code. The code, the tokens and the session text live only in this page's memory. */
+/* Redemption flow: code -> account session -> confirm -> result. No framework, no third-party code.
+ * The code and the session text live only in this page's memory (a pasted session is taken out of the
+ * text box at once and never rendered). After "Redeem now" the redemption REFERENCE (token + request
+ * id, never the code or the session) is kept in sessionStorage for this tab only, so a reload resumes
+ * the progress instead of losing it; it is dropped when the redemption ends. */
 (function () {
   'use strict'
   var T = {
@@ -9,7 +12,14 @@
       codeLabel: 'Redemption code', check: 'Check code',
       accountTitle: 'Connect your account', plan: 'Plan',
       how1: 'In this browser, sign in to the account that should receive the plan.',
-      how2: 'Open this page in a new tab and copy everything it shows:', how3: 'Paste it below.',
+      how2: 'Tap the button below. The page opens in a new tab; select everything it shows and copy it.', how3: 'Paste it below.',
+      openSession: 'Open my ChatGPT session page', placeholder: 'Paste the whole page here', pasteAgain: 'Paste again',
+      received: 'Session received ({size})', account: 'Account', currentPlan: 'Current plan', validUntil: 'Valid until',
+      x_incomplete: 'This is not the complete session. Open the page again, select everything and copy it once more.',
+      x_access_token_only: 'Only part of the session was copied. Copy everything the page shows, not just the token.',
+      x_missing_token: 'This session is missing a required part. Sign in again in this browser, then copy the whole page.',
+      x_expired: 'This session has expired. Sign in again in this browser, then copy the whole page.',
+      elapsed: 'Time elapsed: {t}', submitting: 'Submitting your redemption…', resumed: 'Showing the redemption you started in this tab.',
       sessionLabel: 'Session text',
       sessionNote: 'This text gives access to your account. Paste it only here. It is used once for this redemption and is not stored or logged by us.',
       continue: 'Continue', otherCode: 'Use a different code',
@@ -23,9 +33,9 @@
       badTitle: 'Not completed', badLead: 'The redemption did not go through. Contact support with the reference below.',
       laterTitle: 'Still in progress', laterLead: 'It is taking longer than usual. Your code is safe: check again in a few minutes, and do not start over.',
       progTitle: 'Progress', progAt: 'Completed',
-      p_sent: 'Code accepted', p_half_check: 'Half-price check', p_waiting_supplier: 'Waiting for the supplier',
-      p_queued: 'Queued', p_funding: 'Preparing payment', p_processing: 'Being applied to your account',
-      p_payment_submitted: 'Payment submitted', p_completed: 'Completed', p_failed: 'Not completed',
+      p_sent: 'Code accepted', p_half_check: 'Half-price check', p_waiting_supplier: 'In queue',
+      p_queued: 'Queued', p_funding: 'Preparing the upgrade', p_processing: 'Being applied to your account',
+      p_payment_submitted: 'Activating the plan', p_completed: 'Completed', p_failed: 'Not completed',
       p_refunded: 'Refunded', p_attention: 'Needs attention', p_unknown: 'In progress',
       s_done: 'Done', s_current: 'In progress', s_todo: 'Not started', s_failed: 'Failed', s_attention: 'Needs attention',
       progAnnounce: 'Progress {p}%: {s}',
@@ -53,7 +63,14 @@
       codeLabel: '兑换码', check: '校验兑换码',
       accountTitle: '关联你的账号', plan: '套餐',
       how1: '在当前浏览器中登录需要开通套餐的账号。',
-      how2: '在新标签页打开以下页面，并复制页面显示的全部内容：', how3: '粘贴到下方。',
+      how2: '点击下方按钮，页面会在新标签页打开；全选页面显示的内容并复制。', how3: '粘贴到下方。',
+      openSession: '打开我的 ChatGPT 会话页面', placeholder: '在此粘贴整个页面的内容', pasteAgain: '重新粘贴',
+      received: '已收到会话（{size}）', account: '账号', currentPlan: '当前套餐', validUntil: '有效期至',
+      x_incomplete: '这不是完整的会话内容。请重新打开页面，全选后再复制一次。',
+      x_access_token_only: '只复制了部分内容。请复制页面显示的全部内容，而不只是令牌。',
+      x_missing_token: '会话内容缺少必要部分。请在此浏览器重新登录，然后复制整个页面。',
+      x_expired: '会话已过期。请在此浏览器重新登录，然后复制整个页面。',
+      elapsed: '已用时：{t}', submitting: '正在提交兑换…', resumed: '正在显示你在此标签页发起的兑换。',
       sessionLabel: '会话内容',
       sessionNote: '这段内容可以访问你的账号，请只粘贴在这里。它仅用于本次兑换，我们不会保存或记录。',
       continue: '继续', otherCode: '更换兑换码',
@@ -67,9 +84,9 @@
       badTitle: '兑换未完成', badLead: '兑换没有成功，请携带下方参考编号联系客服。',
       laterTitle: '仍在处理中', laterLead: '处理时间比平时长。你的兑换码是安全的：请几分钟后再次查询，不要重新开始。',
       progTitle: '进度', progAt: '完成于',
-      p_sent: '兑换码已受理', p_half_check: '半价资格检查', p_waiting_supplier: '等待供应商',
-      p_queued: '排队中', p_funding: '准备付款', p_processing: '正在开通到你的账号',
-      p_payment_submitted: '已提交付款', p_completed: '已完成', p_failed: '未完成',
+      p_sent: '兑换码已受理', p_half_check: '半价资格检查', p_waiting_supplier: '排队中',
+      p_queued: '排队中', p_funding: '正在准备开通', p_processing: '正在开通到你的账号',
+      p_payment_submitted: '正在激活套餐', p_completed: '已完成', p_failed: '未完成',
       p_refunded: '已退款', p_attention: '需要处理', p_unknown: '处理中',
       s_done: '已完成', s_current: '进行中', s_todo: '未开始', s_failed: '失败', s_attention: '需要处理',
       progAnnounce: '进度 {p}%：{s}',
@@ -106,6 +123,9 @@
     $('lang').textContent = t('lang')
     var nodes = document.querySelectorAll('[data-t]')
     for (var i = 0; i < nodes.length; i++) nodes[i].textContent = t(nodes[i].getAttribute('data-t'))
+    var ph = document.querySelectorAll('[data-t-placeholder]')
+    for (var j = 0; j < ph.length; j++) ph[j].setAttribute('placeholder', t(ph[j].getAttribute('data-t-placeholder')))
+    renderHeld()
     if (st.result) showResult(st.result.kind, st.result.order)
     renderProgress(st.progress)
     renderNotice()
@@ -173,13 +193,16 @@
     }, function () { throw { code: 'network' } })
   }
   function reset() {
-    st.token = st.preflight = st.credential = st.requestId = st.result = st.progress = null
+    st.token = st.preflight = st.credential = st.requestId = st.result = st.progress = st.startedAt = null
+    $('elapsed').hidden = true
     st.progressSig = undefined
     $('pannounce').textContent = ''
     renderProgress(null)
     st.plan = ''
     $('code').value = ''
-    $('session').value = ''
+    forget()
+    saveRef(null)
+    stopElapsed()
     alertMsg(null)
     show(0)
   }
@@ -208,10 +231,92 @@
     }, failed).then(function () { busy(btn, false) })
   })
 
+  // ---- the pasted session: taken out of the text box at once and summarised, never rendered (a
+  // multi-kilobyte token in a text box is what makes translation / grammar extensions freeze a page)
+  var held = null
+  var TAKE_AT = 200
+  function maskEmail(v) {
+    if (typeof v !== 'string') return ''
+    var at = v.indexOf('@')
+    return at > 0 && at < v.length - 1 ? (v.charAt(0) + '***' + v.slice(at)).slice(0, 64) : ''
+  }
+  function jwtExp(tok) {
+    var part = String(tok || '').split('.')[1]
+    if (!part) return null
+    try {
+      var b = part.replace(/-/g, '+').replace(/_/g, '/')
+      var c = JSON.parse(atob(b + '===='.slice(0, (4 - b.length % 4) % 4)))
+      return c && typeof c.exp === 'number' && isFinite(c.exp) ? c.exp * 1000 : null
+    } catch (e) { return null }
+  }
+  function summarise(raw) {
+    var text = String(raw || '').trim()
+    var out = { bytes: new TextEncoder().encode(text).length, account: '', plan: '', until: null, problem: '' }
+    if ($('how-link').hidden) return out // not a ChatGPT code: size only
+    var i = text.indexOf('{')
+    if (i < 0) { out.problem = /^eyJ/.test(text) ? 'access_token_only' : 'incomplete'; return out }
+    var d = null
+    try { d = JSON.parse(text.slice(i, text.lastIndexOf('}') + 1)) } catch (e) { d = null }
+    if (!d || typeof d !== 'object' || Array.isArray(d)) { out.problem = 'incomplete'; return out }
+    out.account = maskEmail(d.user && d.user.email)
+    out.plan = d.account && typeof d.account.planType === 'string' ? d.account.planType.slice(0, 40) : ''
+    if (typeof d.sessionToken !== 'string' || typeof d.accessToken !== 'string' || !d.sessionToken || !d.accessToken) { out.problem = 'missing_token'; return out }
+    var ends = [jwtExp(d.accessToken), Date.parse(d.expires || '')].filter(function (x) { return x !== null && isFinite(x) })
+    out.until = ends.length ? Math.min.apply(null, ends) : null
+    if (out.until !== null && out.until <= Date.now()) out.problem = 'expired'
+    return out
+  }
+  function hold(text) {
+    held = { text: text, sum: summarise(text) }
+    $('session').value = ''
+    $('session').hidden = true
+    alertMsg(null)
+    renderHeld()
+  }
+  function forget() {
+    held = null
+    $('session').value = ''
+    $('session').hidden = false
+    renderHeld()
+  }
+  function size(b) { return b < 1024 ? b + ' B' : (b / 1024).toFixed(1) + ' KB' }
+  function renderHeld() {
+    var box = $('held')
+    var go = $('f-account').querySelector('.primary')
+    if (!held) { box.hidden = true; go.disabled = st.busy; return }
+    var sum = held.sum
+    box.hidden = false
+    box.className = sum.problem ? 'held bad' : 'held'
+    $('held-title').textContent = sum.problem ? t('x_' + sum.problem) : t('received').replace('{size}', size(sum.bytes))
+    var dl = $('held-facts')
+    dl.textContent = ''
+    if (!sum.problem) {
+      ;[['account', sum.account], ['currentPlan', sum.plan], ['validUntil', sum.until ? stamp(sum.until) : '']].forEach(function (r) {
+        if (!r[1]) return
+        var div = document.createElement('div')
+        var dt = document.createElement('dt'); dt.textContent = t(r[0])
+        var dd = document.createElement('dd'); dd.textContent = r[1]
+        div.appendChild(dt); div.appendChild(dd); dl.appendChild(div)
+      })
+    }
+    go.disabled = st.busy || !!sum.problem
+  }
+  $('session').addEventListener('paste', function (ev) {
+    var txt = ev.clipboardData && ev.clipboardData.getData('text/plain')
+    if (!txt) return
+    ev.preventDefault() // never inserted into the text box
+    hold(txt.trim())
+  })
+  $('session').addEventListener('input', function () {
+    if (this.value.length > TAKE_AT) hold(this.value.trim()) // typed / dropped / pasted by an extension
+  })
+  $('repaste').addEventListener('click', function () { forget(); $('session').focus() })
+
   $('f-account').addEventListener('submit', function (ev) {
     ev.preventDefault()
-    var session = $('session').value.trim()
     if (st.busy) return
+    if (held && held.sum.problem) return
+    var session = held ? held.text : $('session').value.trim()
     if (session.length < 8) { alertMsg('credential_invalid'); return }
     var btn = this.querySelector('.primary')
     var cred = { mode: 'session', session: session }
@@ -220,7 +325,7 @@
       st.preflight = d.preflight_token || null
       // codes without a preflight token need the credential again at the last step; otherwise drop it now
       st.credential = st.preflight ? null : cred
-      $('session').value = ''
+      forget()
       var region = [d.payment_country, d.payment_currency].filter(Boolean).join(' · ')
       $('region').textContent = region
       $('row-region').hidden = !region
@@ -235,21 +340,59 @@
     var a = new Uint8Array(16); crypto.getRandomValues(a)
     return Array.prototype.map.call(a, function (b) { return ('0' + b.toString(16)).slice(-2) }).join('')
   }
+  // ---- after "Redeem now": the progress screen at once (no waiting on a button), then the answer
+  var REF_KEY = 'redeem-ref-v1'
+  function saveRef(ref) {
+    try { if (ref) sessionStorage.setItem(REF_KEY, JSON.stringify(ref)); else sessionStorage.removeItem(REF_KEY) } catch (e) {}
+  }
+  function loadRef() {
+    try {
+      var r = JSON.parse(sessionStorage.getItem(REF_KEY) || 'null')
+      var fresh = r && typeof r.token === 'string' && /^[A-Za-z0-9_-]{8,120}$/.test(r.token) && typeof r.at === 'number' && Date.now() - r.at < 2 * 3600e3
+      return fresh ? r : null
+    } catch (e) { return null }
+  }
+  var elapsedTimer = null
+  function startElapsed(since) {
+    stopElapsed()
+    var el = $('elapsed')
+    function tick() {
+      var sec = Math.max(0, Math.floor((Date.now() - since) / 1000))
+      el.textContent = t('elapsed').replace('{t}', Math.floor(sec / 60) + ':' + ('0' + (sec % 60)).slice(-2))
+    }
+    el.hidden = false
+    tick()
+    elapsedTimer = setInterval(tick, 1000)
+  }
+  function stopElapsed() { if (elapsedTimer) clearInterval(elapsedTimer); elapsedTimer = null }
+  function firstSteps() {
+    return { percent: 5, outcome: 'active', step: 'sent', steps: [{ key: 'sent', state: 'current' }, { key: 'processing', state: 'todo' }, { key: 'completed', state: 'todo' }] }
+  }
+  function remember() { saveRef({ token: st.token, rid: st.requestId, at: st.startedAt }) }
   $('go').addEventListener('click', function () {
     if (st.busy) return
     var btn = this
     // the same id on every retry: the supplier treats a repeat as the same request
     st.requestId = st.requestId || newId()
+    st.startedAt = st.startedAt || Date.now()
     var body = { redemption_token: st.token, client_request_id: st.requestId }
     if (st.preflight) body.preflight_token = st.preflight
     else body.credential = st.credential
     alertMsg(null); busy(btn, true)
+    renderProgress(firstSteps())
+    showResult('wait')
+    $('state-lead').textContent = t('submitting')
+    startElapsed(st.startedAt)
     call('redeem', body).then(function (d) {
       st.credential = null
+      remember()
       settle(d) || poll()
     }, function (e) {
-      if (e.code === 'conflict') { st.credential = null; poll(); return }
-      failed(e)
+      if (e.code === 'conflict') { st.credential = null; remember(); poll(); return }
+      // not accepted: back to the confirm step; a retry reuses the request id, so it is safe
+      stopElapsed(); $('elapsed').hidden = true
+      st.result = null; st.progress = null; renderProgress(null)
+      show(2); failed(e)
     }).then(function () { busy(btn, false) })
   })
 
@@ -259,7 +402,7 @@
   function stamp(at) {
     var ms = typeof at === 'number' ? (at < 1e12 ? at * 1000 : at) : typeof at === 'string' ? Date.parse(at) : NaN
     if (!isFinite(ms) || ms <= 0) return ''
-    try { return new Date(ms).toLocaleString(lang === 'zh' ? 'zh-CN' : 'en', { dateStyle: 'medium', timeStyle: 'short' }) } catch (e) { return '' }
+    try { return new Date(ms).toLocaleString(lang === 'zh' ? 'zh-CN' : 'en', { dateStyle: 'medium', timeStyle: 'medium', hourCycle: 'h23' }) } catch (e) { return '' }
   }
   var GLYPH = { done: '\u2713', current: '\u25C9', failed: '!', attention: '!', todo: '\u25CB' }
   function isoStamp(at) {
@@ -327,6 +470,8 @@
     $('order').textContent = st.result.order
     $('row-order').hidden = !st.result.order
     $('again').hidden = kind !== 'later'
+    if (kind === 'ok' || kind === 'bad') { saveRef(null); stopElapsed() }
+    if (kind === 'later') stopElapsed()
     $('restart').hidden = kind === 'wait' || kind === 'later'
     if (st.step !== 3) show(3)
   }
@@ -349,7 +494,7 @@
       }
     })()
   }
-  $('again').addEventListener('click', poll)
+  $('again').addEventListener('click', function () { if (st.startedAt) startElapsed(st.startedAt); poll() })
   $('restart').addEventListener('click', reset)
   $('back-code').addEventListener('click', reset)
   $('back-account').addEventListener('click', function () { alertMsg(null); show(1) })
@@ -358,6 +503,16 @@
   window.addEventListener('pagehide', function () { $('code').value = ''; $('session').value = '' })
   paint()
   show(0)
+  // a reload during a redemption shows its progress again instead of an empty form
+  ;(function resume() {
+    var ref = loadRef()
+    if (!ref) return
+    st.token = ref.token; st.requestId = ref.rid || null; st.startedAt = ref.at
+    renderProgress(firstSteps())
+    poll()
+    $('state-lead').textContent = t('resumed')
+    startElapsed(ref.at)
+  })()
   // the shop's "Redeem now" button passes the code in the URL FRAGMENT (#code=...): it never reaches
   // a server or a log. Fill it in, then drop it from the address bar and the history entry at once.
   ;(function prefill() {

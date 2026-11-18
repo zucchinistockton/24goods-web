@@ -63,6 +63,14 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
   redemption page with the code filled in through the URL fragment (never sent to a server) and copied. The
   demo simulator's orders now report the pasted account (showcase mode), which had held the owner's demo direct
   orders as `order_mismatch`.
+  **Redemption site (owner request 2026-11-18):** the pasted session is taken out of the text box at once
+  and summarised (masked account, current plan, validity, size; cut-off / token-only / incomplete / expired
+  refused with a clear message), never rendered, like the shop's session sheet; a full-width button opens
+  `https://chatgpt.com/api/auth/session` in a new tab; "Redeem now" switches to the progress screen at once
+  (steps, percent, elapsed time) instead of waiting on the button; a reload in the same tab resumes the progress
+  (only the redemption token and request id are kept, in `sessionStorage`, dropped at the end); no supplier
+  wording; times with seconds. The vendor's reference CDK site (no licence, ADR-044) was used as a feature
+  checklist only (resume after reload and a timeline were taken over as ideas, no code).
 - **The ZovoCard sandbox is NOT available and cannot be used for the time being (2026-11-18).** The sandbox
   token and test account have expired (the authenticated API answers 401 since at least 04:38 UTC), the testing
   period has ended and the support-ticket deadline has passed, so no new sandbox can be requested now. **Rule
