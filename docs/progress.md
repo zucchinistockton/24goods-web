@@ -18,8 +18,9 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
   `procurement` user has `&rt:procprogress +publish` (backup `/root/demo-backups/users.acl-20261117T214314Z`). Demo redemption page `redeem-demo.kesiv.com` (production page
   `redeem.kesiv.com`). Testing guide: `docs/testing-guide.md`. **The demo's supplier is the built-in simulator**
   (`sandbox-off.sh` run 2026-11-18 07:49 UTC, env backup `deploy/env.bak-20261118T074913Z`); the supplier row is
-  still labelled `zovocard · Sandbox`. The demo's direct source still names the expired sandbox card `257662`
-  (simulator card: `1`, testing guide §8), so direct orders there go to staff until that source is edited.
+  still labelled `zovocard · Sandbox`. **Demo showcase (2026-11-18, set up through the admin API, audited):** the
+  direct product is live as "ChatGPT Plus · direct top-up (demo)" with four plan × region variants (Plus and Plus
+  half price × Philippines / US; 99 / 69 / 169 / 139 CNY), all sources on the simulator's funding card `1`.
 - **The ZovoCard sandbox is NOT available and cannot be used for the time being (2026-11-18).** The sandbox
   token and test account have expired (the authenticated API answers 401 since at least 04:38 UTC), the testing
   period has ended and the support-ticket deadline has passed, so no new sandbox can be requested now. **Rule
