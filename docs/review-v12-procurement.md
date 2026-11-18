@@ -290,7 +290,7 @@ redeem 6, result 40. One shared budget per step for all buyers, because the vend
 Redis keys are `rl:proc:redeem-*` with a keyed hash of the identifier (inside the `procurement` ACL; no
 bootstrap change needed). Upstream timeout 20 s (5 s connect), one request per step, no automatic retry.
 
-**What is never recorded.** Log lines carry the step, the mapped outcome and the vendor HTTP status only;
+**What is never recorded.** (Since issue #31 the proxy also writes the masked attempt log of §23 and serves `GET /redeem/config`; the rules below still hold for everything else.) Log lines carry the step, the mapped outcome and the vendor HTTP status only;
 no body, header, URL query, exception message, code, token or credential (the `httpx` logger is forced to
 WARNING because the vendor's result call carries the token in its query). No audit rows are written, no
 database is touched except the supplier lookup (cached 30 s). Caddy drops query strings, `Cookie`,
@@ -1588,3 +1588,77 @@ backing off to 15 s, 2 min); no extra vendor call.
 dedupe by value and by vendor event id / the 200 cap, the webhook whitelist, the redemption shape; with the engine and the mock
 vendor: timeline rows, staff view, buyer view (coarse keys, leak sweep including the session marker), one realtime publish per
 step change, a webhook entry, tenant isolation (foreign job 404, RLS, other buyer 404). Vitest: `test/directProgress.test.ts`.
+
+## 23. Redemption admin (issue #31)
+
+Goal: staff can see what happens on the redemption site and act on it, inside the existing console (Procurement > Redemptions), with
+no second app. The vendor's reference repository (`zovo_card_cdk_auto`, no licence file) was used only as a feature checklist (CDK list,
+order reconciliation, lifecycle labels, settings); nothing was copied or translated.
+
+**23.1 Attempt log.** Table `redeem_attempts` (migration `0035_redeem_admin`, tenant-scoped, ENABLE + FORCE RLS): `at`, `step`
+(preview / preflight / redeem / result), `outcome` (`ok`, `completed`, `failed`, `error`, `rate_limited`, `invalid`, `maintenance`), a
+coarse `reason` (one code of the proxy's fixed vocabulary or the buyer-progress reason), `code_head` / `code_tail`, `code_fp`, `plan`,
+`ip_hash`. Written by the proxy (`app_procurement`: INSERT, SELECT, DELETE; an unpinned policy lets the sweeper delete), read by the API
+(`app_api`: SELECT only, so nobody can edit or delete a row). **Never stored or logged:** a code, a redemption / preflight token, a session,
+a raw address. The mask keeps `k = min(4, len/6)` characters from each end (25-char code: 4 + 4; never more than a third). `code_fp` is the
+existing keyed code fingerprint of delivered codes (`CardSealer.fingerprint(tenant, code)`, procurement already holds the key to seal): a
+match handle, which is how the console finds our order for a code without the code. `ip_hash` is an HMAC (key derived from the procurement
+token) of the /24 (IPv4) or /48 (IPv6) network, first 32 hex characters; **country is not recorded** (the proxy gets no country header it
+can trust). The code -> token link is kept only in the proxy's memory (keyed hash of the token, 20 minutes, 5000 entries), so later steps
+carry the masked code without any Redis write (the Redis ACL is unchanged). A restart costs the masked code on the steps of an attempt in
+flight. Logged: every preview / preflight / redeem answer, every failure with its code, rate limits, maintenance; not logged: cross-origin
+and wrong-method noise, the normal "no result yet" (`not_found`) and non-terminal polls. The terminal `result` is logged once per attempt.
+Non-ok rows are capped at 30 per client class (/24 or /48, the same keyed hash as `ip_hash`) per minute and 600 per tenant per minute (Redis counters; over either the row is dropped and counted in memory, never written), and a failed insert never changes the buyer's answer.
+**Order reference:** resolved when the console reads (log rows join `card_stock.fingerprint` -> `orders.order_no` in the platform tenant),
+so it also works for rows written before the order existed. A code sold under another tenant is not resolved. **Retention:** rows older
+than 90 days are deleted by the procurement sweeper (`sweep_credentials`, throttled like the session sweep).
+
+**23.2 Staff API** (`modules/admin/procurement_redeem.py`, platform tenant only, rate limited, `/api/v1/admin/procurement/redeem`):
+`GET attempts` (staff: filters `q` masked code, `order_ref`, `outcome`, `step`, `date_from`, `date_to`, paging), `GET stats?days=` (staff),
+`POST lookup {code | order_ref}` (staff), `POST cdk/{disable|enable} {code, confirm: true, force_unsold?}` (administrator, session only; the code must match a `card_stock` fingerprint of the platform tenant or the call is refused 409 `code_not_ours`; `force_unsold: true` with `confirm: true` bypasses that and the warning audit row carries `force_unsold`),
+`GET|PUT settings` (administrator). **Agents are staff**: they read; settings and vendor writes are administrator-only. **Lookup:** the pasted
+code is validated, fingerprinted in memory, sent once to the procurement internal API (`POST /internal/redeem/cdk-status`) and
+discarded; the answer is our order (number, status, paid / delivered, buyer masked as `a***@domain`), our recorded attempts for that
+fingerprint and the vendor's CDK status. An order reference shows our side only (the order holds a sealed code we cannot read, so
+there is no vendor call). The vendor read is `GET /gpt-direct/cdks?q=<code>&page_size=10` with a local exact comparison of `code`. **Disable /
+enable:** `POST /internal/redeem/cdk-set` finds the vendor id from the code again, applies the production-write guard
+(`APP_PROCUREMENT_ALLOW_PRODUCTION_WRITES` plus the client's `production_target` backstop; refused with 409 `production_writes_disabled`
+before any call), then `POST /gpt-direct/cdks/{id}/disable|enable`. The audit row (`procurement.redeem_cdk_disabled` / `_enabled`,
+severity warning) has `before` / `after` statuses and in `detail` a masked code, the order number if ours, the vendor id, supplier and
+environment; never the code.
+
+**23.3 Stats.** `GET stats`: one entry for each of the last N (default 30, max 90) UTC days with `attempts` (preview rows), `completed` and
+`failed` (a failed result, or a failed redeem step) and `success_rate` = completed / (completed + failed) as a 4-decimal string (`null`
+when nothing finished); totals; top failure reasons (outcomes `failed` and `error`). Pure maths in `procurement/redeem_log.py`.
+
+**23.4 Settings** in `tenants.redeem_settings` (jsonb, the tenant settings mechanism extended by one column so that the proxy can read it
+WITHOUT being granted `tenants.settings`: `app_procurement` gets `SELECT (redeem_settings)` only, `app_api` `UPDATE (redeem_settings)`).
+Keys: `maintenance` (bool), `maintenance_en` / `_zh` (200 chars), `announcement_en` / `_zh` (300 chars), `ip_limits` per step (preview 1-30,
+preflight 1-20, redeem 1-20, result 1-60 per minute per client IP; never above the vendor's own per-IP limits; empty = the deployment
+default). Text is plain: control and bidi characters removed, whitespace collapsed, capped on write AND on read; the page sets it with
+`textContent`. The global shared budgets and the per-code / per-token limits stay environment-only (they protect the vendor budget).
+**Maintenance** is checked right after the per-IP counter and the origin check, before the body is read: every step answers 503
+`maintenance` and nothing reaches the vendor, except that `result` (a read) still works for a token the proxy issued before maintenance (present in the in-memory token map); new preview / preflight / redeem stay blocked. Announcement and maintenance texts are plain text: bidi, zero-width, tag and other invisible characters are stripped and `://` or `www.` is refused (422 `announcement_no_links`). `GET /redeem/config` is served with `Cache-Control: public, max-age=30`, so a switch is visible within 30 s of the proxy's own cache. The proxy caches the settings for `APP_REDEEM_SETTINGS_TTL_S` (15 s). A settings read
+failure keeps the last known settings. New public route `GET /redeem/config` (no cookies, `no-store`, 60 / min / IP; Caddy forwards it) returns
+`{maintenance, maintenance_message: {en, zh}, announcement: {en, zh}}`; the page shows the announcement (or the maintenance text) above
+the form. Changes write `procurement.redeem_settings_updated` with before / after (severity warning when maintenance changes).
+
+**23.5 Console.** Procurement > Redemptions, sub-tabs Log / Code lookup / Stats / Settings (administrators), en + zh-CN
+(`RedeemPanel.vue`, helpers `lib/redeem.ts`). The lookup input is a password field cleared after each request; disable / enable asks
+for confirmation and shows the masked code.
+
+**[I] Inferred (not in the vendor docs, to confirm in the sandbox before real money):** the item shape of `GET /gpt-direct/cdks` (`id`,
+`code`, `status`, `plan`; the doc says the list returns "the full code"), that `q` matches the code, that the status vocabulary is
+the documented one (unused, reserved, consumed, review, frozen, disabled), that `enable` answers `data.status` (else we re-read), the vendor
+error code of a refused disable (`CDK_DISABLE_REJECTED` is documented for disable only; any 409 is shown as `cdk_rejected`), and
+that `enable` is allowed for a code we disabled. The mock (`mock_zovocard.py`) now serves `q` / `status` / `plan` / `page_size` on the list
+and `POST .../enable`.
+
+**23.6 Tests** (`tests/test_redeem_admin.py`, 25): masking, keyed IP class, settings normalisation, stats maths; a full walk is logged with
+no secret in any column or log line; failure reasons; the per-client log budget; no sealer; a failing insert; maintenance blocks every
+vendor call and is logged; the config route and the page's text-only rendering (static check of `app.js`); limit overrides within bounds;
+retention (91 / 120 / 365 days deleted, 89 kept, also through the engine sweeper); the API role cannot edit or delete rows; roles (buyer,
+agent, admin, other tenant); tenant isolation (RLS and lookup by another tenant's order); search / filters / paging with order
+resolution; stats from rows; lookup (ours, not ours, unknown, by order, unreachable procurement); disable / enable (confirmation, audit
+before / after, no code in rows, logs or audit, vendor refusal); the production-write guard in both directions; internal routes need the
+token; settings (admin only, validation, merge, audit, reaches the proxy); column grants of `tenants`. Vitest: `test/redeem-admin.test.ts`.

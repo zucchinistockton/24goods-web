@@ -88,6 +88,7 @@ class ProcurementSettings:
     redeem_global_limits: str = "preview=25,preflight=20,redeem=15,result=55"
     redeem_code_per_10min: int = 10  # preview attempts per code (hashed) before a cool-down
     redeem_token_per_min: int = 40  # per redemption token (hashed), all steps
+    redeem_settings_ttl_s: float = 15.0  # how long the proxy keeps the console's site settings
 
     def __post_init__(self) -> None:
         # the database backstop (migration 0030) lets the API delete a session older than 6 h

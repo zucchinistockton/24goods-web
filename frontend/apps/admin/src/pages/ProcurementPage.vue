@@ -25,6 +25,7 @@ import {
 import PricingPanel from '../components/PricingPanel.vue'
 import RegionsPanel from '../components/RegionsPanel.vue'
 import CardsPanel from '../components/CardsPanel.vue'
+import RedeemPanel from '../components/RedeemPanel.vue'
 import { createSuppliersApi, type AdminSupplier } from '../api-suppliers'
 import { usePaged } from '../composables/usePaged'
 import { useAuthStore } from '../stores/auth'
@@ -35,7 +36,7 @@ const suppliersApi = createSuppliersApi(client)
 const auth = useAuthStore()
 const { t, te, locale } = useI18n()
 
-const tab = ref<'jobs' | 'sources' | 'cost' | 'pricing' | 'regions' | 'cards'>('jobs')
+const tab = ref<'jobs' | 'sources' | 'cost' | 'pricing' | 'regions' | 'cards' | 'redeem'>('jobs')
 // decline-rate warning badge on the Cards tab (80 % of a vendor threshold); staff can read it
 const riskLevel = ref<'ok' | 'warning' | 'critical'>('ok')
 const when = (v: string | null | undefined) => (v ? formatDateTime(v, locale.value) : '—')
@@ -604,6 +605,9 @@ onMounted(() => {
       </el-tab-pane>
       <el-tab-pane v-if="auth.isAdmin" name="regions" :label="t('procurement.tab.regions')" lazy>
         <RegionsPanel />
+      </el-tab-pane>
+      <el-tab-pane name="redeem" :label="t('procurement.tab.redeem')" lazy>
+        <RedeemPanel />
       </el-tab-pane>
     </el-tabs>
 

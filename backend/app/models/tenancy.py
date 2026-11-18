@@ -19,6 +19,8 @@ class Tenant(Base):
     kind: Mapped[str] = mapped_column(String(16), default="platform")
     status: Mapped[str] = mapped_column(String(16), default="active")
     settings: Mapped[dict[str, Any]] = mapped_column(default=dict)
+    # redemption site switches (migration 0035); procurement may read ONLY this column
+    redeem_settings: Mapped[dict[str, Any] | None] = mapped_column(deferred=True)
     created_at: Mapped[datetime] = created_at()
 
 
