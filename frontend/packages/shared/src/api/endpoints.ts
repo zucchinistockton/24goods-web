@@ -1,6 +1,7 @@
 import type { ApiClient } from './client'
 import { seg } from './client'
 import type {
+  RecentPurchase,
   AfterSales,
   AfterSalesInput,
   CartQuote,
@@ -200,6 +201,8 @@ export function createBuyerApi(c: ApiClient) {
         limit: q.limit ?? 8,
       }),
     product: (id: string) => c.get<Product>(`/products/${seg(id)}`),
+    /** orders delivered in the last hour: product, option, time, masked buyer (owner request 2026-11-18) */
+    recentPurchases: () => c.get<{ items: RecentPurchase[] }>('/recent-purchases'),
     articles: {
       list: (q: { category?: string; page?: number; page_size?: number } = {}) =>
         c.get<Paginated<ArticleSummary>>('/articles', q),

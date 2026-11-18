@@ -106,6 +106,8 @@ function toDate(iso: string | Date): Date {
   return iso instanceof Date ? iso : new Date(iso)
 }
 
+/** Full date and time WITH seconds (owner rule 2026-11-18: a buyer or an agent can match a record
+ *  in the logs / the supplier's console to the second), 24-hour clock. */
 export function formatDateTime(iso: string | null | undefined, locale: string): string {
   if (!iso) return '—'
   const d = toDate(iso)
@@ -116,6 +118,8 @@ export function formatDateTime(iso: string | null | undefined, locale: string): 
     day: '2-digit',
     hour: '2-digit',
     minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
   }).format(d)
 }
 

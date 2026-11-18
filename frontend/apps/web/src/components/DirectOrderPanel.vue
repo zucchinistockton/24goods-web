@@ -3,7 +3,7 @@
  * What the buyer may see of a direct order: the masked account, the plan and where it stands.
  * When the first session expired or was refused, the buyer can supply a fresh one here.
  */
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { DirectOrderInfo } from '@24goods/shared'
 import { api } from '../api'
@@ -13,7 +13,13 @@ import DirectSessionSheet from './DirectSessionSheet.vue'
 import { useRealtimeStore } from '../stores/realtime'
 import { showSuccessToast, toastError } from '../ui'
 
-const props = defineProps<{ orderId: string; productId: string | null; canResupply: boolean }>()
+const props = defineProps<{
+  orderId: string
+  productId: string | null
+  canResupply: boolean
+  /** the order's version: a change (paid, delivered, refunded...) reloads the progress at once */
+  version?: number
+}>()
 const { t, te } = useI18n()
 const info = ref<DirectOrderInfo | null>(null)
 const asking = ref(false)
@@ -32,11 +38,24 @@ onMounted(load)
 // events that arrive during one cost a single extra load. Nothing polls beyond the page's sync.
 const rt = useRealtimeStore()
 const refetch = createCoalescer(load, 500)
-const off = rt.on('order_progress', (e) => {
-  if (e.order_id === props.orderId) refetch.trigger()
-})
+const offs = [
+  rt.on('order_progress', (e) => {
+    if (e.order_id === props.orderId) refetch.trigger()
+  }),
+  // live updates paused (polling every few seconds) or back after a reconnect: catch up too, or
+  // the steps would stand still until a manual reload (owner report 2026-11-18)
+  rt.on('sync', () => {
+    if (!info.value?.progress?.terminal) refetch.trigger()
+  }),
+]
+watch(
+  () => props.version,
+  (v, old) => {
+    if (v !== undefined && old !== undefined && v !== old) refetch.trigger()
+  },
+)
 onBeforeUnmount(() => {
-  off()
+  offs.forEach((off) => off())
   refetch.cancel()
 })
 defineExpose({ load })

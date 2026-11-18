@@ -9,6 +9,7 @@ import Announcement from '../components/Announcement.vue'
 import AnnouncementBell from '../components/AnnouncementBell.vue'
 import BuySheet from '../components/BuySheet.vue'
 import MiniStrip from '../components/MiniStrip.vue'
+import RecentPurchases from '../components/RecentPurchases.vue'
 import ProductList from '../components/ProductList.vue'
 import SupportPill from '../components/SupportPill.vue'
 import { openSupport as support } from '../lib/support'
@@ -191,6 +192,7 @@ function openSupport() {
 
     <van-pull-refresh v-model="refreshing" @refresh="onRefresh">
       <MiniStrip :title="t('home.recommended')" :items="recommended" />
+      <RecentPurchases />
 
       <div class="list-head">
         <h2>{{ t('home.allProducts') }}</h2>

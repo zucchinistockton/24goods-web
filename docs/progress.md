@@ -42,6 +42,13 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
   message BEFORE any order exists, and an unanswered check refuses too (fail closed). On the demo the
   simulator takes the account's plan from the pasted session (`account.planType`; e-mail tags `+active`,
   `+blocked`, `+wait`, `+recover` for the other outcomes).
+  **Owner test 2026-11-18 (afternoon), live updates:** the buyer page showed "Live updates paused" and the
+  direct progress stood still: the demo log had many `429` on `/api/v1/stream` (4 streams per account; behind
+  Cloudflare a closed tab is noticed late) and the progress panel did not refetch on the polling tick. Now a new
+  stream replaces the account's oldest one, and the panel refetches on every polling tick and on any order
+  change. Times show seconds everywhere (buyer and console). The console's order drawer shows the supplier
+  progress of a direct order live (staff stream `order_progress`), the Procurement job drawer refreshes live. The
+  storefront shows "Bought in the last hour" (real deliveries, masked buyer, `GET /recent-purchases`).
 - **The ZovoCard sandbox is NOT available and cannot be used for the time being (2026-11-18).** The sandbox
   token and test account have expired (the authenticated API answers 401 since at least 04:38 UTC), the testing
   period has ended and the support-ticket deadline has passed, so no new sandbox can be requested now. **Rule

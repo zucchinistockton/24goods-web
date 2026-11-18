@@ -353,6 +353,13 @@ export default {
     },
     detail: 'Order {no}',
     timeline: 'Timeline',
+    live: {
+      title: 'Supplier progress (live)',
+      on: 'Live updates on',
+      polling: 'Live updates paused: refreshing every few seconds',
+      noJob: 'No supplier job yet (it starts after payment).',
+      updated: 'Updated {at}',
+    },
     noEvents: 'No events yet',
     by: 'by {actor}',
     info: {

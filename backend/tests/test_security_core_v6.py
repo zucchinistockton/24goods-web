@@ -48,7 +48,7 @@ async def test_busy_sse_rechecks_before_post_deadline_event(monkeypatch):
 
 @pytest.mark.parametrize(
     ("kind", "cap"),
-    [("account", 4), ("ip", 16), ("tenant", 64), (None, 256)],
+    [("ip", 16), ("tenant", 64), (None, 256)],
 )
 async def test_subscriber_budgets_release_idempotently(monkeypatch, kind, cap):
     hub = realtime.RealtimeHub(None)
@@ -63,6 +63,26 @@ async def test_subscriber_budgets_release_idempotently(monkeypatch, kind, cap):
     for sub in [*subs[1:], fresh]:
         hub.unsubscribe(sub)
     assert not hub._admitted and not hub._counts
+
+
+async def test_a_new_stream_of_an_account_replaces_its_oldest_one(monkeypatch):
+    """At the per-account cap the OLDEST stream of that account is closed (a reload or a stream
+    whose client vanished behind a proxy) instead of refusing the new one with 429."""
+    hub = realtime.RealtimeHub(None)
+    monkeypatch.setattr(hub, "ensure_started", lambda: None)
+    subs = [hub.subscribe(["test"], account="a") for _ in range(realtime.MAX_ACCOUNT_SUBSCRIBERS)]
+    other = hub.subscribe(["test"], account="b")
+    gen = realtime.sse_events(hub, subs[0], heartbeat_s=30)
+    assert await anext(gen) == "retry: 4000\n\n"
+    fresh = hub.subscribe(["test"], account="a")
+    assert subs[0].evicted and not any(s.evicted for s in [*subs[1:], other, fresh])
+    with pytest.raises(StopAsyncIteration):  # the old stream ends at once, not after a ping
+        await asyncio.wait_for(anext(gen), 1)
+    assert hub._counts[("account", "a")] == realtime.MAX_ACCOUNT_SUBSCRIBERS
+    assert hub._counts[("account", "b")] == 1
+    for sub in [*subs, other, fresh]:
+        hub.unsubscribe(sub)
+    assert not hub._admitted and not hub._counts and not hub._by_account
 
 
 async def test_image_admission_precedes_read_and_releases_after_failure(monkeypatch):

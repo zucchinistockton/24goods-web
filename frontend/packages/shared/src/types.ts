@@ -1049,3 +1049,14 @@ export interface HalfCheckRequired {
   method: HalfCheckMethod | null
   plan: string | null
 }
+
+/** One line of the storefront's "recent purchases" strip: no order number, amount or contact. */
+export interface RecentPurchase {
+  product_id: string
+  title: string
+  variant: string | null
+  /** delivery time, ISO 8601 UTC to the second */
+  at: string
+  /** first character + "***" */
+  buyer: string
+}

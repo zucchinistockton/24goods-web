@@ -20,6 +20,7 @@ export default {
     zh: '中文',
   },
   home: {
+    recentPurchases: { title: 'Bought in the last hour', bought: '{buyer} bought' },
     searchPlaceholder: 'Search games, gift cards, top-ups…',
     allCategories: 'All',
     sold: '{n} sold',
