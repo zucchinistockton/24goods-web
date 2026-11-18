@@ -323,7 +323,8 @@ async def test_timeline_buyer_view_secrets_and_publish(env, dup, monkeypatch):  
     prog = info["progress"]
     assert prog["outcome"] == "completed" and prog["percent"] == 100 and prog["completed_at"]
     assert {k for s in prog["steps"] for k in s} == {"key", "state", "at"}
-    blob = json.dumps(info)
+    # the order id is random hex and may contain "fee" by chance: leave it out of the sweep
+    blob = json.dumps({k: v for k, v in info.items() if k != "order_id"})
     for leak in (
         "VENDOR_PAY_9",
         "pay.example",
