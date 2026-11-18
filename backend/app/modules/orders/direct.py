@@ -45,6 +45,8 @@ class DirectSeal:
     text: str = field(repr=False)
     # the account pre-check before payment (review-v12 §24): ``passed`` or not yet run
     preflight: str | None = None
+    # the buyer agreed that support may see the session if the top-up fails (review-v12 §26)
+    share: bool = False
 
 
 STALL_MARGIN = timedelta(minutes=30)  # past the 6 h ceiling before checkout is paused
@@ -74,6 +76,7 @@ async def prepare(
     variant_id: uuid.UUID | None,
     qty: int,
     session: str | None,
+    share: bool = False,
 ) -> DirectSeal:
     """Everything that can be refused BEFORE an order exists. Raises specific error codes:
     ``direct_qty_one``, ``session_required``, ``direct_unavailable`` (no key configured),
@@ -97,7 +100,7 @@ async def prepare(
         checked = validate_credential(vendor_product, session)
     except CredentialError as exc:
         raise Validation("The account session cannot be used", code=f"session_{exc.code}") from None
-    return DirectSeal(vendor_product, checked.email_masked, checked.canonical)
+    return DirectSeal(vendor_product, checked.email_masked, checked.canonical, share=share)
 
 
 PREFLIGHT_LIMIT = (12, 600)  # account pre-checks per buyer per 10 minutes (each is a vendor read)
@@ -203,6 +206,7 @@ async def store(db: AsyncSession, sealer: CredentialSealer, order: Order, seal: 
                     kid=sealer.active_kid,
                     blob=blob,
                     email_masked=seal.email_masked,
+                    share_with_support=seal.share,
                 )
             )
     except IntegrityError:
@@ -341,6 +345,7 @@ async def resupply(
     procurement: httpx.AsyncClient | None = None,
     token: str = "",
     redis: Any = None,
+    share: bool = False,
 ) -> None:
     """The buyer replaces a session that expired or was rejected (the stored one is gone: the
     sweeper deletes it at a terminal state or after its maximum age). Only for the buyer's own
@@ -383,7 +388,7 @@ async def resupply(
             "This session belongs to another account than the first one",
             code="session_other_account",
         )
-    seal = DirectSeal(vendor_product, checked.email_masked, checked.canonical)
+    seal = DirectSeal(vendor_product, checked.email_masked, checked.canonical, share=share)
     if order.product_id is not None:
         # the new session gets the same account pre-check as at checkout (review-v12 §24)
         await preflight(

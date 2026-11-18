@@ -22,6 +22,8 @@ class BuyNowIn(BaseModel):
     # A live credential: sealed at once with the procurement public key, never stored in plaintext,
     # never logged, never echoed back. 64 KiB of text at most (the check below is by bytes).
     session: str | None = Field(None, max_length=70000, repr=False)
+    # the buyer agrees that support may see the session if the top-up fails (review-v12 §26)
+    share_session: bool = False
     # half-price plans (plus_half, Grok *_half): the passed eligibility check of this buyer
     half_check_id: uuid.UUID | None = None
     # a ``manual`` check is decided by staff AFTER payment: the buyer confirms that first
@@ -38,6 +40,7 @@ class BuyNowIn(BaseModel):
 
 class DirectSessionIn(BaseModel):
     session: str = Field(min_length=1, max_length=70000, repr=False)
+    share_session: bool = False
 
 
 class PayIn(BaseModel):
@@ -61,6 +64,12 @@ class DeliverIn(BaseModel):
 
 class CancelIn(BaseModel):
     reason: str = Field(min_length=1, max_length=500)
+
+
+class SupportSessionRevealIn(BaseModel):
+    """Why support needs the buyer's shared session (recorded in the audit log)."""
+
+    reason: str = Field(min_length=8, max_length=200)
 
 
 class ReleaseHoldIn(BaseModel):

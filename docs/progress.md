@@ -52,6 +52,10 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
   **Audit issue #54 (2026-11-18):** all seven findings reproduced and fixed (review-v12 §25): backup fencing of
   procurement, verified off-site pulls, the console order read after rollback, staff release of late-paid supplier
   orders, half-price CDKs kept out of the cart, the settings link, card-list pagination.
+  **Session sharing with support (owner decision 2026-11-18, review-v12 §26, ADR-046):** the session sheet asks
+  (ticked by default) whether support may see the session if the top-up fails; a consented session of an order
+  that goes to staff or fails is kept sealed for 72 h and shown in the console's order drawer after a written
+  reason (audited). Migration `0036_support_sessions`.
 - **The ZovoCard sandbox is NOT available and cannot be used for the time being (2026-11-18).** The sandbox
   token and test account have expired (the authenticated API answers 401 since at least 04:38 UTC), the testing
   period has ended and the support-ticket deadline has passed, so no new sandbox can be requested now. **Rule

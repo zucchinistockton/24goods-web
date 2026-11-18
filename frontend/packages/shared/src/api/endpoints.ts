@@ -261,11 +261,14 @@ export function createBuyerApi(c: ApiClient) {
         half_check_id?: string | null,
         /** a `manual` check is decided by staff after payment: the buyer confirmed that */
         half_check_confirm?: boolean,
+        /** upstream_direct: the buyer lets support see the session if the top-up fails */
+        share_session?: boolean,
       ) =>
         c.post<Order>('/orders', {
           product_id,
           qty,
           ...(session ? { session } : {}),
+          ...(session && share_session ? { share_session: true } : {}),
           ...(half_check_id ? { half_check_id } : {}),
           ...(half_check_id && half_check_confirm ? { half_check_confirm: true } : {}),
           ...(variant_id ? { variant_id } : {}),
@@ -289,7 +292,8 @@ export function createBuyerApi(c: ApiClient) {
       /** v12 M3: masked account, plan and state of a direct order (owner only). */
       direct: (id: string) => c.get<DirectOrderInfo>(`/orders/${seg(id)}/direct`),
       /** v12 M3: supply a fresh session for a paid direct order whose first one expired or was refused. */
-      directSession: (id: string, session: string) => c.post<unknown>(`/orders/${seg(id)}/direct-session`, { session }),
+      directSession: (id: string, session: string, share_session = false) =>
+        c.post<unknown>(`/orders/${seg(id)}/direct-session`, share_session ? { session, share_session: true } : { session }),
       confirm: (id: string) => c.post<Order>(`/orders/${seg(id)}/confirm`),
       /** v9 §6: remind the seller about a paid manual order (30 min cooldown, max 3). */
       expedite: (id: string) => c.post<Order>(`/orders/${seg(id)}/expedite`),

@@ -390,6 +390,8 @@ async def _needs_manual(
         job.attempts = 0
         job.next_poll_at = utcnow() + WATCH_EVERY
     await _transition(db, job, "needs_manual", reason, severity="warning")
+    if job.kind == "direct" and job.order_id is not None:
+        await _keep_for_support(db, job)
     if notify_order:
         _emit(
             db,
@@ -1617,6 +1619,18 @@ async def _open_credential(ctx: ProcurementContext, lease: Lease) -> tuple[str |
         return None, "credential_unreadable"
 
 
+async def _keep_for_support(db: AsyncSession, job: ProcurementJob) -> None:
+    """A direct order goes to staff: keep its sealed session for support when the buyer agreed
+    (review-v12 §26). In a savepoint, so it can never break the job's own transition."""
+    from app.procurement import support_session
+
+    try:
+        async with db.begin_nested():
+            await support_session.keep_for_order(db, job.tenant_id, job.order_id)
+    except Exception as exc:  # the sweeper copies it on its next pass anyway
+        log.warning("support copy failed job=%s error=%s", job.id, type(exc).__name__)
+
+
 async def _drop_credential(db: AsyncSession, job: ProcurementJob) -> None:
     """Delete the sealed session of a direct job's order (a terminal state needs none)."""
     if job.kind == "direct":
@@ -1659,6 +1673,18 @@ async def sweep_credentials(ctx: ProcurementContext, *, force: bool = False) -> 
         await sweep_attempts(ctx)
     except Exception as exc:
         log.error("redeem log sweep failed error=%s", type(exc).__name__)
+    from app.procurement import support_session
+
+    async with tenant_session(ctx.maker, None) as db:
+        holders = list(await db.scalars(select(ProcurementCredential.tenant_id).distinct()))
+        await db.rollback()
+    for tid in holders:  # consented sessions of failing orders are kept for support FIRST
+        try:
+            async with tenant_session(ctx.maker, tid) as db:
+                total += await support_session.keep_failing(db, tid)
+                await db.commit()
+        except Exception as exc:
+            log.error("support copy sweep failed error=%s", type(exc).__name__)
     async with tenant_session(ctx.maker, None) as db:
         res = await db.execute(
             text(
@@ -1686,6 +1712,13 @@ async def sweep_credentials(ctx: ProcurementContext, *, force: bool = False) -> 
             )
             total += int(res.rowcount or 0)  # type: ignore[attr-defined]
             await db.commit()
+    try:  # support copies: past the window, or the order went through after all
+        async with tenant_session(ctx.maker, None) as db:
+            kept = list(await db.scalars(text("SELECT DISTINCT tenant_id FROM support_sessions")))
+            await db.rollback()
+        total += await support_session.sweep(ctx, kept)
+    except Exception as exc:
+        log.error("support session sweep failed error=%s", type(exc).__name__)
     return total
 
 

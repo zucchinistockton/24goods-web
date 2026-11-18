@@ -360,6 +360,15 @@ export default {
       noJob: 'No supplier job yet (it starts after payment).',
       updated: 'Updated {at}',
     },
+    shared: {
+      title: 'Session shared by the buyer',
+      kept: 'Kept for support since {since}',
+      seen: 'viewed {n}× (last {at})',
+      consentOnly: 'The buyer agreed to share the session. It becomes available here if the top-up goes to staff or fails.',
+      show: 'Show session',
+      warn: 'This is a live login to the buyer\'s account. Use it only to investigate this order, never to sign in for anything else. Your name and reason are recorded.',
+      reason: 'Why do you need it? (8 characters or more)',
+    },
     noEvents: 'No events yet',
     by: 'by {actor}',
     info: {

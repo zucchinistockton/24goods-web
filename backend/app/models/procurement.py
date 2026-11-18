@@ -142,6 +142,29 @@ class ProcurementCredential(Base):
     kid: Mapped[str] = mapped_column(String(64))
     blob: Mapped[bytes] = mapped_column(LargeBinary)
     email_masked: Mapped[str | None] = mapped_column(String(64))
+    # the buyer agreed that support may see this session if the top-up fails (migration 0036)
+    share_with_support: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = created_at()
+
+
+class SupportSession(Base):
+    """A consented buyer session kept for support after a direct order went to staff or failed
+    (migration 0036): the SAME sealed blob as ``ProcurementCredential`` (AAD = tenant + order id),
+    openable by procurement only, swept after the support window. ``blob`` / ``kid`` are never
+    readable by the API role."""
+
+    __tablename__ = "support_sessions"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    order_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("orders.id"), unique=True)
+    product: Mapped[str] = mapped_column(String(8))
+    kid: Mapped[str] = mapped_column(String(64), deferred=True)
+    blob: Mapped[bytes] = mapped_column(LargeBinary, deferred=True)
+    email_masked: Mapped[str | None] = mapped_column(String(64))
+    reason: Mapped[str | None] = mapped_column(String(48))
+    revealed_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_revealed_at: Mapped[datetime | None]
     created_at: Mapped[datetime] = created_at()
 
 

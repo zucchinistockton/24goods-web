@@ -60,12 +60,12 @@ onBeforeUnmount(() => {
 })
 defineExpose({ load })
 
-async function resupply(session: string) {
+async function resupply(session: string, share = false) {
   asking.value = false
   if (sending.value) return
   sending.value = true
   try {
-    await api.orders.directSession(props.orderId, session)
+    await api.orders.directSession(props.orderId, session, share)
     showSuccessToast(t('direct.resupplied'))
     await load()
   } catch (e) {

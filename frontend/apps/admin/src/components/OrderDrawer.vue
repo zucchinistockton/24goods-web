@@ -30,6 +30,7 @@ import CloseOrderDialog from './CloseOrderDialog.vue'
 import { buildBuyerTemplate, clockTime, htmlToText } from '../lib/orderText'
 import OrderStatusTag from './OrderStatusTag.vue'
 import DirectJobLive from './DirectJobLive.vue'
+import SupportSessionBox from './SupportSessionBox.vue'
 import { confirmBox, toastError, toastOk } from '../ui'
 import { client } from '../api'
 
@@ -533,6 +534,8 @@ defineExpose({ reload: () => props.orderId && load(props.orderId) })
           </el-timeline-item>
         </el-timeline>
         <el-empty v-else :description="t('orders.noEvents')" :image-size="60" />
+
+        <SupportSessionBox v-if="order.delivery_mode === 'upstream_direct'" :order-id="order.id" :version="order.version" />
       </template>
     </div>
 

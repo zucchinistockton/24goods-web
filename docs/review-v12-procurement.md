@@ -1730,3 +1730,37 @@ All seven findings were reproduced against `main` and fixed:
 | F5 | half-price CDKs could go into the cart / be bought in quantity | the cart quote flags them `half_check_buy_now` (never blocking the other lines), the product page shows no cart button for direct or half-price targets, the buy sheet caps their quantity at one. |
 | F6 | instant buyers of a half-price plan were sent to `/settings` (404) | named route `settings` (`/me/settings`). |
 | F7 | a filtered (deleted) row on a full card page ended the card list | the end of the list is decided by the raw page size and the vendor total, never by the filtered rows. |
+
+## 26. Session sharing with support (owner decision 2026-11-18)
+
+**Why.** When a direct top-up fails, support needs to see what the supplier saw. The owner asked
+for an opt-in for the buyer, ticked by default, and for the session to reach support by default on
+a failure.
+
+**What.**
+
+1. The session sheet has a checkbox "If the top-up fails, let support see this session..." (ticked
+   by default, wording says 72 h and that every look is logged). The flag travels as
+   `share_session` and is stored as `procurement_credentials.share_with_support` next to the
+   sealed blob (migration 0036). The API default is `false`: only an explicit tick shares.
+2. When a direct job goes to `needs_manual` (engine hook, in a savepoint) or the sweeper finds a
+   consented session of an order in review or with a failed / held direct job, procurement copies
+   the SEALED blob (same AAD: tenant + order id) into `support_sessions`. It survives the 6 h
+   ceiling of the credential table (and the checkout pause tied to it) for 72 h, and is deleted
+   early once the order was delivered.
+3. Staff (agent or admin) see in the order drawer whether a session was shared; "Show session"
+   needs a written reason (8+ characters), asks procurement (`/internal/support-session`, 60 reads
+   per tenant per hour) to open the copy for that answer, and leaves a critical audit row with the
+   reason. 20 reveals per staff member per hour. The text lives only in the open dialog.
+
+**Security notes.** The API still never holds a session at rest and never opens one: it only seals
+and relays. `support_sessions.blob` / `kid` are not readable by `app_api` (column grants), and the
+table has FORCE RLS with the same unpinned-sweep policies as 0029. The new exposure is deliberate
+and bounded: a consented session of a failing order, for 72 h, to staff, audited. A compromised API
+or staff account could read consented failing sessions within that window, which is the price of
+the feature; the window and the per-staff and per-tenant budgets bound it. A session that was not
+shared is never copied (tested).
+
+**Tests.** `tests/test_support_session.py`: consent stored, copy on hold, staff read with reason and
+audit, agent allowed / buyer refused, nothing without consent, copy outlives the credential and is
+swept after 72 h, other tenant refused, the API role cannot read the blob.

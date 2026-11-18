@@ -52,6 +52,7 @@ async def buy_now(
         half_check_id=body.half_check_id,
         half_check_confirm=body.half_check_confirm,
         procurement=res.procurement,
+        share_session=body.share_session,
     )
     code = getattr(order, "access_code_plain", None)  # shown exactly once
     await service.broadcast_order(res, db, order, [msg])
@@ -194,6 +195,7 @@ async def direct_session(
         procurement=res.procurement,
         token=res.settings.procurement_token,
         redis=res.redis,
+        share=body.share_session,
     )
     await db.commit()
     return {"ok": True}
