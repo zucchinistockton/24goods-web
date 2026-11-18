@@ -42,6 +42,7 @@ from app.modules.common.orderviews import channel_totals_view, order_views
 from app.modules.common.vcc import ensure_sellable, vcc_sales_enabled
 from app.modules.common.views import iso
 from app.modules.content.site import tenant_settings
+from app.modules.orders import halfcheck
 from app.modules.orders.service import (
     broadcast_order,
     check_channel,
@@ -109,6 +110,7 @@ async def quote_cart(
     lines: list[dict[str, Any]] = []
     avail: list[tuple[int, Product, int]] = []  # (line index, product, line subtotal)
     currency = "CNY"
+    half_cache: dict[tuple[uuid.UUID, uuid.UUID | None], bool] = {}
     for it in items:
         p = products.get(it.product_id)
         if p is None:
@@ -152,6 +154,16 @@ async def quote_cart(
         max_qty = MAX_QTY if s is None else min(MAX_QTY, s)
         if p.delivery_mode == "upstream_direct" and not variant_reason:
             variant_reason = "direct_buy_now_only"  # needs the buyer's session: buy-now only
+        if p.delivery_mode == "upstream_cdk" and not variant_reason:
+            # a half-price CDK needs a passed check and is sold one unit per buy-now order
+            # (issue #54 F5): flagged here so it never blocks the rest of the cart
+            vid = variant.id if variant else None
+            if (p.id, vid) not in half_cache:
+                half_cache[(p.id, vid)] = (
+                    await halfcheck.requirement(db, tenant_id, p.id, vid) is not None
+                )
+            if half_cache[(p.id, vid)]:
+                variant_reason = "half_check_buy_now"
         if p.delivery_mode == "upstream_vcc" and not vcc_sales_enabled():
             variant_reason = "not_sellable"  # owner decision 2026-11-17
         if p.status != "active" or variant_reason:

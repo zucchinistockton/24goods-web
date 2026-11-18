@@ -710,3 +710,42 @@ async def test_webhook_accepts_any_configured_key_of_the_environment(env, hook):
     raw, headers = _signed(ev, secret="whsec_other_" + "d" * 32)
     r = await c.post("/api/v1/webhooks/zovocard", content=raw, headers=headers)
     assert r.status_code == 401
+
+
+# ------------------------------------------------------------------ issue #54 F4
+async def test_a_late_paid_upstream_order_is_released_into_procurement_once(env, up):
+    """A payment that arrives after expiry holds an upstream order for review WITHOUT a job;
+    staff release it into procurement (one ``order.paid``, one job), never twice."""
+    from app.modules.orders.service import expire_pending
+    from tests.helpers import simulate_gateway_payment
+
+    mock = MockSupplier("mock_a")
+    await up.supplier(mock)
+    buyer, _ = await env.login("buyer")
+    order = await buy(buyer, up.product, 1)
+    r = await buyer.post(f"/api/v1/orders/{order['id']}/pay", json={"channel": "zpay_alipay"})
+    pay_url = r.json()["pay_url"]
+    async with env.owner_session() as db:
+        await db.execute(text("UPDATE orders SET expires_at = now() - interval '5 minutes'"))
+        await db.commit()
+    assert await expire_pending(env.res.maker) == 1
+    assert (await simulate_gateway_payment(env, pay_url)).status_code == 302
+    await env.drain()
+    assert await _status(buyer, order) == "manual_review"
+    assert await up.jobs(order["id"]) == []  # nothing to act on in procurement
+    admin, _ = await env.login("admin")
+    url = f"/api/v1/admin/orders/{order['id']}/release-hold"
+    r = await admin.post(url, json={"outcome": "accept", "reason": "late payment verified"})
+    assert r.status_code == 200, r.text
+    assert await _status(buyer, order) == "paid"
+    r = await admin.post(url, json={"outcome": "accept", "reason": "again"})
+    assert r.status_code == 409  # the status moved once
+    assert await env.drain() >= 1  # order.paid -> procure.requested
+    await up.run()
+    (job,) = await up.jobs(order["id"])
+    assert job.state == "fulfilled"
+    await env.drain()
+    assert await _status(buyer, order) == "delivered"
+    # an upstream order WITH a job is still decided through its procurement job
+    r = await admin.post(url, json={"outcome": "accept", "reason": "x"})
+    assert r.status_code == 409

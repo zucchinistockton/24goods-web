@@ -594,3 +594,44 @@ def test_parsers_drop_unknown_shapes_and_never_keep_a_card_number():
     assert cp.rules_body("gpt", {"light_max_uses": 3, "select_priority": [{"issuer": "one"}]}) == {
         "product": "gpt", "light_max_uses": 3, "select_priority": [{"issuer": "one"}]
     }  # fmt: skip
+
+
+# ------------------------------------------------------------------ issue #54 F7
+async def test_filtered_rows_never_end_the_card_list_early():
+    """The end of the vendor's card list is decided by the RAW page, not by the rows that
+    survive filtering (deleted / invalid rows are still dropped from the result)."""
+
+    from app.suppliers.zovocard import cardpool as cp
+
+    def card(i: int, status: str = "ACTIVE") -> dict:
+        return {"id": i, "card_number": f"4242424242{i:06d}", "status": status}
+
+    class _Resp:
+        def __init__(self, data):
+            self.data = data
+
+    class _Client:
+        def __init__(self, pages: list[list[dict]], total: int | None):
+            self.pages, self.total, self.asked = pages, total, []
+
+        async def get(self, path, params):
+            n = int(params["page"])
+            self.asked.append(n)
+            rows = self.pages[n - 1] if n <= len(self.pages) else []
+            return _Resp({"total": self.total, "list": rows})
+
+    for deleted, want in ((0, 101), (1, 100), (100, 1)):
+        page1 = [card(i, "DELETED" if i < deleted else "ACTIVE") for i in range(100)]
+        client = _Client([page1, [card(100)]], total=101)
+        got = await cp.read_cards(client)  # type: ignore[arg-type]
+        assert client.asked == [1, 2] and len(got) == want
+        assert 100 in {r["id"] for r in got}
+        assert all(r["status"] != "DELETED" for r in got)
+    # no total: a full page continues, a short raw page ends
+    client = _Client([[card(i) for i in range(100)], [card(100), card(1)]], total=None)
+    got = await cp.read_cards(client)  # type: ignore[arg-type]
+    assert client.asked == [1, 2] and len(got) == 101  # the repeated id is counted once
+    # the page bound still holds
+    client = _Client([[card(p * 100 + i) for i in range(100)] for p in range(9)], total=None)
+    await cp.read_cards(client)  # type: ignore[arg-type]
+    assert client.asked == list(range(1, cp.MAX_PAGES + 1))

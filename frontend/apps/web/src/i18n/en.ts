@@ -590,6 +590,8 @@ export default {
       out_of_stock: 'Out of stock',
       variant_required: 'Choose an option',
       variant_unavailable: 'Option no longer available',
+      direct_buy_now_only: 'Buy this one with Buy now on its page',
+      half_check_buy_now: 'Half price: buy with Buy now on its page (one per order)',
     },
     title: 'Cart',
     empty: 'Your cart is empty',

@@ -101,7 +101,8 @@ const canSubmit = computed(() => configKnown.value && !soldOut.value && (!hasVar
 const price = computed(() => (p.value ? moneyParts(p.value.price, p.value.currency, locale.value) : null))
 /** A direct product is applied to ONE account: one unit, and the account session comes with the order. */
 const isDirect = computed(() => p.value?.delivery_mode === 'upstream_direct')
-const maxQty = computed(() => (p.value && !isDirect.value ? maxOrderQty(p.value) : 1))
+// a direct top-up is one account, a half-price plan one unit per check (issue #54 F5)
+const maxQty = computed(() => (p.value && !isDirect.value && !needsHalf.value ? maxOrderQty(p.value) : 1))
 const subtotal = computed(() => (p.value ? (multiplyAmount(p.value.price, qty.value) ?? p.value.price) : '0.00'))
 const discountMinor = computed(() => (promo.value && !promo.value.stale ? promo.value.discount_minor : 0))
 const bd = computed(() => feeBreakdown(subtotal.value, discountMinor.value, site.permille))
@@ -205,7 +206,7 @@ function begin(guest: boolean) {
   if (needsHalf.value && (guest || auth.user?.is_instant)) {
     // the check needs a registered account (a guest account would make it an account oracle)
     showToast(t('halfcheck.registerFirst'))
-    void (guest ? signIn() : router.push('/settings'))
+    void (guest ? signIn() : router.push({ name: 'settings' }))
     return
   }
   if (needsHalf.value && halfId.value === null) {

@@ -37,7 +37,7 @@ class BackupTests(unittest.TestCase):
             """#!/bin/sh
 printf '%s\n' "$*" >> "$FAKE_LOG"
 case "$*" in
-  *"ps --status running --services"*) printf 'api\ndelivery\nbepusdt\n';;
+  *"ps --status running --services"*) printf '%s\n' $FAKE_ACTIVE;;
   *"pg_dump"*) if [ "$FAIL_DUMP" = 1 ]; then exit 23; fi; printf 'synthetic dump\n';;
   *"-Atc"*) printf '0011_operations_renewals\n';;
   *"images --format json"*) printf '[]\n';;
@@ -53,6 +53,7 @@ esac
             "BACKUP_RECIPIENTS": str(self.root / "recipients"),
             "BACKUP_VAULT_RECIPIENTS": str(self.root / "vault-recipients"),
             "FAKE_LOG": str(self.root / "docker.log"),
+            "FAKE_ACTIVE": "api delivery procurement bepusdt",
         }
 
     def _exe(self, name: str, code: str) -> None:
@@ -90,17 +91,27 @@ esac
         self.assertFalse(
             any(p.suffix in (".dump", ".tgz") for p in complete[0].parent.iterdir())
         )
-        self.assertIn(
-            "start api delivery bepusdt", (self.root / "docker.log").read_text()
-        )
+        log = (self.root / "docker.log").read_text()
+        # issue #54 F1: procurement places paid supplier orders, so it is fenced too
+        self.assertIn("stop -t 45 api delivery procurement bepusdt", log)
+        self.assertIn("start api delivery procurement bepusdt", log)
+        self.assertLess(log.index("stop -t 45"), log.index("pg_dump"))
         self.assertFalse((complete[0].parent / "OFFSITE_VERIFIED").exists())
+
+    def test_a_stopped_procurement_stays_stopped(self) -> None:
+        r = self.run_backup(FAKE_ACTIVE="api delivery bepusdt")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        log = (self.root / "docker.log").read_text()
+        self.assertIn("stop -t 45 api delivery bepusdt", log)
+        self.assertIn("start api delivery bepusdt", log)
+        self.assertNotIn("procurement", log)
 
     def test_dump_failure_never_publishes_and_resumes_previous_writers(self) -> None:
         r = self.run_backup(FAIL_DUMP="1")
         self.assertNotEqual(r.returncode, 0)
         self.assertEqual(list((self.root / "backups").glob("*/COMPLETE")), [])
         self.assertIn(
-            "start api delivery bepusdt", (self.root / "docker.log").read_text()
+            "start api delivery procurement bepusdt", (self.root / "docker.log").read_text()
         )
 
     def test_missing_recovery_recipient_refuses_before_stopping_services(self) -> None:
