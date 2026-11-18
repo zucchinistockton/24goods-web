@@ -9,12 +9,10 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 - **Production (c4) runs `55ad99a`** (v12 launch, see the launch block below). Nothing newer is deployed there, by
   owner decision ("develop on the demo, not production"). Waiting for production: #36 (no virtual-card sales /
   no card reveal), #37 (cost model), #38 (regions + half-price check), #42 (card modes), #45 (card pool console), #47 (progress display; **needs the procurement Redis ACL line
-  from ADR-043 in production's `users.acl` plus a Redis restart**) and #49 (redemption admin; migration `0035`).
+  from ADR-043 in production's `users.acl` plus a Redis restart**) #49 (redemption admin; migration `0035`), #53 / #61 (demo catalogue switch, session paste fixes), #62 (account pre-check before payment), #63 (issue #54 fixes, incl. `deploy/backup.sh` fencing procurement), #64 (live progress, seconds, recent purchases) and #65 (session sharing with support; migration `0036`).
   Hand deploy procedure +
   `--profile procurement` in the launch block.
-- **Demo (demo.kesiv.com) runs `main` `347c9d6`**: v12 + #36 + #37 + #38 + #42 + #45 + #47 + #49 (CI images of run
-  44237457341 loaded as `goods24-{api,web}:m2-demo`, previous `6978938` kept as `:demo-prev`; migrations up to
-  `0035_redeem_admin`; pre-deploy dump `/root/demo-backups/demo-20261118T042738Z.dump`). Demo Redis ACL: the
+- **Demo (demo.kesiv.com) runs `main` `aebf44d`** (deployed 2026-11-18 16:53 UTC): v12 + #36 + #37 + #38 + #42 + #45 + #47 + #49 + #53 + #61 + #62 (account pre-check) + #63 (issue #54) + #64 (live progress, seconds, recent purchases) + #65 (session sharing with support) (CI images of run 44349497539 loaded as `goods24-{api,web}:m2-demo`, previous kept as `:demo-prev`; migrations up to `0036_support_sessions`; pre-deploy dump `/root/demo-backups/demo-20261118T164936Z.dump`). Demo Redis ACL: the
   `procurement` user has `&rt:procprogress +publish` (backup `/root/demo-backups/users.acl-20261117T214314Z`). Demo redemption page `redeem-demo.kesiv.com` (production page
   `redeem.kesiv.com`). Testing guide: `docs/testing-guide.md`. **The demo's supplier is the built-in simulator**
   (`sandbox-off.sh` run 2026-11-18 07:49 UTC, env backup `deploy/env.bak-20261118T074913Z`); the supplier row is
