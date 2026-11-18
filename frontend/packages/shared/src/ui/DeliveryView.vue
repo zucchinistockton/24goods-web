@@ -47,7 +47,7 @@ const redeemUrl = computed(() => safeLinkUrl(props.info?.redeem_url))
 const singleCode = computed(() => (props.codes.length === 1 ? props.codes[0].trim() : ''))
 const redeemHref = computed(() => {
   const u = redeemUrl.value
-  if (!u || !singleCode.value) return u
+  if (!u || !singleCode.value) return u ?? undefined
   return `${u.split('#')[0]}#code=${encodeURIComponent(singleCode.value)}`
 })
 const redeemHost = computed(() => {
