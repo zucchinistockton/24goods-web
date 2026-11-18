@@ -1,8 +1,12 @@
 # Testing guide: demo shop, console and the ZovoCard features
 
 How to test the shop, the staff console and the supplier (ZovoCard) features by hand on the demo. Everything on the
-demo is test money: payments go through a payment simulator and the supplier is the ZovoCard **sandbox** (later our
-built-in simulator), so nothing real is bought. **Production (`shop.kesiv.com`) is the real shop: do not test there.**
+demo is test money: payments go through a payment simulator and the supplier is our **built-in ZovoCard simulator**,
+so nothing real is bought. **Production (`shop.kesiv.com`) is the real shop: do not test there.**
+
+> **The ZovoCard sandbox is not available (since 2026-11-18) and cannot be used for the time being.** Its token and
+> test account expired, the testing period ended and the support-ticket deadline passed. The demo uses the built-in
+> simulator instead (§8). Sandbox-specific notes below describe how the demo behaved until 2026-11-18.
 
 ## 0. Addresses, accounts and what the demo is connected to
 
@@ -11,7 +15,7 @@ built-in simulator), so nothing real is bought. **Production (`shop.kesiv.com`) 
 | Shop | https://demo.kesiv.com/ | https://shop.kesiv.com/ |
 | Console | https://demo.kesiv.com/admin/ | https://shop.kesiv.com/admin/ (allowed IPs only) |
 | Redemption page | https://redeem-demo.kesiv.com/ | https://redeem.kesiv.com/ |
-| Supplier | ZovoCard sandbox, then the simulator (see §8) | ZovoCard production |
+| Supplier | built-in simulator (the ZovoCard sandbox expired 2026-11-18, see §8) | ZovoCard production |
 | Payments | ZPay / USDT simulators | real ZPay / BEpusdt |
 
 **Demo accounts.** Admin `admin@demo.local`, agent (customer service) `agent@demo.local`, buyer `buyer@demo.local`.
@@ -19,14 +23,13 @@ The passwords are on the demo host in `/opt/24goods-demo/deploy/secrets/demo-cre
 browser windows (or one normal and one private window): one signed in to the console, one to the shop.
 
 **Supplier connection of the demo.**
-- Until **2026-11-18 10:57** the demo's supplier is the **real ZovoCard sandbox**: CDK codes, virtual cards and direct
-  subscriptions go through it for real (sandbox money; the sandbox simulates redemptions and subscriptions).
-- After that, run `/opt/24goods-demo/deploy/sandbox-off.sh` on the demo host. The demo then uses our built-in
-  ZovoCard simulator; the same tests work with the values in §8.
+- **Now:** the demo's supplier is our built-in ZovoCard simulator (`sandbox-off.sh` was run on 2026-11-18). The
+  supplier row is still labelled `zovocard · Sandbox`; use the simulator values in §8 in your sources.
+- Until 2026-11-18 the demo used the real ZovoCard sandbox. That sandbox has expired and is not available.
 
 **Why two redemption pages.** A redemption page forwards the buyer's code to ONE supplier environment.
-`redeem.kesiv.com` is production (codes bought on `shop.kesiv.com`); `redeem-demo.kesiv.com` is the demo (sandbox or
-simulator codes bought on `demo.kesiv.com`). A code only works on the page of the environment it was bought in.
+`redeem.kesiv.com` is production (codes bought on `shop.kesiv.com`); `redeem-demo.kesiv.com` is the demo (simulator
+codes bought on `demo.kesiv.com`). A code only works on the page of the environment it was bought in.
 
 ## 1. Console overview (sign in as admin)
 
@@ -82,8 +85,8 @@ reference, the cost and a timeline of every step. The code itself is stored encr
 shown to staff.
 
 **Redeem it.** Open https://redeem-demo.kesiv.com/, enter the code, paste an account session (see §5, step 2 of
-"Buy"), confirm. Sandbox behaviour: the preview accepts any code (even a made-up one), the redemption is simulated
-("Done"), and the result step stays "Still in progress" because the sandbox never reports a result.
+"Buy"), confirm. With the simulator a made-up code is refused ("This code is invalid, used or disabled"); a code bought on
+the demo goes through. (The expired sandbox accepted any code and never reported a result.)
 
 **Refund test.** Buyer: order page → **Request after-sales**. Console → **After-sales** → open it → **Refund** (admin;
 enter a reference such as `TEST-1`). A code that was not delivered yet is disabled at the supplier automatically.
@@ -163,9 +166,9 @@ active subscription, the session has expired, or the account is blocked.
 
 A yellow warning "the supplier may already have charged" means: re-query first, never buy it from another source.
 
-## 8. After the sandbox expires (2026-11-18 10:57)
+## 8. Simulator values (the sandbox expired on 2026-11-18)
 
-On the demo host:
+Done on 2026-11-18 (the sandbox is not available any more); to repeat it, on the demo host:
 
 ```bash
 /opt/24goods-demo/deploy/sandbox-off.sh

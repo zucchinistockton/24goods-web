@@ -16,8 +16,17 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
   44237457341 loaded as `goods24-{api,web}:m2-demo`, previous `6978938` kept as `:demo-prev`; migrations up to
   `0035_redeem_admin`; pre-deploy dump `/root/demo-backups/demo-20261118T042738Z.dump`). Demo Redis ACL: the
   `procurement` user has `&rt:procprogress +publish` (backup `/root/demo-backups/users.acl-20261117T214314Z`). Demo redemption page `redeem-demo.kesiv.com` (production page
-  `redeem.kesiv.com`). Testing guide: `docs/testing-guide.md`. The vendor sandbox expires **2026-11-18 10:57**:
-  then run `/opt/24goods-demo/deploy/sandbox-off.sh` on the demo host.
+  `redeem.kesiv.com`). Testing guide: `docs/testing-guide.md`. **The demo's supplier is the built-in simulator**
+  (`sandbox-off.sh` run 2026-11-18 07:49 UTC, env backup `deploy/env.bak-20261118T074913Z`); the supplier row is
+  still labelled `zovocard · Sandbox`. The demo's direct source still names the expired sandbox card `257662`
+  (simulator card: `1`, testing guide §8), so direct orders there go to staff until that source is edited.
+- **The ZovoCard sandbox is NOT available and cannot be used for the time being (2026-11-18).** The sandbox
+  token and test account have expired (the authenticated API answers 401 since at least 04:38 UTC), the testing
+  period has ended and the support-ticket deadline has passed, so no new sandbox can be requested now. **Rule
+  from now on:** proceed on the vendor's documentation and on what was verified against the sandbox on 2026-11-16/17; everything still marked [I] stays unconfirmed and keeps its fail-closed handling (unknown vendor values never map to completed / failed, guessed codes go to
+  staff, vendor card switching stays refused for production suppliers). Nothing below may assume a sandbox run.
+  An item that needs real vendor behaviour can only be confirmed in production, with the owner's explicit
+  go-ahead, as a small first order watched by staff, or by a written answer from the vendor.
 - **Open work, in order** (tracking issue #33; owner accepted all suggestions; demo only):
   1. ~~#27 PR #38~~ **done**: plan × region variants + half-price check before payment, merged `401c401` after three
      fix rounds and re-audits (review-v12 §20.8), deployed to the demo, browser-checked (buyer product page at
@@ -27,14 +36,16 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
      verification at registration is off by default (the 24 h account-age gate is the control for `chatgpt_direct`).
   2. #29 automatic card selection / issuance (owner: yes). **Parts 1 and 2 done** and on the demo: PR #42 `9b38f1a`
      (card modes, review-v12 §21) and PR #45 `edbf0f9` (console Cards tab: pool, schedule preview, rules editor,
-     failed-usage reset, decline monitor; §21.8), browser-checked against the real vendor sandbox. **Before real
-     money:** sandbox test that the vendor rule `auto_switch_on_fail` cannot override our per-order
-     `no_auto_card_switch=true`; confirm the guessed vendor codes / shapes marked [I]. #29 stays open only for
+     failed-usage reset, decline monitor; §21.8), browser-checked against the real vendor sandbox (before it
+     expired). **Before real money (no sandbox any more):** that the vendor rule `auto_switch_on_fail` cannot
+     override our per-order `no_auto_card_switch=true` is documented but unexercised, so keep the vendor rule at
+     `auto_switch_on_fail=false` in production; the guessed vendor codes / shapes marked [I] stay unconfirmed
+     (handled fail-closed). #29 stays open only for
      automatic card issuance (waits for the vendor's answer).
   3. ~~#30~~ **done**: PR #47 `6978938` (buyer progress steps + live updates via a least-privilege relay, redemption
      page progress, staff supplier timeline; review-v12 §22, ADR-043), on the demo, browser-checked (order page at
-     375 px light/dark, redemption page markup, console job detail). Before real money: confirm the vendor status /
-     stage values marked [I] on the sandbox.
+     375 px light/dark, redemption page markup, console job detail). The vendor status / stage values marked [I]
+     cannot be confirmed (no sandbox); unknown values map to safe in-progress steps, never to completed or failed.
   4. ~~#31~~ **done**: PR #49 `347c9d6` (redemption admin in the console: attempt log with masked data, code lookup,
      stats, settings with announcement and maintenance switch, vendor disable / enable for codes we sold; review-v12
      §23, ADR-044; own design, the vendor's unlicensed repo used only as a checklist), on the demo, browser-checked
