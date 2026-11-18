@@ -55,6 +55,8 @@ const showInput = ref(false)
 const inputValue = ref<string | null>(null)
 /** upstream_direct: the pasted account session, in memory only until the order request is sent */
 const sessionValue = ref<string | null>(null)
+/** the buyer lets support see the session if the top-up fails (review-v12 §26) */
+const shareValue = ref(false)
 const showSession = ref(false)
 /** issue #27: the passed half-price eligibility check an order of a half-price plan is created with */
 const halfId = ref<string | null>(null)
@@ -168,7 +170,7 @@ async function placeOrder() {
     const session = sessionValue.value
     sessionValue.value = null // one use: a failed order asks for it again
     const half = halfId.value
-    const order = await api.orders.create(x.id, qty.value, props.src ?? recalledSrc(), inputValue.value, promo.value?.code, variant.value?.id, session, half, halfConfirmed.value)
+    const order = await api.orders.create(x.id, qty.value, props.src ?? recalledSrc(), inputValue.value, promo.value?.code, variant.value?.id, session, half, halfConfirmed.value, shareValue.value)
     halfId.value = null // consumed: it can never be used twice
     halfConfirmed.value = false
     stashAccessCode(order.id, order.access_code)
@@ -239,7 +241,8 @@ async function startHalf() {
     submitting.value = false
   }
 }
-function halfPassed(id: string, session: string | null, confirmed: boolean) {
+function halfPassed(id: string, session: string | null, confirmed: boolean, share = false) {
+  shareValue.value = share
   halfId.value = id
   halfConfirmed.value = confirmed
   showHalf.value = false
@@ -247,8 +250,9 @@ function halfPassed(id: string, session: string | null, confirmed: boolean) {
   if (isDirect.value && session) sessionValue.value = session
   begin(false)
 }
-function sessionConfirmed(v: string) {
+function sessionConfirmed(v: string, share = false) {
   sessionValue.value = v
+  shareValue.value = share
   showSession.value = false
   void (pendingGuest ? continueAsGuest() : placeOrder())
 }

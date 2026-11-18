@@ -24,7 +24,7 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{
   'update:show': [v: boolean]
-  passed: [id: string, session: string | null, confirmed: boolean]
+  passed: [id: string, session: string | null, confirmed: boolean, share: boolean]
 }>()
 const { t, te } = useI18n()
 
@@ -33,6 +33,7 @@ const result = ref<HalfCheck | null>(null)
 /** a `manual` check is decided by staff after payment: the buyer ticks that they understand */
 const understood = ref(false)
 let kept: string | null = null
+let keptShare = false
 
 const askSession = computed(() => props.show && step.value === 'session')
 const open = computed(() => props.show && step.value !== 'session')
@@ -75,7 +76,8 @@ async function run(session: string | null) {
     else step.value = 'session'
   }
 }
-function onSession(s: string) {
+function onSession(s: string, share: boolean) {
+  keptShare = share
   void run(s)
 }
 function again() {
@@ -92,7 +94,7 @@ function proceed() {
   if (r.status === 'manual_pending' && !understood.value) return
   const s = kept
   kept = null
-  emit('passed', r.id, s, r.status === 'manual_pending')
+  emit('passed', r.id, s, r.status === 'manual_pending', keptShare)
 }
 function close() {
   kept = null

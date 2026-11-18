@@ -47,7 +47,14 @@ from app.modules.chat.schemas import AssignIn, MessageIn, QuoteIn, ReadIn
 from app.modules.common.views import file_url
 from app.modules.inventory import service as inventory
 from app.modules.orders import admin as order_admin
-from app.modules.orders.schemas import CancelIn, DeliverIn, PriceIn, ReleaseHoldIn
+from app.modules.orders import support_session as support_svc
+from app.modules.orders.schemas import (
+    CancelIn,
+    DeliverIn,
+    PriceIn,
+    ReleaseHoldIn,
+    SupportSessionRevealIn,
+)
 from app.modules.orders.service import broadcast_order
 from app.modules.payments.channels import LABELS as CHANNEL_LABELS
 from app.modules.realtime.publish import publish_agent_status
@@ -429,6 +436,32 @@ async def requeue_delivery(
 ) -> dict:
     order, msg = await order_admin.requeue_delivery(db, order_id, admin, client_ip(request))
     return await _order_reply(res, db, order, msg)
+
+
+@router.get("/orders/{order_id}/support-session")
+async def support_session_status(
+    order_id: uuid.UUID,
+    staff: User = Depends(require_staff),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Whether the buyer shared the session of this direct order with support (no secret)."""
+    return await support_svc.status(db, staff, order_id)
+
+
+@router.post("/orders/{order_id}/support-session/reveal")
+async def support_session_reveal(
+    order_id: uuid.UUID,
+    body: SupportSessionRevealIn,
+    request: Request,
+    response: Response,
+    staff: User = Depends(require_staff),
+    db: AsyncSession = Depends(get_db),
+    res: Resources = Depends(get_res),
+) -> dict:
+    """The buyer-consented session of a failing direct order, once, audited (review-v12 §26)."""
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    return await support_svc.reveal(db, res, staff, order_id, body.reason, client_ip(request))
 
 
 @router.post("/orders/{order_id}/release-hold")

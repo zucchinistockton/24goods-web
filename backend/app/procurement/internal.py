@@ -23,7 +23,15 @@ from starlette.routing import Route
 
 from app.core.errors import error_body
 from app.core.ratelimit import hit
-from app.procurement import cardpool, engine, halfcheck, preflight, redeem_admin, service
+from app.procurement import (
+    cardpool,
+    engine,
+    halfcheck,
+    preflight,
+    redeem_admin,
+    service,
+    support_session,
+)
 from app.procurement.context import ProcurementContext
 
 log = logging.getLogger("app.procurement.internal")
@@ -174,6 +182,30 @@ def create_procurement_app(ctx: ProcurementContext) -> Starlette:
         out = await preflight.run(ctx, tenant_id, product_id, variant_id, nonce, blob)
         blob = b""
         return JSONResponse(out.view(), headers=NO_STORE)
+
+    async def support_read(request: Request) -> JSONResponse:
+        """``POST /internal/support-session {"tenant_id", "order_id"}``: the consented session of a
+        failing direct order, for support (review-v12 §26). The API checks the staff role, the
+        reason and audits the read; this route opens the sealed copy for that one answer."""
+        if not _token_ok(request):
+            return _err(401, "unauthorized", "Bad internal token")
+        body = await request.body()
+        if len(body) > MAX_BODY:
+            return _err(422, "validation", "body too large")
+        try:
+            data = json.loads(body)
+            tenant_id = uuid.UUID(str(data["tenant_id"]))
+            order_id = uuid.UUID(str(data["order_id"]))
+        except (ValueError, KeyError, TypeError):
+            return _err(422, "validation", "tenant_id and order_id (UUID) are required")
+        allowed, reset = await hit(ctx.redis, "proc:support-read", str(tenant_id), 60, 3600)
+        if not allowed:
+            return _err(429, "rate_limited", "Too many reads", {"Retry-After": str(reset)})
+        try:
+            out = await support_session.reveal(ctx, tenant_id, order_id)
+        except LookupError:
+            return _err(404, "not_found", "No shared session for this order")
+        return JSONResponse(out, headers=NO_STORE)
 
     async def direct_order(request: Request) -> JSONResponse:
         """Read-only state of a direct job's supplier order (the console's hand-fulfil guard)."""
@@ -363,6 +395,7 @@ def create_procurement_app(ctx: ProcurementContext) -> Starlette:
             Route("/internal/regions", regions, methods=["POST"]),
             Route("/internal/half-check", half_check, methods=["POST"]),
             Route("/internal/direct-preflight", direct_preflight, methods=["POST"]),
+            Route("/internal/support-session", support_read, methods=["POST"]),
             Route("/healthz", healthz),
             Route("/internal/probe", probe, methods=["POST"]),
             Route("/internal/check-offer", check_offer, methods=["POST"]),

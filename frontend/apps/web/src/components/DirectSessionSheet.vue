@@ -17,7 +17,9 @@ import { summariseSession, type SessionSummary } from '../lib/sessionSummary'
 
 /** `check`: the session is read only to check half-price eligibility (not applied to an order) */
 const props = defineProps<{ show: boolean; productId: string | null; known?: DirectProduct | null; purpose?: 'order' | 'check' }>()
-const emit = defineEmits<{ 'update:show': [v: boolean]; confirm: [session: string] }>()
+const emit = defineEmits<{ 'update:show': [v: boolean]; confirm: [session: string, share: boolean] }>()
+/** owner rule 2026-11-18: the buyer may let support see the session if the top-up fails (ticked by default) */
+const share = ref(true)
 const { t, locale } = useI18n()
 const text = ref('')
 const kind = ref<DirectProduct | null>(null)
@@ -53,6 +55,7 @@ watch(
   () => props.show,
   async (v) => {
     forget() // every opening starts empty; closing forgets what was pasted
+    share.value = true
     if (!v) return
     kind.value = props.known ?? null
     if (kind.value || !props.productId) return
@@ -67,7 +70,7 @@ function confirm() {
   if (!ready.value) return
   const v = summary.value ? held : text.value.trim()
   forget()
-  emit('confirm', v)
+  emit('confirm', v, share.value)
 }
 const size = (bytes: number) => (bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`)
 const when = (ms: number) => new Intl.DateTimeFormat(locale.value, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(ms))
@@ -132,6 +135,7 @@ const when = (ms: number) => new Intl.DateTimeFormat(locale.value, { dateStyle: 
         @paste="onPaste"
       />
       <p class="note">{{ purpose === 'check' ? t('halfcheck.sessionNote') : t('direct.note') }}</p>
+      <van-checkbox v-model="share" shape="square" icon-size="18px" class="share" data-testid="share-with-support">{{ t('direct.shareWithSupport') }}</van-checkbox>
       <van-button block round type="primary" size="large" native-type="submit" :disabled="!ready">{{ t('direct.continue') }}</van-button>
     </form>
   </van-popup>
@@ -229,6 +233,12 @@ const when = (ms: number) => new Intl.DateTimeFormat(locale.value, { dateStyle: 
   border: 1px solid var(--c-note-line);
   border-radius: 8px;
   background: var(--c-note-bg);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.share {
+  margin: 0 0 12px;
+  min-height: 44px;
   font-size: 13px;
   line-height: 1.5;
 }

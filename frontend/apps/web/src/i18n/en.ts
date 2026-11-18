@@ -280,6 +280,7 @@ export default {
     },
   },
   direct: {
+    shareWithSupport: 'If the top-up fails, let support see this session to find out why. It is kept sealed for 72 hours at most and every look is logged.',
     title: 'Connect your account',
     lead: 'This plan is applied to your own account. To do that we need your account session once.',
     how1: 'In this browser, sign in to the account that should receive the plan.',

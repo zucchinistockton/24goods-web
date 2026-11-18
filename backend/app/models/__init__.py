@@ -28,6 +28,7 @@ from app.models.procurement import (
     SupplierLedgerEntry,
     SupplierOffer,
     SupplierWebhookEvent,
+    SupportSession,
 )
 from app.models.system import AuditLog, Outbox
 from app.models.tenancy import CustomDomain, Tenant
@@ -82,6 +83,7 @@ __all__ = [
     "SupplierLedgerEntry",
     "SupplierOffer",
     "SupplierWebhookEvent",
+    "SupportSession",
     "Tenant",
     "TenantSecret",
     "User",
