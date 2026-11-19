@@ -901,6 +901,7 @@ const zhCN: AdminMessages = {
       since: '任务创建于 {at} UTC（供应商时间为其自身时区）',
       cardUnknown: '无法读取卡片消费记录：请先在 ZovoCard 后台核对。',
       aiSpends: '此卡有 {n} 笔 AI 订阅消费：请确认其中没有本订单。',
+      order_status: { paid: '已付款', delivering: '发货中', delivered: '已发货', completed: '已完成', manual_review: '人工审核', refunded: '已退款', cancelled: '已取消', pending_payment: '待付款' },
       time: '时间',
       amount: '金额',
       merchant: '商户',
@@ -1232,6 +1233,7 @@ const zhCN: AdminMessages = {
     err: {
       daily: '0 至 10,000 之间的美元金额',
       perTopup: '0 至 5,000 之间的美元金额',
+      perOverDaily: '不能高于每日上限',
       bins: '最多 20 个 6–9 位数字的前缀',
       code: '请输入 6 位验证码',
       two_factor_invalid: '验证码无效（或已被使用）',

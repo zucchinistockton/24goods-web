@@ -901,7 +901,8 @@ export default {
       card: 'Latest spends on card #{card}',
       since: 'job created {at} UTC (supplier times are in its own zone)',
       cardUnknown: 'The card spends could not be read: check them in the ZovoCard dashboard first.',
-      aiSpends: '{n} AI subscription spend(s) on this card: make sure none of them is this order.',
+      aiSpends: 'AI subscription spends on this card: {n}. Make sure none of them is this order.',
+      order_status: { paid: 'paid', delivering: 'delivering', delivered: 'delivered', completed: 'completed', manual_review: 'manual review', refunded: 'refunded', cancelled: 'cancelled', pending_payment: 'waiting for payment' },
       time: 'Time',
       amount: 'Amount',
       merchant: 'Merchant',
@@ -1233,6 +1234,7 @@ export default {
     err: {
       daily: 'A dollar amount from 0 to 10,000',
       perTopup: 'A dollar amount from 0 to 5,000',
+      perOverDaily: 'Must not be above the daily cap',
       bins: 'Up to 20 prefixes of 6–9 digits',
       code: 'Enter the 6-digit code',
       two_factor_invalid: 'The code is not valid (or was already used)',

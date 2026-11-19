@@ -4,7 +4,7 @@
  * wallet. Staff read; an administrator changes the settings with a fresh authenticator code.
  * Card ids and amounts only: no card number exists here.
  */
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Refresh } from '@element-plus/icons-vue'
 import { isApiError } from '@24goods/shared'
@@ -23,6 +23,7 @@ const loadError = ref(false)
 const form = reactive({ auto_recharge: false, daily_cap_usd: '', per_topup_max_usd: '', bins: '' })
 const dlg = reactive({ open: false, code: '', error: '', saving: false })
 const errors = reactive<Record<string, string>>({})
+const codeInput = ref<{ focus: () => void } | null>(null)
 
 function fill(v: FundingView) {
   view.value = v
@@ -52,6 +53,8 @@ function validate(): boolean {
   for (const k of Object.keys(errors)) delete errors[k]
   if (!USD_RE.test(form.daily_cap_usd.trim()) || Number(form.daily_cap_usd) > 10000) errors.daily_cap_usd = t('funding.err.daily')
   if (!USD_RE.test(form.per_topup_max_usd.trim()) || Number(form.per_topup_max_usd) > 5000) errors.per_topup_max_usd = t('funding.err.perTopup')
+  if (!errors.daily_cap_usd && !errors.per_topup_max_usd && Number(form.per_topup_max_usd) > Number(form.daily_cap_usd))
+    errors.per_topup_max_usd = t('funding.err.perOverDaily')
   if (bins.value.length > 20 || bins.value.some((b) => !BIN_RE.test(b))) errors.bins = t('funding.err.bins')
   return !Object.keys(errors).length
 }
@@ -70,6 +73,7 @@ function askCode() {
   Object.assign(dlg, { open: true, code: '', error: '', saving: false })
 }
 async function save() {
+  if (dlg.saving) return // Enter while saving: the code works once
   const code = dlg.code.replace(/\s/g, '')
   if (!/^\d{6}$/.test(code)) return void (dlg.error = t('funding.err.code'))
   dlg.saving = true
@@ -146,12 +150,13 @@ const when = (iso: string | null) => (iso ? iso.replace('T', ' ').slice(0, 16) +
       </el-table>
     </template>
 
-    <el-dialog v-model="dlg.open" :title="t('funding.codeTitle')" width="min(420px, 96vw)" destroy-on-close @closed="dlg.code = ''">
+    <el-dialog v-model="dlg.open" :title="t('funding.codeTitle')" width="min(420px, 96vw)" destroy-on-close @opened="nextTick(() => codeInput?.focus())" @closed="dlg.code = ''">
       <el-form label-position="top" @submit.prevent="save">
         <p class="small">{{ t('funding.codeHint') }}</p>
         <el-alert v-if="form.auto_recharge && !view?.settings.auto_recharge" type="warning" :closable="false" show-icon :title="t('funding.turningOn')" class="gap" />
         <el-form-item :label="t('funding.code')" :error="dlg.error">
-          <el-input v-model="dlg.code" inputmode="numeric" maxlength="8" autocomplete="one-time-code" class="mono" />
+          <el-input ref="codeInput" v-model="dlg.code" inputmode="numeric" maxlength="8" autocomplete="one-time-code" class="mono" />
+          <span v-if="dlg.error" class="sr-only" role="alert">{{ dlg.error }}</span>
         </el-form-item>
       </el-form>
       <template #footer>

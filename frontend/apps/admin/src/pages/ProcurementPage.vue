@@ -114,18 +114,25 @@ const can = (a: JobAction) => !!detail.value?.actions.includes(a) && (a !== 'voi
 
 const dlg = reactive({ open: false, action: 'fulfil' as 'fulfil' | 'void' | 'fail', code: '', cardId: '', reason: '', error: '' })
 // ADR-048: before a direct job is marked done by hand, staff see the charge evidence and confirm it
-const chk = reactive({ loading: false, failed: false, data: null as ChargeCheck | null, confirmed: false })
+const chk = reactive({ loading: false, failed: false, data: null as ChargeCheck | null, confirmed: false, jobId: '', seq: 0 })
 async function loadCharge(id: string) {
-  Object.assign(chk, { loading: true, failed: false, data: null, confirmed: false })
+  // every load starts a new request and clears the tick: a late answer for another job (or an
+  // older click) can never be confirmed in place of the current one
+  const seq = ++chk.seq
+  Object.assign(chk, { loading: true, failed: false, data: null, confirmed: false, jobId: id })
   try {
-    chk.data = await api.jobs.chargeCheck(id)
+    const data = await api.jobs.chargeCheck(id)
+    if (seq === chk.seq && detail.value?.id === id) chk.data = data
   } catch (e) {
-    chk.failed = true
-    toastError(e)
+    if (seq === chk.seq) {
+      chk.failed = true
+      toastError(e)
+    }
   } finally {
-    chk.loading = false
+    if (seq === chk.seq) chk.loading = false
   }
 }
+const stateText = (group: string, v: string | null | undefined) => (v && te(`${group}.${v}`) ? t(`${group}.${v}`) : v || '')
 function askReason(action: 'fulfil' | 'void' | 'fail') {
   Object.assign(dlg, { open: true, action, code: '', cardId: '', reason: '', error: '' })
   if (action === 'fulfil' && detail.value?.kind === 'direct') void loadCharge(detail.value.id)
@@ -157,7 +164,8 @@ async function submitDlg() {
   const direct = j.kind === 'direct'
   if (dlg.action === 'fulfil' && !direct && !code) return void (dlg.error = t('procurement.err.codeRequired'))
   if (dlg.action === 'fulfil' && direct && reason.length < 12) return void (dlg.error = t('procurement.err.reason_required'))
-  if (dlg.action === 'fulfil' && direct && !chk.confirmed) return void (dlg.error = t('procurement.err.charge_check_required'))
+  if (dlg.action === 'fulfil' && direct && (!chk.confirmed || !chk.data || chk.jobId !== j.id))
+    return void (dlg.error = t('procurement.err.charge_check_required'))
   if (dlg.action !== 'fulfil' && reason.length < 3) return void (dlg.error = t('procurement.err.reasonRequired'))
   acting.value = dlg.action
   try {
@@ -750,7 +758,7 @@ onMounted(() => {
           <template v-if="chk.data">
             <p class="small">
               <el-tag :type="chk.data.payment.paid ? 'success' : 'danger'" size="small">{{ chk.data.payment.paid ? t('procurement.charge.paid') : t('procurement.charge.unpaid') }}</el-tag>
-              <span class="muted"> {{ chk.data.payment.order_status }}<template v-if="chk.data.payment.paid_at"> · {{ chk.data.payment.paid_at.replace('T', ' ').slice(0, 16) }} UTC</template></span>
+              <span class="muted"> {{ stateText('procurement.charge.order_status', chk.data.payment.order_status) }}<template v-if="chk.data.payment.paid_at"> · {{ chk.data.payment.paid_at.replace('T', ' ').slice(0, 16) }} UTC</template></span>
             </p>
             <template v-if="chk.data.supplier">
               <p class="small">
@@ -758,13 +766,13 @@ onMounted(() => {
                 <el-tag :type="chk.data.supplier.state === 'completed' ? 'danger' : chk.data.supplier.state === 'pending' || chk.data.supplier.state === 'unknown' ? 'warning' : 'info'" size="small">{{ t(`procurement.charge.state.${chk.data.supplier.state}`) }}</el-tag>
                 <span v-if="chk.data.supplier.upstream_ref" class="mono muted"> #{{ chk.data.supplier.upstream_ref }}</span>
               </p>
-              <p v-for="(tp, i) in chk.data.supplier.topups" :key="i" class="small muted">{{ t('procurement.charge.topup', { amount: tp.amount, card: tp.card_id, state: tp.state }) }}</p>
+              <p v-for="(tp, i) in chk.data.supplier.topups" :key="i" class="small muted">{{ t('procurement.charge.topup', { amount: tp.amount, card: tp.card_id, state: stateText('funding.state', tp.state) }) }}</p>
               <p class="small">
                 {{ t('procurement.charge.card', { card: chk.data.supplier.card_id || '—' }) }}
                 <span v-if="chk.data.supplier.job_created_at" class="muted"> · {{ t('procurement.charge.since', { at: chk.data.supplier.job_created_at.replace('T', ' ').slice(0, 16) }) }}</span>
               </p>
               <el-alert v-if="chk.data.supplier.charges === null" type="warning" :closable="false" show-icon :title="t('procurement.charge.cardUnknown')" />
-              <el-alert v-else-if="aiCharges.length" type="warning" :closable="false" show-icon :title="t('procurement.charge.aiSpends', { n: aiCharges.length })" />
+              <el-alert v-else-if="aiCharges.length" type="warning" :closable="false" show-icon :title="t('procurement.charge.aiSpends', { n: aiCharges.length })" role="alert" />
               <el-table v-if="chk.data.supplier.charges?.length" :data="chk.data.supplier.charges.slice(0, 8)" size="small" class="spends">
                 <el-table-column prop="time" :label="t('procurement.charge.time')" min-width="130" />
                 <el-table-column :label="t('procurement.charge.amount')" width="100"><template #default="{ row }">{{ row.amount }} {{ row.currency }}</template></el-table-column>
@@ -772,7 +780,7 @@ onMounted(() => {
                 <el-table-column prop="status" :label="t('procurement.charge.status')" width="100" />
               </el-table>
             </template>
-            <el-checkbox v-model="chk.confirmed" class="confirm">{{ t('procurement.charge.confirm') }}</el-checkbox>
+            <el-checkbox v-model="chk.confirmed" class="confirm" aria-describedby="charge-err">{{ t('procurement.charge.confirm') }}</el-checkbox>
           </template>
         </section>
         <el-form-item v-if="dlg.action === 'fulfil' && detail?.kind !== 'direct'" :label="detail?.kind === 'vcc' ? t('procurement.job.pasteCard') : t('procurement.job.pasteCode')">
@@ -782,6 +790,7 @@ onMounted(() => {
         <el-form-item v-if="dlg.action === 'fulfil' && detail?.kind === 'vcc'" :label="t('procurement.job.cardIdOptional')">
           <el-input v-model="dlg.cardId" maxlength="20" inputmode="numeric" class="mono" autocomplete="off" />
         </el-form-item>
+        <p v-if="dlg.error" id="charge-err" class="sr-only" role="alert">{{ dlg.error }}</p>
         <el-form-item :label="dlg.action === 'fulfil' && detail?.kind !== 'direct' ? t('procurement.job.reasonOptional') : t('procurement.job.reason')" :error="dlg.error">
           <el-input v-model="dlg.reason" maxlength="200" />
         </el-form-item>
