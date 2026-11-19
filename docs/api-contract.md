@@ -685,3 +685,33 @@ Internal (procurement only, token): `POST /internal/redeem/cdk-status {tenant_id
   `delivery_eta_hours` / `delivery_deadline` follow `max_days`.
 - Admin product create/patch: `preorder: {min_days 0-60, max_days 1-60, ends_at?, note?: {en, zh-CN}} | null`
   (manual products only: `preorder_manual_only`; bad window: `preorder_invalid`).
+
+## Card funding and the charge check (ADR-048, 2026-11-19)
+
+All amounts are USD decimal strings. No card number is ever returned: a card is its vendor id.
+
+`GET /api/v1/admin/procurement/funding?limit=50` (platform staff)
+→ `{settings: {auto_recharge, daily_cap_usd, per_topup_max_usd, bin_priority[]}, today: {spent_usd, left_usd},
+topups: [{id, created_at, state: planned|sent|done|failed|void, card_id, amount, currency, order_id, job_id, error}]}`.
+Defaults: `auto_recharge=false`, caps 300 / 200, the owner's six recommended BINs.
+
+`PUT /api/v1/admin/procurement/funding` (platform admin, session only)
+body: any of `auto_recharge` (bool), `daily_cap_usd` (0–10000), `per_topup_max_usd` (0–5000), `bin_priority`
+(≤ 20 strings of 6–9 digits), plus **`totp_code`** (required: a fresh authenticator code; recovery codes are refused;
+each code works once). Values are validated before the code is spent. Errors: `422 validation | bad_funding_settings |
+nothing_to_change`, `401 two_factor_invalid`, `409 two_factor_not_enabled`, `403` for staff / other tenants. Audited
+(`procurement.funding_settings_updated`, before / after). Returns the same view as `GET`.
+
+`GET /api/v1/admin/procurement/jobs/{id}/charge-check` (staff, read only)
+→ `{payment: {order_status, paid, paid_at, amount_minor, currency}, supplier: null | {state: not_sent|completed|pending|
+failed|not_found|unknown, upstream_ref, card_id, charges: null | [{time, amount, currency, status, type, merchant, ai}],
+topups: [{state, card_id, amount, error}], job_created_at, first_sent_at}}`. `supplier` is `null` for non-direct jobs;
+`charges: null` = the card could not be read (treat as unknown, never as "not charged"). Supplier `time` is as the
+vendor writes it (zone not documented).
+
+`POST /api/v1/admin/procurement/jobs/{id}/fulfil` for a **direct** job now also needs `charge_checked: true` (staff
+confirm they ran the charge check), else `422 charge_check_required`.
+
+Buyer-visible effect: a direct plan is in stock while one of our cards, or an allowed automatic top-up, can pay it; a
+paid order that no card / money / price / cap can serve goes to `needs_manual` at once (the buyer sees the usual
+"being handled" state).

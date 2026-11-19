@@ -14,9 +14,10 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
   `charge_checked` required on a direct hand fulfil. Production: `ADMIN_ALLOW_IPS` now has the owner's IPv6
   `2403:71c0:2000:1118::/64` (owner OK, 15:47 UTC). Live ZovoCard 2026-11-19: wallet USD 32.73 (owner), card #921097
   USD 0.30, min top-up USD 10, open fee USD 1.50 (`GET /products`).
-  **Next (in order):** (1) admin UI: "Card funding" panel (switch, caps, BIN priority, TOTP prompt, top-up log) on the
+  **Admin UI done (same branch):** `FundingPanel` on the Cards tab (switch, caps, BIN priority, TOTP dialog, top-up log), charge-check section + required tick in the direct hand-fulfil dialog, EN + zh-CN; api-contract section added.
+  **Next (in order):** ~~(1) admin UI: "Card funding" panel (switch, caps, BIN priority, TOTP prompt, top-up log) on the
   cards page + charge-check section and the `charge_checked` tick in the job drawer's direct hand-fulfil (EN + zh-CN);
-  (2) `docs/api-contract.md` for the 2 new endpoints; (3) security-reviewer + payment-auditor pass (procurement money
+  (2) `docs/api-contract.md` for the 2 new endpoints~~ (done); (3) security-reviewer + payment-auditor pass (procurement money
   path); (4) CI green, merge; (5) deploy to c4 with the owner's go-ahead (migration `0038`), the owner turns automatic
   top-ups on in the admin with their TOTP (2FA must be on for their admin account); (6) opsdev card controls
   (top up / refund / freeze / delete / remark / usage reset, TOTP): pull mywebtools `main` first (it has a newer PR #6
