@@ -529,6 +529,9 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
             return JSONResponse(
                 {"code": 400, "error_code": "amount_below_min", "msg": "below minimum"}, 400
             )
+        if any(r["status"] == "pending" for r in mock.recharges[card["id"]]):
+            # [V] A.3: "a recharge of this card is being confirmed (do not recharge again)"
+            return JSONResponse({"code": 400, "msg": "recharge being confirmed"}, status_code=400)
         row = {
             "id": len(mock.recharges[card["id"]]) + 1,
             "amount": float(amount),

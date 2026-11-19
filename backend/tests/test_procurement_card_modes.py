@@ -863,3 +863,43 @@ async def test_stock_follows_the_money(env, dup):  # noqa: F811
     await _funding(env, auto_recharge=True, per_topup_max_usd="5")  # the top-up is above the cap
     out = await service.check_offer(dup.ctx, env.tenant_id, oid)
     assert out["available"] is False and out["reason"] == "funds_insufficient"
+
+
+async def test_an_unclear_top_up_is_never_followed_by_a_second_one(env, dup):  # noqa: F811
+    """Payment audit H1: the vendor answers "being confirmed" (no code, not cached). The job keeps
+    THAT top-up (row ``sent``, same card, same key); once the card shows the money it orders
+    without resending, and exactly one top-up ever ran."""
+    vendor = _vendor()
+    vendor.cards[4242]["available_amount"] = 1.0
+    vendor.recharge_pending_next = 1
+    await _funding(env, auto_recharge=True)
+    await _zovo(dup, vendor, AUTO)
+    buyer, order = await dup.paid_direct(claude_session(new_marker()))
+    await _settle(dup, 2)
+    (row,) = await _fundings(env)
+    assert row[0] == "sent" and vendor.card_recharges == 1
+    assert _posts(vendor, ORDERS) == []
+    keys = set(_posts(vendor, RECHARGE))
+    assert len(keys) == 1  # any resend used the SAME key
+    # the vendor confirms the pending top-up: the card now holds the money
+    pending = vendor.recharges[4242][0]
+    pending["status"] = "success"
+    vendor.cards[4242]["available_amount"] += pending["amount"]
+    await _drive(env, dup, order, buyer)
+    assert vendor.card_recharges == 1 and set(_posts(vendor, RECHARGE)) == keys
+    assert len(_posts(vendor, ORDERS)) == 1
+    rows = await _fundings(env)
+    assert len(rows) == 1 and rows[0][0] == "sent"  # unclear stays counted (staff can settle)
+
+
+async def test_an_unreadable_wallet_is_a_retry_not_sold_out_to_staff(env, dup):  # noqa: F811
+    """Payment audit M1: "no money" must be known, not guessed from a failed wallet read."""
+    from app.procurement import service
+
+    vendor = _vendor()
+    vendor.cards[4242]["available_amount"] = 1.0
+    await _funding(env, auto_recharge=True)
+    _sid, oid = await _zovo(dup, vendor, AUTO)
+    vendor.force("/balance", "500", times=5)
+    out = await service.check_offer(dup.ctx, env.tenant_id, oid)
+    assert out["available"] is False and out["reason"] == "wallet_unreadable"

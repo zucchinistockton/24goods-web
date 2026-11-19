@@ -478,7 +478,7 @@ async def charge_check(
     """Evidence before a hand top-up / reissue (ADR-048): did the buyer pay, what the supplier
     order says, the job's automatic top-ups and the funding card's latest spends. Read only."""
     await enforce(res.redis, RATE[0], str(staff.id), RATE[1], RATE[2])
-    tid = staff.tenant_id
+    tid, uid = staff.tenant_id, staff.id
     row = (
         await db.execute(
             select(
@@ -517,7 +517,16 @@ async def charge_check(
         raise NotFound("Job not found")
     if resp.status_code != 200:
         raise Unavailable("The supplier could not be read", code="procurement_unreachable")
+    # the hand fulfil of this job by THIS staff member needs a check run in the last 30 minutes
+    await res.redis.set(_charge_mark(job_id, uid), "1", ex=CHARGE_MARK_S)
     return {"payment": payment, "supplier": resp.json()}
+
+
+CHARGE_MARK_S = 1800
+
+
+def _charge_mark(job_id: uuid.UUID, user_id: uuid.UUID) -> str:
+    return f"chargecheck:{job_id}:{user_id}"
 
 
 @router.post("/{job_id}/requery")
@@ -628,6 +637,7 @@ async def fulfil_manually(
     await enforce(res.redis, RATE[0], str(staff.id), RATE[1], RATE[2])
     ip = client_ip(request)
     tid, is_admin = staff.tenant_id, staff.role == "admin"  # (a rollback expires `staff`)
+    uid = staff.id
     pre = await db.scalar(
         select(ProcurementJob.kind).where(
             ProcurementJob.id == job_id, ProcurementJob.tenant_id == tid
@@ -651,7 +661,7 @@ async def fulfil_manually(
             raise Validation(
                 "Say what you did at the supplier (at least 12 characters)", code="reason_required"
             )
-        if not body.charge_checked:
+        if not body.charge_checked or not await res.redis.exists(_charge_mark(job_id, uid)):
             raise Validation(
                 "Run the charge check first: confirm the buyer paid and that neither the supplier"
                 " order nor the funding card already charged for this order",

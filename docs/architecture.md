@@ -537,4 +537,7 @@ an allowed top-up can pay. (5) A PAID order that meets no card / no money / no p
 (`needs_manual`), never the 30-minute card wait. (6) Before a hand top-up staff run the charge check (payment, supplier
 order, the job's top-ups, the funding card's latest spends) and must confirm it (`charge_checked`).
 **Consequences:** money only ever moves wallet -> our own card (refundable); an unclear top-up stays counted against the
-cap; issuing NEW cards per order stays reserved (§21.4) until the owner asks.
+cap and stays on the job: only THAT top-up (same card, same key) may go again, and not at all once the card holds the money
+(payment audit H1); only the vendor's documented refusals mark a top-up failed; a failed wallet / catalogue read is a retry,
+never "no money"; the caps are per tenant; a direct hand fulfil needs a charge check run by the same staff member in the
+last 30 minutes (server-side marker); issuing NEW cards per order stays reserved (§21.4) until the owner asks.

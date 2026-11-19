@@ -831,7 +831,10 @@ class ZovoCardSupplier:
             cost = await self._direct_cost(offer)
         except SupplierError:
             cost = None
-        need = await self._card_need(spec, offer, cost)
+        try:
+            need = await self._card_need(spec, offer, cost)
+        except SupplierError as exc:  # a failed read says nothing about the price: a retry
+            return Availability(False, exc.reason, cost_estimate=cost, checked_at=now)
         if need is None:  # no price, no order (ADR-048): the plan shows sold out
             return Availability(False, dr.COST_UNKNOWN, cost_estimate=cost, checked_at=now)
         if spec.card_mode != "fixed":
@@ -853,10 +856,7 @@ class ZovoCardSupplier:
         ``None`` (the caller never sends and shows the plan sold out)."""
         if cost is not None and cost.currency == "USD" and cost.amount > 0:
             return cost
-        try:
-            catalog = await self.plans(spec.product)
-        except SupplierError:
-            return None
+        catalog = await self.plans(spec.product)  # SupplierError -> the caller retries
         entry = catalog.registry.get(spec.plan)
         plan = catalog.plans.get(entry.acc_plan_key if entry and entry.acc_plan_key else spec.plan)
         need = fd.card_need(
@@ -953,6 +953,9 @@ class ZovoCardSupplier:
             except SupplierError:
                 rates = {}  # unknown rates are budgeted high (fd.UNKNOWN_FEE_RATE)
         plans = fd.plan_cards(cards, need.amount, spec.product, pol, wallet, rates)
+        if not plans and pol is not None and pol.auto_recharge and wallet is None:
+            # the wallet could not be read: "no money" is not known (payment audit M1)
+            return Availability(False, "wallet_unreadable", cost_estimate=cost, checked_at=now)
         usable: list[tuple[str, str | None]] = []
         masks: list[tuple[str, str]] = []  # the engine checks them against buyers' cards (H1)
         topups: list[tuple[str, Decimal]] = []
@@ -1136,13 +1139,16 @@ class ZovoCardSupplier:
                 endpoint="cards.recharge",
             )
         except SupplierError as exc:
+            # ONLY the documented refusals mean "nothing moved" (vendor A.1 / A.3); any other
+            # answer may hide an executed top-up: it stays counted and goes again under the same
+            # key (payment audit M2)
             code = (exc.error_code or "").lower()
             if code == "insufficient_balance":
                 return Result(Outcome.FATAL, error_code=dr.FUNDS_INSUFFICIENT)
             if code == "amount_below_min":
                 return Result(Outcome.FATAL, error_code="topup_below_min")
-            if exc.status in (400, 404) and code not in ("", "rate_limited"):
-                return Result(Outcome.FATAL, error_code="topup_refused")
+            if exc.status == 404 and code == "not_found":
+                return Result(Outcome.FATAL, error_code="topup_refused")  # no such card of ours
             return Result(Outcome.RETRYABLE, error_code="topup_unconfirmed")
         moved.append(amount)
         return None
@@ -1205,7 +1211,7 @@ class ZovoCardSupplier:
             over = await self._quote_problem(spec, pf, job)
             if over is not None:
                 return Result(Outcome.FATAL, error_code=over, **seen)
-            if not moved:
+            if not moved and not job.prior_send:
                 short = await self._fund_before_order(spec, job, moved)
                 if short is not None:
                     return replace(short, **seen)
@@ -1252,9 +1258,9 @@ class ZovoCardSupplier:
         assert spec.card_id is not None
         try:
             cost = await self._direct_cost(job.offer)
+            need = await self._card_need(spec, job.offer, cost)
         except SupplierError:
-            cost = None
-        need = await self._card_need(spec, job.offer, cost)
+            return Result(Outcome.RETRYABLE, error_code="catalog_unreadable")
         if need is None:
             return Result(Outcome.FATAL, error_code=dr.COST_UNKNOWN)
         topup = dr.picked_topup(job.offer.params) if spec.card_mode != "fixed" else None

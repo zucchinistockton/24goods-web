@@ -1394,10 +1394,10 @@ async def _lease(ctx: ProcurementContext, job_id: uuid.UUID, tenant_id: uuid.UUI
             if job.kind == "direct" and _auto_card(offer) and mode == "precheck"
             else None
         )
+        spec = _spec(job, offer, mode, ctx.settings.direct_quote_tolerance, policy)
         lease = Lease(
             job.id, job.tenant_id, mode, job.state, job.step, job.idempotency_key,
-            _spec(job, offer, mode, ctx.settings.direct_quote_tolerance, policy), offer.ref,
-            job.order_id, prior_send,
+            replace(spec, prior_send=prior_send), offer.ref, job.order_id, prior_send,
         )  # fmt: skip
         await db.commit()
     return lease
@@ -1600,8 +1600,20 @@ async def _assign_card(
             job.attempts = 0
             return False
     capped = False
-    await topups.void_planned(db, job)  # a plan from an earlier pick is never reused
+    # a top-up that reached the adapter with an unclear answer keeps its card and its key: the
+    # job may only resend THAT top-up (the vendor replays one key once), never plan a second one
+    # (payment audit H1); a plan that never reached the adapter is released
+    sent_card = await topups.sent_card(db, job)
+    if sent_card is None:
+        await topups.void_planned(db, job)
     for cid, last4, cents in _candidate_rows(job):
+        if sent_card is not None and cid != sent_card:
+            continue
+        if sent_card is not None:
+            if not cents:  # the card now holds the money: never resend the unclear top-up
+                topups.forget(job)
+            # else: the same key and amount go again (replayed or executed once by the vendor)
+            cents = 0
         # a card bought for a buyer is never a funding card (H1); the mask check ran on the
         # pre-check's answer (masks never leave that call) and again for the same card here by id
         if await funding_card_clash(db, job.tenant_id, offer.supplier_id, cid):

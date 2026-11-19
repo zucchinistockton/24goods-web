@@ -34,13 +34,12 @@ async def settings_of(db: AsyncSession, tenant_id: uuid.UUID) -> dict[str, objec
     return fs.normalize(raw)
 
 
-async def spent_today(
-    db: AsyncSession, tenant_id: uuid.UUID, supplier_id: uuid.UUID, now: datetime
-) -> Decimal:
+async def spent_today(db: AsyncSession, tenant_id: uuid.UUID, now: datetime) -> Decimal:
+    """Today's (UTC) counted top-ups of the TENANT, across all its suppliers: the caps are
+    per tenant (what the console shows)."""
     total = await db.scalar(
         select(func.coalesce(func.sum(ProcurementFunding.amount), 0)).where(
             ProcurementFunding.tenant_id == tenant_id,
-            ProcurementFunding.supplier_id == supplier_id,
             ProcurementFunding.state.in_(COUNTED),
             ProcurementFunding.created_at >= _day_start(now),
         )
@@ -85,7 +84,7 @@ async def policy(
     db: AsyncSession, tenant_id: uuid.UUID, supplier_id: uuid.UUID, now: datetime
 ) -> FundingPolicy:
     st = await settings_of(db, tenant_id)
-    spent = await spent_today(db, tenant_id, supplier_id, now) if st["auto_recharge"] else 0
+    spent = await spent_today(db, tenant_id, now) if st["auto_recharge"] else 0
     return FundingPolicy(
         auto_recharge=st["auto_recharge"] is True,
         allowance=_allowance(st, Decimal(spent)),
@@ -101,11 +100,11 @@ async def plan(
     not (nothing recorded). The caller commits with the lease."""
     await db.execute(
         text("SELECT pg_advisory_xact_lock(hashtext(:k))"),
-        {"k": f"fund:{job.tenant_id}:{job.supplier_id}"},
+        {"k": f"fund:{job.tenant_id}"},  # one lock per tenant: the cap is per tenant
     )
     st = await settings_of(db, job.tenant_id)
     assert job.supplier_id is not None
-    left = _allowance(st, await spent_today(db, job.tenant_id, job.supplier_id, now))
+    left = _allowance(st, await spent_today(db, job.tenant_id, now))
     if amount <= 0 or amount > left:
         return False
     n = await db.scalar(
@@ -172,8 +171,10 @@ async def settle(
             detail={"order_id": str(job.order_id), "key": job.fund_key, "error": error},
             severity="info" if funded is not None else "warning",
         )
-    if funded is None:
-        job.fund_amount = job.fund_key = None
+    # done or failed: the plan is spent either way. A later attempt of the same job must never
+    # resend the top-up (the vendor's replay window is not documented); after a done top-up it
+    # relies on the real-time card read alone (security review M1)
+    job.fund_amount = job.fund_key = None
 
 
 async def mark_sent(db: AsyncSession, job: ProcurementJob) -> None:
@@ -191,9 +192,31 @@ async def mark_sent(db: AsyncSession, job: ProcurementJob) -> None:
         )
 
 
+async def sent_card(db: AsyncSession, job: ProcurementJob) -> str | None:
+    """The card of the job's current top-up when it reached the adapter without a clear answer
+    (row ``sent``): only that top-up, under its own key, may go again."""
+    if not job.fund_key:
+        return None
+    return await db.scalar(
+        select(ProcurementFunding.card_id).where(
+            ProcurementFunding.tenant_id == job.tenant_id,
+            ProcurementFunding.idem_key == job.fund_key,
+            ProcurementFunding.state == "sent",
+        )
+    )
+
+
+def forget(job: ProcurementJob) -> None:
+    """Stop carrying the job's top-up (its row keeps its state and stays counted)."""
+    job.fund_amount = job.fund_key = None
+
+
 async def void_planned(db: AsyncSession, job: ProcurementJob) -> None:
     """The job picks again (park / re-check): a plan that never reached the adapter is released;
-    a ``sent`` one stays counted (its money may have moved)."""
+    a ``sent`` one stays counted (its money may have moved) AND stays on the job, so only that
+    top-up can ever go again (payment audit H1)."""
+    if job.fund_key and await sent_card(db, job) is not None:
+        return
     if job.fund_key:
         await db.execute(
             update(ProcurementFunding)

@@ -290,6 +290,9 @@ class JobSpec:
     quote_tolerance: Decimal = Decimal("0.10")
     # direct: re-keyed attempt of the job (0 = the first key); the client request id derives from it
     attempt: int = 0
+    # direct: the job may already have reached the supplier before THIS call (a same-key resend
+    # after a reconcile): the pre-order funding gate is skipped (payment audit M3)
+    prior_send: bool = False
 
     def __post_init__(self) -> None:
         if not IDEMPOTENCY_KEY_RE.fullmatch(self.idempotency_key):

@@ -15,6 +15,7 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
   `2403:71c0:2000:1118::/64` (owner OK, 15:47 UTC). Live ZovoCard 2026-11-19: wallet USD 32.73 (owner), card #921097
   USD 0.30, min top-up USD 10, open fee USD 1.50 (`GET /products`).
   **Admin UI done (same branch):** `FundingPanel` on the Cards tab (switch, caps, BIN priority, TOTP dialog, top-up log), charge-check section + required tick in the direct hand-fulfil dialog, EN + zh-CN; api-contract section added.
+  **Reviews done:** security-reviewer (1 Medium + 3 Low) and payment-auditor (1 High + 3 Medium + 2 Low) on 2026-11-19; fixed: top-up never resent after done, unclear top-up keeps its card/key (no second plan), documented refusal codes only, wallet/catalogue read failures retry, same-key resend skips the funding gate, tenant-wide caps, server-side charge-check marker; open by design: `sent` rows are settled by staff (no automatic recharge reconcile yet), cap-reached goes to staff without failover. 531 + 93 tests pass locally.
   **Next (in order):** ~~(1) admin UI: "Card funding" panel (switch, caps, BIN priority, TOTP prompt, top-up log) on the
   cards page + charge-check section and the `charge_checked` tick in the job drawer's direct hand-fulfil (EN + zh-CN);
   (2) `docs/api-contract.md` for the 2 new endpoints~~ (done); (3) security-reviewer + payment-auditor pass (procurement money
