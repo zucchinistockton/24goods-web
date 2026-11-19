@@ -5,7 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { ProductThumb } from '@24goods/shared/ui'
 import {
   feeBreakdown,
-  moneyParts,
+  priceParts,
   multiplyAmount,
   type BuyerInputConfig,
   type HalfCheckMethod,
@@ -100,7 +100,7 @@ watch(siteAccessCleared, () => {
 })
 const soldOut = computed(() => (p.value ? isSoldOut(p.value) : false))
 const canSubmit = computed(() => configKnown.value && !soldOut.value && (!hasVariants(base.value) || variant.value !== null))
-const price = computed(() => (p.value ? moneyParts(p.value.price, p.value.currency, locale.value) : null))
+const price = computed(() => (p.value ? priceParts(p.value.price, p.value.currency, locale.value) : null))
 /** A direct product is applied to ONE account: one unit, and the account session comes with the order. */
 const isDirect = computed(() => p.value?.delivery_mode === 'upstream_direct')
 // a direct top-up is one account, a half-price plan one unit per check (issue #54 F5)

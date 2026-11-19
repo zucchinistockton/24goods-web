@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { canRequestAfterSales, formatDateTime, formatMoney, type AfterSales, type CheckoutView, type Order } from '@24goods/shared'
+import { canRequestAfterSales, formatDateTime, formatPrice, type AfterSales, type CheckoutView, type Order } from '@24goods/shared'
 import AfterSalesSheet from '../components/AfterSalesSheet.vue'
 import { api } from '../api'
 import { cancelPending, payCheckout, payOrder } from '../lib/orderActions'
@@ -159,7 +159,7 @@ const tone = (s: Order['status']) =>
             <div class="ocard-title">{{ o.title }}<span v-if="o.variant_name" class="muted"> · {{ o.variant_name }}</span></div>
             <div class="ocard-bottom">
               <span class="muted small">{{ formatDateTime(o.created_at, locale) }} · {{ t('orders.qtyN', { n: o.qty }) }}</span>
-              <span class="price">{{ formatMoney(o.amount, o.currency, locale) }}</span>
+              <span class="price">{{ formatPrice(o.amount, o.currency, locale) }}</span>
             </div>
           </RouterLink>
             <div v-if="o.status === 'pending_payment'" class="oas pay-row">
@@ -174,7 +174,7 @@ const tone = (s: Order['status']) =>
                   checkouts[o.checkout_no]
                     ? t('cancel.payTogetherTotal', {
                         n: checkouts[o.checkout_no]!.order_nos.length,
-                        total: formatMoney(checkouts[o.checkout_no]!.amount, checkouts[o.checkout_no]!.currency, locale),
+                        total: formatPrice(checkouts[o.checkout_no]!.amount, checkouts[o.checkout_no]!.currency, locale),
                       })
                     : t('cancel.payTogether', { n: items.filter((x) => x.checkout_no === o.checkout_no).length })
                 }}

@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import {
-  formatMoney,
+  formatPrice,
   goBack,
   messageFilename,
   isApiError,
@@ -329,7 +329,7 @@ async function acceptQuote(q: QuoteCardPayload) {
   if (busyQuoteId.value) return
   const ok = await confirm(
     t('chat.acceptTitle'),
-    t('chat.acceptMessage', { amount: formatMoney(q.amount, q.currency, locale.value), title: q.title }),
+    t('chat.acceptMessage', { amount: formatPrice(q.amount, q.currency, locale.value), title: q.title }),
   )
   if (!ok) return
   busyQuoteId.value = q.quote_id

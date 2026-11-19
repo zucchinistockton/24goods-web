@@ -9,7 +9,7 @@ import {
   formatNumber,
   goBack,
   isApiError,
-  moneyParts,
+  priceParts,
   type Product,
   type ProductSummary,
   isInstantMode,
@@ -93,7 +93,7 @@ const images = computed(() => {
   const list = p.images.length ? p.images : p.cover ? [p.cover] : []
   return list.slice(0, 12)
 })
-const price = computed(() => (product.value ? moneyParts(product.value.price, product.value.currency, locale.value) : null))
+const price = computed(() => (product.value ? priceParts(product.value.price, product.value.currency, locale.value) : null))
 const isAuto = computed(() => isInstantMode(product.value?.delivery_mode))
 const soldOut = computed(() => (product.value ? isSoldOut(product.value) : false))
 const as = computed(() => afterSalesLabel(product.value?.after_sales_hours, product.value?.after_sales_months))

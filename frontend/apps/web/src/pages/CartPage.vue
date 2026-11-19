@@ -5,7 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { ProductThumb } from '@24goods/shared/ui'
 import {
   errorExtra,
-  formatMoney,
+  formatPrice,
   isApiError,
   safePayUrl,
   toMinor,
@@ -309,7 +309,7 @@ async function submit() {
                   <div v-if="!r.available && r.loaded" class="flag">{{ reasonText(r.q?.unavailable_reason) }}</div>
                   <template v-else-if="r.q">
                     <div class="muted small">
-                      {{ t('cart.unitPrice', { price: formatMoney(r.q.unit_price, r.q.currency, locale) }) }}
+                      {{ t('cart.unitPrice', { price: formatPrice(r.q.unit_price, r.q.currency, locale) }) }}
                     </div>
                     <ManualPromise v-if="r.q.delivery_mode === 'manual'" class="small" :eta="r.q.delivery_eta_hours" compact />
                   </template>
@@ -317,7 +317,7 @@ async function submit() {
                     {{ r.line.buyer_input ? t('cart.infoSet') + ' · ' + t('cart.editInfo') : t('cart.editInfo') }}
                   </button>
                   <div class="bottom">
-                    <span v-if="r.q" class="price">{{ formatMoney(cart.lineSubtotal(r.line, r.q), r.q.currency, locale) }}</span>
+                    <span v-if="r.q" class="price">{{ formatPrice(cart.lineSubtotal(r.line, r.q), r.q.currency, locale) }}</span>
                     <van-stepper
                       :model-value="r.line.qty"
                       :min="1"
@@ -367,7 +367,7 @@ async function submit() {
         <van-checkbox v-model="allSelected" class="all">{{ t('cart.selectAll') }}</van-checkbox>
         <div class="sum">
           <span class="muted small">{{ t('cart.total') }}</span>
-          <span class="price big">{{ formatMoney(totals.total, currency, locale) }}</span>
+          <span class="price big">{{ formatPrice(totals.total, currency, locale) }}</span>
         </div>
         <van-button round type="primary" class="go" :loading="busy" :disabled="!cart.payableCount" @click="checkout">
           {{ t('cart.checkout', { n: cart.payableCount }) }}

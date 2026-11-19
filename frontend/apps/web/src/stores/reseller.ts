@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { fromMinor, formatMoney, type ResellerMe } from '@24goods/shared'
+import { fromMinor, formatPrice, type ResellerMe } from '@24goods/shared'
 import { api } from '../api'
 
 export const useResellerStore = defineStore('reseller', () => {
@@ -21,5 +21,5 @@ export const useResellerStore = defineStore('reseller', () => {
 
 /** Minor units (int) → localized money string. */
 export function minorMoney(n: number, currency: string, locale: string): string {
-  return formatMoney(fromMinor(BigInt(Math.trunc(n))), currency, locale)
+  return formatPrice(fromMinor(BigInt(Math.trunc(n))), currency, locale)
 }

@@ -6,7 +6,7 @@ import { DeliveryView } from '@24goods/shared/ui'
 import {
   addLookup,
   formatDateTime,
-  formatMoney,
+  formatPrice,
   getLookups,
   goBack,
   isApiError,
@@ -120,7 +120,7 @@ onBeforeUnmount(reset)
           <span class="muted">{{ t('common.status') }}</span><strong>{{ t(`orderStatus.${order.status}`) }}</strong>
         </div>
         <div class="row">
-          <span class="muted">{{ t('order.amount') }}</span><span class="price">{{ formatMoney(order.amount, order.currency, locale) }}</span>
+          <span class="muted">{{ t('order.amount') }}</span><span class="price">{{ formatPrice(order.amount, order.currency, locale) }}</span>
         </div>
         <div class="row">
           <span class="muted">{{ t('order.createdAt') }}</span><span>{{ formatDateTime(order.created_at, locale) }}</span>
