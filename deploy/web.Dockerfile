@@ -27,11 +27,14 @@ RUN pnpm build
 # CVE-2026-78661) until upstream
 # ships a release containing it. Remove this stage once caddy:2.11-alpine is clean.
 FROM caddy:2.11-builder-alpine@sha256:3dbe908afe8ecb4f5505a80153c8de0fecd1b14d560798a6955c5cf115951561 AS caddy
-ENV GOFLAGS=-p=1
+# Go 1.27.4 fixes CVE-2026-97054 (net/http MaxBytesReader); the builder image ships 1.27.3. The
+# toolchain download is verified by Go's checksum database. Drop when the builder image has it.
+ENV GOFLAGS=-p=1 GOTOOLCHAIN=go1.27.4
 RUN xcaddy build v2.11.8 --output /usr/bin/caddy --with github.com/go-jose/go-jose/v4@v4.1.6 \
     --replace golang.org/x/net=golang.org/x/net@v0.62.0
 RUN /usr/bin/caddy build-info | grep -qE 'go-jose/go-jose/v4[[:space:]]+v4\.1\.6' \
- && /usr/bin/caddy build-info | grep -qE 'golang.org/x/net[[:space:]]+v0\.62\.0'
+ && /usr/bin/caddy build-info | grep -qE 'golang.org/x/net[[:space:]]+v0\.62\.0' \
+ && go version /usr/bin/caddy | grep -qE 'go1\.27\.4( |$)'
 
 FROM caddy:2.11-alpine@sha256:78bd35025c7ba85961dd149ae670315129954e77abe2383ac47c89106b35ade9
 # CI passes the ISO week: a cached `apk upgrade` layer is refreshed at least weekly.
