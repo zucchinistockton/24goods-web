@@ -105,6 +105,11 @@ QUIRKS: dict[str, tuple[int, dict[str, Any]]] = {
         {"code": 503, "error_code": "channel_unavailable", "msg": "channel temporarily down"},
     ),
     "200_code_404": (200, {"code": 404, "msg": "card not found"}),
+    # the wallet cannot cover a card top-up / opening (vendor A.1 ``insufficient_balance``)
+    "insufficient_balance": (
+        400,
+        {"code": 400, "error_code": "insufficient_balance", "msg": "insufficient balance"},
+    ),
     # the request is EXECUTED (and its 2xx cached) but the answer is lost: timeout after send
     "lost_response": (504, {}),
     "delete_disabled": (400, {"code": 400, "error_code": "DELETE_DISABLED", "msg": "no delete"}),
@@ -319,6 +324,7 @@ class MockZovo:
     direct_quotes_null: bool = False  # [V] the real sandbox answers ``quotes: null``
     preflight_over: dict[str, Any] = field(default_factory=dict)  # preflight fields overridden
     usage_busy: set[int] = field(default_factory=set)  # funding cards that are busy / cooling
+    card_txns: dict[int, list[dict[str, Any]]] = field(default_factory=dict)  # spends per card
     direct_fee_status: str = "held"  # ``service_fee_status`` of an order that did not complete
     direct_omit: set[str] = field(default_factory=set)  # order-view fields left out (a quirk)
     direct_order_over: dict[str, Any] = field(default_factory=dict)  # order-view overrides
@@ -523,6 +529,9 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
             return JSONResponse(
                 {"code": 400, "error_code": "amount_below_min", "msg": "below minimum"}, 400
             )
+        if any(r["status"] == "pending" for r in mock.recharges[card["id"]]):
+            # [V] A.3: "a recharge of this card is being confirmed (do not recharge again)"
+            return JSONResponse({"code": 400, "msg": "recharge being confirmed"}, status_code=400)
         row = {
             "id": len(mock.recharges[card["id"]]) + 1,
             "amount": float(amount),
@@ -925,6 +934,11 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
                 for c in live[(page - 1) * size : page * size]
             ]  # fmt: skip
             return JSONResponse(_env(0, {"total": len(live), "list": rows}))
+        m_tx = re.fullmatch(r"/cards/([0-9]{1,12})/transactions", path)
+        if m_tx:  # [V] a plain list of spends (ADR-048 charge check); knob ``card_txns``
+            if int(m_tx.group(1)) not in mock.cards:
+                return JSONResponse({"code": 404, "error_code": "not_found", "msg": "no card"}, 404)
+            return JSONResponse(_env(0, list(mock.card_txns.get(int(m_tx.group(1)), []))))
         m_card = re.fullmatch(r"/cards/([0-9]{1,12})(/recharges)?", path)
         if m_card:
             card = mock.cards.get(int(m_card.group(1)))

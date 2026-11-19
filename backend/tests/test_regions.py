@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from decimal import Decimal
 
 from sqlalchemy import text
 
@@ -134,8 +135,10 @@ async def test_region_the_vendor_stops_offering_is_unavailable_never_forced(env)
         sid, _oid = await _zovo(up, _vendor(), GPT_PLUS)
         supplier = up.mocks[sid]
         eg_cdk = OfferSpec("cdk", {"plan": "plus", "payment_country": "EG"})
-        eg_direct = OfferSpec(
-            "direct", {**GPT_PLUS, "payment_country": "EG", "payment_currency": "EGP"}
+        eg_direct = OfferSpec(  # ADR-048: a non-USD plan needs its configured USD cost
+            "direct",
+            {**GPT_PLUS, "payment_country": "EG", "payment_currency": "EGP"},
+            cost_usd=Decimal("12"),
         )
         assert (await supplier.availability(eg_cdk, fresh=True)).available is True
         assert (await supplier.availability(eg_direct, fresh=True)).available is True

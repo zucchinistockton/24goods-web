@@ -718,7 +718,10 @@ async def test_hand_fulfil_is_admin_only_needs_a_reason_and_leaves_a_critical_ro
     assert r.status_code == 403
     admin, _ = await env.login("admin")
     # M4: the supplier's order is still moving: a hand fulfil would subscribe the account twice
-    r = await admin.post(f"{JOBS}/{job.id}/fulfil", json={"reason": "subscribed by hand, sure"})
+    r = await admin.post(
+        f"{JOBS}/{job.id}/fulfil",
+        json={"reason": "subscribed by hand, sure", "charge_checked": True},
+    )
     assert r.status_code == 409 and r.json()["error"]["code"] == "order_in_flight"
     vendor.direct_end = "declined"  # the vendor gave up on it: now staff may take over
     for _ in range(3):
@@ -726,11 +729,19 @@ async def test_hand_fulfil_is_admin_only_needs_a_reason_and_leaves_a_critical_ro
     job = await _job(dup, order)
     assert job.state == "needs_manual"
     for body, code in (({}, "reason_required"), ({"reason": "short"}, "reason_required"),
-                       ({"code": "AAAA-BBBB", "reason": "x" * 20}, "direct_no_code")):  # fmt: skip
+                       ({"code": "AAAA-BBBB", "reason": "x" * 20}, "direct_no_code"),
+                       ({"reason": "x" * 20}, "charge_check_required")):  # fmt: skip
         r = await admin.post(f"{JOBS}/{job.id}/fulfil", json=body)
         assert r.status_code == 422 and r.json()["error"]["code"] == code, r.text
+    check = await admin.get(f"{JOBS}/{job.id}/charge-check")
+    assert check.status_code == 200, check.text
+    ev = check.json()
+    assert ev["payment"]["paid"] is True and ev["supplier"]["state"] == "failed"
+    assert ev["supplier"]["card_id"] == "4242" and isinstance(ev["supplier"]["charges"], list)
+    assert "5378" not in str(ev["supplier"]["charges"])  # never a card number
     r = await admin.post(
-        f"{JOBS}/{job.id}/fulfil", json={"reason": "subscribed by hand at the supplier"}
+        f"{JOBS}/{job.id}/fulfil",
+        json={"reason": "subscribed by hand at the supplier", "charge_checked": True},
     )
     assert r.status_code == 200, r.text
     await env.drain()

@@ -19,10 +19,11 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 from urllib.parse import urlsplit
 
-from app.suppliers.base import OfferSpec
+from app.suppliers.base import IDEMPOTENCY_KEY_RE, OfferSpec
 from app.suppliers.direct_credential import DIRECT_PRODUCTS, mask_email
 
 _PLAN_RE = re.compile(r"^[a-z0-9_]{1,40}$")
@@ -49,6 +50,10 @@ CARD_MODES = ("fixed", "auto_existing")
 CARD_MODE_RESERVED = "auto_issue"  # issuing a NEW card per order: reserved, refused (§21.4)
 # params key the ENGINE injects for the card it picked for a job (never an admin parameter)
 PICKED_CARD_KEY = "picked_card_id"
+# ... and the top-up (USD cents) the engine planned for that card before the order (ADR-048)
+PICKED_TOPUP_KEY = "picked_topup_cents"
+PICKED_TOPUP_IDEM = "picked_topup_key"  # the key the top-up is sent under (its own record)
+MAX_TOPUP_CENTS = 1_000_000  # USD 10,000: anything above is not a top-up we planned
 INVALID_CARD = "invalid"  # ``order_card`` marker: the vendor reported an unusable card id
 MAX_CARD_TRIES = 3
 
@@ -328,6 +333,26 @@ CARD_WAIT_CODES = CARD_REFUSAL_CODES  # (kept name) the codes that mean a wait
 NO_CARD_PICK = "no_card_pick"  # the vendor picked none, or every candidate failed
 CARD_POOL_BUSY = "card_pool_busy"  # candidates exist but are busy / cooling / in flight
 WAIT_REASONS = frozenset({NO_CARD_PICK, CARD_POOL_BUSY, *CARD_REFUSAL_CODES})
+# ADR-048: no card, no money, no price. The plan shows sold out; a PAID order that meets one of
+# these goes to staff at once (owner 2026-11-19: never wait out the card wait for missing money)
+FUNDS_INSUFFICIENT = "funds_insufficient"  # neither a card nor an allowed top-up covers it
+NO_FUNDING_CARD = "no_funding_card"  # no ACTIVE card of ours may pay this product
+COST_UNKNOWN = "cost_unknown"  # the order's price cannot be worked out: never sent
+FUNDING_CAP_REACHED = "funding_cap_reached"  # the daily top-up cap is used up
+MANUAL_NOW = frozenset(
+    {FUNDS_INSUFFICIENT, NO_FUNDING_CARD, COST_UNKNOWN, FUNDING_CAP_REACHED, "topup_below_min"}
+)
+
+
+def picked_topup(params: Mapping[str, Any]) -> tuple[Decimal, str] | None:
+    """The planned top-up of the engine's picked card: ``(USD, idempotency key)``; ``None`` =
+    none (or unreadable: then nothing is moved and the pre-send card read decides)."""
+    v, key = params.get(PICKED_TOPUP_KEY), params.get(PICKED_TOPUP_IDEM)
+    if isinstance(v, bool) or not isinstance(v, int) or not 0 < v <= MAX_TOPUP_CENTS:
+        return None
+    if not isinstance(key, str) or not IDEMPOTENCY_KEY_RE.fullmatch(key):
+        return None
+    return Decimal(v) / 100, key
 
 
 def _id_of(v: Any) -> int | None:

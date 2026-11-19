@@ -12,15 +12,19 @@ import time
 import uuid
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import select, update
 
 from app.core.audit import audit
 from app.core.db import tenant_session
 from app.models import SupplierAccount, SupplierOffer, Tenant
+from app.procurement import topups
 from app.procurement.context import ProcurementContext
 from app.suppliers.base import (
     Balance,
+    FundingPolicy,
     OfferSpec,
     ProbeReport,
     Supplier,
@@ -236,19 +240,45 @@ async def _mask_clash(ctx: ProcurementContext, tenant_id: uuid.UUID, mask: str |
         return await funding_mask_clash(db, tenant_id, mask)
 
 
+def offer_spec(
+    kind: str,
+    params: Any,
+    cost: Decimal | None,
+    currency: str | None,
+    policy: FundingPolicy | None,
+) -> OfferSpec:
+    """An offer row as the adapter sees it: its parameters, its configured USD cost (a direct
+    plan quoted in another currency is budgeted from it) and, for a direct offer, the funding
+    policy (ADR-048)."""
+    return OfferSpec(
+        kind=kind,  # type: ignore[arg-type]
+        params=dict(params or {}),
+        cost_usd=cost if currency == "USD" else None,
+        funding=policy if kind == "direct" else None,
+    )
+
+
 async def refresh_offers(ctx: ProcurementContext, ref: SupplierRef) -> int:
     """Availability check of every enabled offer of one supplier (GET only). The storefront shows
     an upstream variant in stock only while its last check passed (review-v12 §4)."""
     async with tenant_session(ctx.maker, ref.tenant_id) as db:
         offers = (
             await db.execute(
-                select(SupplierOffer.id, SupplierOffer.kind, SupplierOffer.params).where(
+                select(
+                    SupplierOffer.id,
+                    SupplierOffer.kind,
+                    SupplierOffer.params,
+                    SupplierOffer.cost_estimate,
+                    SupplierOffer.currency,
+                ).where(
                     SupplierOffer.tenant_id == ref.tenant_id,
                     SupplierOffer.supplier_id == ref.id,
                     SupplierOffer.enabled.is_(True),
                 )
             )
         ).all()
+        # ADR-048: a direct plan is in stock while a card, or an allowed top-up, can pay it
+        policy = await topups.policy(db, ref.tenant_id, ref.id, datetime.now(timezone.utc))
     if not offers:
         return 0
     try:
@@ -262,8 +292,8 @@ async def refresh_offers(ctx: ProcurementContext, ref: SupplierRef) -> int:
     results: dict[uuid.UUID, bool] = {}
     known: dict[uuid.UUID, bool] = {}
     try:
-        for oid, kind, params in offers:
-            spec = OfferSpec(kind=kind, params=dict(params or {}))
+        for oid, kind, params, cost, cur in offers:
+            spec = offer_spec(kind, params, cost, cur, policy)
             try:
                 av = await asyncio.wait_for(
                     supplier.availability(spec),
@@ -311,6 +341,8 @@ async def check_offer(
                 select(
                     SupplierOffer.kind,
                     SupplierOffer.params,
+                    SupplierOffer.cost_estimate,
+                    SupplierOffer.currency.label("offer_currency"),
                     SupplierAccount.id,
                     SupplierAccount.code,
                     SupplierAccount.adapter,
@@ -322,9 +354,12 @@ async def check_offer(
                 .where(SupplierOffer.tenant_id == tenant_id, SupplierOffer.id == offer_id)
             )
         ).first()
+        if row is not None:
+            policy = await topups.policy(db, tenant_id, row.id, datetime.now(timezone.utc))
     if row is None:
         raise SupplierNotFound
     ref = SupplierRef(row.id, tenant_id, row.code, row.adapter, row.env, row.health)
+    spec = offer_spec(row.kind, row.params, row.cost_estimate, row.offer_currency, policy)
     ok, reason = False, "not_configured"
     cost_known: bool | None = None
     try:
@@ -334,17 +369,13 @@ async def check_offer(
     if supplier is not None:
         try:
             av = await asyncio.wait_for(
-                supplier.availability(OfferSpec(kind=row.kind, params=dict(row.params or {}))),
+                supplier.availability(spec),
                 ctx.settings.probe_timeout_s,
             )
             ok, reason = av.available is True, (None if av.available is True else av.reason)
             if ok and row.kind == "direct" and await _mask_clash(ctx, tenant_id, av.funding_mask):
                 ok, reason = False, "funding_card_invalid"
-            cost_known = await _cost_known(
-                supplier,
-                OfferSpec(kind=row.kind, params=dict(row.params or {})),
-                row.currency or "USD",
-            )
+            cost_known = await _cost_known(supplier, spec, row.currency or "USD")
         except asyncio.TimeoutError:
             reason = "timeout"
         except SupplierError as exc:

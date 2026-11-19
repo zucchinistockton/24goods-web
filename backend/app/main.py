@@ -35,6 +35,7 @@ from app.modules.admin.payment_gateways import router as payment_gateways_router
 from app.modules.admin.payment_ops import router as payment_ops_router
 from app.modules.admin.procurement_cards import router as admin_procurement_cards_router
 from app.modules.admin.procurement_cost import router as admin_procurement_cost_router
+from app.modules.admin.procurement_funding import router as admin_procurement_funding_router
 from app.modules.admin.procurement_jobs import router as admin_procurement_jobs_router
 from app.modules.admin.procurement_options import router as admin_procurement_options_router
 from app.modules.admin.procurement_pricing import router as admin_procurement_pricing_router
@@ -218,6 +219,7 @@ def api_router() -> APIRouter:
         admin_procurement_jobs_router,
         admin_procurement_cost_router,
         admin_procurement_cards_router,
+        admin_procurement_funding_router,
         admin_procurement_redeem_router,
         admin_procurement_pricing_router,
         admin_procurement_options_router,

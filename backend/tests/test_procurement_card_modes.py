@@ -1,8 +1,9 @@
 """Issue #29 part 1 (review-v12 §21): card modes of ``upstream_direct`` orders.
 
-``fixed`` (today's behaviour), ``auto_existing`` (the vendor's card-pool pick, run through OUR
-checks), the optional ``vendor_switch``, the parked "waiting for card" job (bounded, no vendor
-spend, never a double submit), the reserved ``auto_issue`` and the switch cost in the cost rows.
+``fixed`` (today's behaviour), ``auto_existing`` (OUR pick from the card list, ADR-048: the
+vendor's pick preview is no longer asked), the optional ``vendor_switch``, the parked "waiting for
+card" job (bounded, no vendor spend, never a double submit), the reserved ``auto_issue`` and the
+switch cost in the cost rows; the funding of the card (top-ups, caps, the pre-send card read).
 Real ZovoCard adapter against ``app/devtools/mock_zovocard.py`` and the engine."""
 
 from __future__ import annotations
@@ -22,11 +23,13 @@ from tests.test_procurement_direct import (
     _order_of,
     _settle,
     _sql,
-    _vendor,
     _zovo,
     claude_session,
     dup,  # noqa: F401  (fixture)
     new_marker,
+)
+from tests.test_procurement_direct import (
+    _vendor as _base_vendor,
 )
 from tests.test_procurement_vcc import _posts, _rows
 
@@ -35,10 +38,23 @@ PAN = lambda cid: f"5378{cid:012d}"  # noqa: E731  (the mock's full card number)
 ORDERS = "/gpt-direct/orders"
 
 
-def _two_cards() -> MockZovo:
-    v = _vendor()  # card 4242
-    v.add_funding_card(4243)
+def _vendor() -> MockZovo:
+    """The direct tests' vendor WITHOUT the E2E smoke's card 1 (USD 5,000): our own pick
+    (ADR-048) would otherwise always choose it."""
+    v = _base_vendor()
+    v.cards.pop(1, None)
+    v.recharges.pop(1, None)
     return v
+
+
+def _two_cards() -> MockZovo:
+    v = _vendor()  # card 4242 (USD 500)
+    v.add_funding_card(4243, available=600.0)  # the larger balance: our pick (ADR-048 order)
+    return v
+
+
+def _card_reads(vendor: MockZovo) -> int:
+    return sum(1 for m, p, _h in vendor.requests if m == "GET" and p == "/cards")
 
 
 async def _audit(env, action: str):
@@ -62,13 +78,13 @@ async def test_fixed_mode_sends_its_card_and_no_switch(env, dup):  # noqa: F811
 
 
 # ------------------------------------------------------------------ auto_existing
-async def test_auto_existing_uses_the_vendor_pick(env, dup):  # noqa: F811
+async def test_auto_existing_picks_our_own_card_without_the_vendor_preview(env, dup):  # noqa: F811
     vendor = _two_cards()
-    vendor.card_pool = [4243, 4242]  # the vendor would pick 4243
+    vendor.card_pool = [4242, 4243]  # the vendor's preview would say 4242: never asked
     await _zovo(dup, vendor, AUTO)
     buyer, order = await dup.paid_direct(claude_session(new_marker()))
     await _drive(env, dup, order, buyer)
-    assert vendor.direct_cards_sent == [4243] and vendor.schedule_calls >= 1
+    assert vendor.direct_cards_sent == [4243] and vendor.schedule_calls == 0
     job = await _job(dup, order)
     assert job.state == "fulfilled" and job.card_id == "4243" and job.card_last4 == "4243"
     assert job.card_candidates is None  # consumed by the lease that sent the order
@@ -85,11 +101,10 @@ async def test_a_pick_that_fails_our_checks_falls_back_to_a_candidate(env, dup):
     assert (await _job(dup, order)).card_id == "4242"
 
 
-async def test_a_candidate_with_a_skip_reason_is_never_tried(env, dup):  # noqa: F811
+async def test_a_cooling_card_is_never_tried(env, dup):  # noqa: F811
     vendor = _two_cards()
-    vendor.card_pool = [4243, 4242]
-    vendor.schedule_skip[4243] = "cooling_down"
-    vendor.cards[4242]["available_amount"] = 0.0  # the only usable one is too poor
+    vendor.usage_busy.add(4243)  # cooling down / busy at the vendor
+    vendor.cards[4242]["available_amount"] = 0.0  # the only other one is too poor
     await _zovo(dup, vendor, AUTO)
     _b, order = await dup.paid_direct(claude_session(new_marker()))
     await dup.run()
@@ -98,9 +113,9 @@ async def test_a_candidate_with_a_skip_reason_is_never_tried(env, dup):  # noqa:
 
 
 # ------------------------------------------------------------------ waiting for a card
-async def test_no_pick_parks_then_a_retry_succeeds_without_a_double_submit(env, dup):  # noqa: F811
+async def test_no_free_card_parks_then_a_retry_succeeds_without_a_double_submit(env, dup):  # noqa: F811
     vendor = _two_cards()
-    vendor.schedule_none = True  # "no card available"
+    vendor.usage_busy.update({4242, 4243})  # every card that has the money is busy
     await _zovo(dup, vendor, AUTO)
     buyer, order = await dup.paid_direct(claude_session(new_marker()))
     await dup.run()
@@ -113,13 +128,13 @@ async def test_no_pick_parks_then_a_retry_succeeds_without_a_double_submit(env, 
     await _settle(dup, 2)
     rows = await _audit(env, "procurement.waiting_for_card")
     assert len(rows) == 1 and rows[0][0] == "warning"
-    assert rows[0][1]["reason"] == "no_card_pick" and "card" not in str(rows[0][1]["order_id"])
+    assert rows[0][1]["reason"] == "card_pool_busy" and "card" not in str(rows[0][1]["order_id"])
     # the buyer sees the coarse status only
     info = (await buyer.get(f"/api/v1/orders/{order['id']}/direct")).json()
     assert info["waiting_for_supplier"] is True
     assert "card" not in str(info).lower().replace("waiting_for_supplier", "")
     # a card turns up: the same job goes on with the same key and request id
-    vendor.schedule_none = False
+    vendor.usage_busy.clear()
     await _drive(env, dup, order, buyer)
     job = await _job(dup, order)
     assert job.state == "fulfilled" and job.idempotency_key == key
@@ -132,7 +147,7 @@ async def test_no_pick_parks_then_a_retry_succeeds_without_a_double_submit(env, 
 
 async def test_the_wait_is_bounded_and_ends_in_needs_manual(env, dup):  # noqa: F811
     vendor = _two_cards()
-    vendor.schedule_none = True
+    vendor.usage_busy.update({4242, 4243})
     await _zovo(dup, vendor, AUTO)
     buyer, order = await dup.paid_direct(claude_session(new_marker()))
     await dup.run()
@@ -375,7 +390,7 @@ async def test_stale_candidates_are_re_checked_before_any_spend(env, dup, monkey
     await _settle(dup, 2)
     job = await _job(dup, order)
     assert vendor.direct_cards_sent == [] and not job.maybe_sent  # never spent on a stale pick
-    assert vendor.schedule_calls >= 2  # it kept re-asking the vendor instead
+    assert _card_reads(vendor) >= 2  # it kept re-reading the cards instead
     monkeypatch.setattr(engine, "CARD_FRESH_S", 120)
     await _settle(dup, 2)
     assert vendor.direct_cards_sent and vendor.direct_executions == 1
@@ -394,7 +409,7 @@ async def test_a_buyer_card_recorded_after_the_pre_check_forces_a_new_check(env,
 
     async def racing(ctx, db, job, offer, now):
         if not raced:  # the buyer card lands after the pre-check vetted 4243, before the spend
-            raced.append(vendor.schedule_calls)
+            raced.append(_card_reads(vendor))
             await _buyer_card_job(env, mask=mask_pan(vendor.cards[4243]["card_number"]))
         return await orig(ctx, db, job, offer, now)
 
@@ -402,7 +417,7 @@ async def test_a_buyer_card_recorded_after_the_pre_check_forces_a_new_check(env,
     buyer, order = await dup.paid_direct(claude_session(new_marker()))
     await _drive(env, dup, order, buyer)
     assert raced and vendor.direct_cards_sent == [4242]  # 4243 was never spent on
-    assert vendor.schedule_calls > raced[0]  # the vetted list was dropped and checked again
+    assert _card_reads(vendor) > raced[0]  # the vetted list was dropped and checked again
 
 
 # ------------------------------------------------------------------ vendor-reported card
@@ -664,7 +679,7 @@ async def test_card_in_flight_ignores_another_tenants_jobs(env, dup):  # noqa: F
     async with tenant_session(dup.ctx.maker, env.tenant_id) as db:
         assert await card_in_flight(db, env.tenant_id, sid, "4243", uuid.uuid4()) == 0
     # the buyer of another tenant cannot read the waiting status of this tenant's order
-    vendor.schedule_none = True
+    vendor.usage_busy.update({4242, 4243})
     _b, order = await dup.paid_direct(claude_session(new_marker()))
     await dup.run()
     stranger, _ = await env.login("buyer")
@@ -696,3 +711,195 @@ async def test_no_card_number_in_logs_audit_rows_or_responses(env, dup, caplog):
         for cid in (4242, 4243):
             assert PAN(cid) not in body and f"{cid:012d}" not in body
     assert job.card_id in ("4242", "4243") and job.used_last4 == "4243"  # id + last four only
+
+
+# ------------------------------------------------------------------ ADR-048: funding the card
+RECHARGE = "/cards/recharge"
+
+
+async def _funding(env, **settings) -> None:
+    import json
+
+    await _sql(
+        env,
+        "UPDATE tenants SET funding_settings = CAST(:s AS jsonb) WHERE id = :t",
+        s=json.dumps(settings),
+        t=env.tenant_id,
+    )
+
+
+async def _fundings(env):
+    return await _rows(
+        env,
+        "SELECT state, amount, card_id, idem_key FROM procurement_fundings ORDER BY created_at",
+    )
+
+
+async def test_no_money_on_any_card_goes_to_staff_at_once(env, dup):  # noqa: F811
+    """Owner 2026-11-19: no card can pay and top-ups are off (the default) -> needs_manual at
+    once, never the 30-minute card wait; nothing is moved or sent."""
+    vendor = _two_cards()
+    vendor.cards[4242]["available_amount"] = 0.3
+    vendor.cards[4243]["available_amount"] = 0.3
+    await _zovo(dup, vendor, AUTO)
+    _b, order = await dup.paid_direct(claude_session(new_marker()))
+    await dup.run()
+    job = await _job(dup, order)
+    # (no other source to fail over to: the failover's own reason prefix)
+    assert job.state == "needs_manual" and job.error_code == "no_source:funds_insufficient"
+    assert job.card_wait_since is None and not job.maybe_sent
+    assert _posts(vendor, RECHARGE) == [] and _posts(vendor, ORDERS) == []
+    assert await _fundings(env) == []
+
+
+async def test_an_allowed_top_up_moves_the_shortfall_then_orders_once(env, dup):  # noqa: F811
+    vendor = _vendor()  # one card, almost empty
+    vendor.cards[4242]["available_amount"] = 1.0
+    await _funding(env, auto_recharge=True)
+    await _zovo(dup, vendor, AUTO)
+    buyer, order = await dup.paid_direct(claude_session(new_marker()))
+    await _drive(env, dup, order, buyer)
+    job = await _job(dup, order)
+    assert job.state == "fulfilled" and vendor.direct_cards_sent == [4242]
+    keys = _posts(vendor, RECHARGE)
+    assert keys == [f"pj:{job.id.hex}:fund1"] and vendor.card_recharges == 1
+    (row,) = await _fundings(env)
+    assert row[0] == "done" and row[2] == "4242" and row[3] == keys[0]
+    amount = vendor.recharges[4242][0]["amount"]
+    assert amount == int(amount) and amount >= 10 and Decimal(str(amount)) == row[1]
+    assert len(_posts(vendor, ORDERS)) == 1
+    assert len(await _audit(env, "procurement.topup_done")) == 1
+
+
+async def test_a_card_that_already_holds_the_money_wins_over_a_top_up(env, dup):  # noqa: F811
+    vendor = _two_cards()
+    vendor.cards[4242]["available_amount"] = 1.0  # would need a top-up
+    await _funding(env, auto_recharge=True)
+    await _zovo(dup, vendor, AUTO)
+    buyer, order = await dup.paid_direct(claude_session(new_marker()))
+    await _drive(env, dup, order, buyer)
+    assert vendor.direct_cards_sent == [4243] and _posts(vendor, RECHARGE) == []
+
+
+async def test_a_wallet_refusal_moves_nothing_and_goes_to_staff(env, dup):  # noqa: F811
+    vendor = _vendor()
+    vendor.cards[4242]["available_amount"] = 1.0
+    vendor.force(RECHARGE, "insufficient_balance")
+    await _funding(env, auto_recharge=True)
+    await _zovo(dup, vendor, AUTO)
+    _b, order = await dup.paid_direct(claude_session(new_marker()))
+    await _settle(dup, 3)
+    job = await _job(dup, order)
+    assert job.state == "needs_manual" and job.error_code == "funds_insufficient"
+    assert not job.maybe_sent and _posts(vendor, ORDERS) == []
+    (row,) = await _fundings(env)
+    assert row[0] == "failed"
+
+
+async def test_the_daily_cap_is_checked_again_when_the_card_is_assigned(env, dup, monkeypatch):  # noqa: F811
+    """Another top-up uses the cap between the pre-check and the assignment: nothing is moved,
+    staff decide (never a wait)."""
+    from app.procurement import engine
+
+    vendor = _vendor()
+    vendor.cards[4242]["available_amount"] = 1.0
+    await _funding(env, auto_recharge=True, daily_cap_usd="30")
+    sid, _oid = await _zovo(dup, vendor, AUTO)
+    orig, raced = engine._assign_card, []
+
+    async def racing(ctx, db, job, offer, now):
+        if not raced:
+            raced.append(1)
+            await _sql(
+                env,
+                "INSERT INTO procurement_fundings (id, tenant_id, supplier_id, card_id, amount,"
+                " state, idem_key) VALUES (:i, :t, :s, '9', 25, 'done', 'other-key')",
+                i=uuid.uuid4(), t=env.tenant_id, s=sid,
+            )  # fmt: skip
+        return await orig(ctx, db, job, offer, now)
+
+    monkeypatch.setattr(engine, "_assign_card", racing)
+    _b, order = await dup.paid_direct(claude_session(new_marker()))
+    await _settle(dup, 3)
+    job = await _job(dup, order)
+    assert raced and job.state == "needs_manual" and job.error_code == "funding_cap_reached"
+    assert _posts(vendor, RECHARGE) == [] and _posts(vendor, ORDERS) == []
+
+
+async def test_a_card_emptied_before_the_send_is_never_charged(env, dup, monkeypatch):  # noqa: F811
+    """Owner: never send an order the card cannot pay (a decline costs a fee and this card type
+    is deleted after three). The real-time card read right before the POST refuses it."""
+    from app.procurement import engine
+
+    vendor = _vendor()
+    await _zovo(dup, vendor, AUTO)
+    orig = engine._assign_card
+
+    async def drain(ctx, db, job, offer, now):
+        ok = await orig(ctx, db, job, offer, now)
+        vendor.cards[4242]["available_amount"] = 0.5  # spent elsewhere meanwhile
+        return ok
+
+    monkeypatch.setattr(engine, "_assign_card", drain)
+    _b, order = await dup.paid_direct(claude_session(new_marker()))
+    await _settle(dup, 3)
+    job = await _job(dup, order)
+    assert job.state == "needs_manual" and job.error_code == "funds_insufficient"
+    assert _posts(vendor, ORDERS) == [] and not job.maybe_sent
+
+
+async def test_stock_follows_the_money(env, dup):  # noqa: F811
+    """The storefront check: sold out only when neither a card nor an allowed top-up can pay."""
+    from app.procurement import service
+
+    vendor = _vendor()
+    vendor.cards[4242]["available_amount"] = 1.0
+    _sid, oid = await _zovo(dup, vendor, AUTO)
+    out = await service.check_offer(dup.ctx, env.tenant_id, oid)
+    assert out["available"] is False and out["reason"] == "funds_insufficient"
+    await _funding(env, auto_recharge=True)
+    out = await service.check_offer(dup.ctx, env.tenant_id, oid)
+    assert out["available"] is True
+    await _funding(env, auto_recharge=True, per_topup_max_usd="5")  # the top-up is above the cap
+    out = await service.check_offer(dup.ctx, env.tenant_id, oid)
+    assert out["available"] is False and out["reason"] == "funds_insufficient"
+
+
+async def test_an_unclear_top_up_is_never_followed_by_a_second_one(env, dup):  # noqa: F811
+    """Payment audit H1: the vendor answers "being confirmed" (no code, not cached). The job keeps
+    THAT top-up (row ``sent``, same card, same key); once the card shows the money it orders
+    without resending, and exactly one top-up ever ran."""
+    vendor = _vendor()
+    vendor.cards[4242]["available_amount"] = 1.0
+    vendor.recharge_pending_next = 1
+    await _funding(env, auto_recharge=True)
+    await _zovo(dup, vendor, AUTO)
+    buyer, order = await dup.paid_direct(claude_session(new_marker()))
+    await _settle(dup, 2)
+    (row,) = await _fundings(env)
+    assert row[0] == "sent" and vendor.card_recharges == 1
+    assert _posts(vendor, ORDERS) == []
+    keys = set(_posts(vendor, RECHARGE))
+    assert len(keys) == 1  # any resend used the SAME key
+    # the vendor confirms the pending top-up: the card now holds the money
+    pending = vendor.recharges[4242][0]
+    pending["status"] = "success"
+    vendor.cards[4242]["available_amount"] += pending["amount"]
+    await _drive(env, dup, order, buyer)
+    assert vendor.card_recharges == 1 and set(_posts(vendor, RECHARGE)) == keys
+    assert len(_posts(vendor, ORDERS)) == 1
+    rows = await _fundings(env)
+    assert len(rows) == 1 and rows[0][0] == "sent"  # unclear stays counted (staff can settle)
+
+
+async def test_an_unreadable_wallet_is_a_retry_not_sold_out_to_staff(env, dup):  # noqa: F811
+    """Payment audit M1: "no money" must be known, not guessed from a failed wallet read."""
+    from app.procurement import service
+
+    vendor = _vendor()
+    vendor.cards[4242]["available_amount"] = 1.0
+    await _funding(env, auto_recharge=True)
+    _sid, oid = await _zovo(dup, vendor, AUTO)
+    vendor.force("/balance", "500", times=5)
+    out = await service.check_offer(dup.ctx, env.tenant_id, oid)
+    assert out["available"] is False and out["reason"] == "wallet_unreadable"

@@ -517,3 +517,27 @@ delivery deadline, the staff overdue filter and the buyer's escalation time. The
 `manual_stock` (units sellable ahead).
 **Consequences:** editing or ending a pre-order never changes a sold order's promise. Card-key backorders (deliver on
 import), deposits, per-variant windows and late alerts by Telegram are later steps.
+
+### ADR-048: Direct orders pick and fund their card themselves; sold out only when no money can pay (owner request 2026-11-19)
+
+**Context:** production ChatGPT plans all showed sold out with USD 19–33 in the ZovoCard wallet. The Open API pays a
+direct order from ONE card of ours (`card_id`), never from the wallet; the only card held USD 0.30; the vendor's pick
+preview (`card-pool/schedule`) skipped it ("not in the current card selection priority"); and a peso-priced plan made our
+own balance check pass with an unknown cost. This card type is deleted by its issuer after three low-balance declines.
+**Decision:** (1) `auto_existing` picks from `GET /cards` (our cards; the preview is no longer asked), order: a card that
+already holds the money > the card that paid last > the owner's BIN priority > the lowest minimum top-up > the largest
+balance; usage caps and busy flags still apply, and so do the buyer-card checks and one order in flight per card.
+(2) What a card must hold = price + the vendor's buffer `max(balanceBufferBps, minBalanceBufferUsdMinor)` + fee; a
+non-USD price comes from the offer's configured USD cost + 3 % FX margin; no price -> `cost_unknown`, sold out, never sent.
+(3) Optional automatic top-ups (`tenants.funding_settings`, migration `0038`, OFF by default, changed only by an admin
+with a fresh TOTP code, audited): the engine plans a top-up when it assigns a short card (`procurement_fundings`, per-day
+and per-top-up caps under an advisory lock), the adapter sends `POST /cards/recharge` under the row's own idempotency key
+right before the order, then reads the card in real time and refuses an order the card cannot pay. (4) Stock = a card or
+an allowed top-up can pay. (5) A PAID order that meets no card / no money / no price / the cap goes to staff at once
+(`needs_manual`), never the 30-minute card wait. (6) Before a hand top-up staff run the charge check (payment, supplier
+order, the job's top-ups, the funding card's latest spends) and must confirm it (`charge_checked`).
+**Consequences:** money only ever moves wallet -> our own card (refundable); an unclear top-up stays counted against the
+cap and stays on the job: only THAT top-up (same card, same key) may go again, and not at all once the card holds the money
+(payment audit H1); only the vendor's documented refusals mark a top-up failed; a failed wallet / catalogue read is a retry,
+never "no money"; the caps are per tenant; a direct hand fulfil needs a charge check run by the same staff member in the
+last 30 minutes (server-side marker); issuing NEW cards per order stays reserved (§21.4) until the owner asks.

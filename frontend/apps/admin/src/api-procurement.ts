@@ -242,8 +242,10 @@ export function createProcurementApi(c: ApiClient) {
       requery: (id: string) => job(id, 'requery'),
       retry: (id: string) => job(id, 'retry'),
       switchSource: (id: string) => job(id, 'switch'),
-      fulfil: (id: string, code: string, reason: string, card_id?: string) =>
-        job(id, 'fulfil', clean({ code, reason, card_id })),
+      fulfil: (id: string, code: string, reason: string, card_id?: string, charge_checked?: boolean) =>
+        job(id, 'fulfil', clean({ code, reason, card_id, charge_checked })),
+      /** ADR-048: payment, supplier order, the job's top-ups and the funding card's spends (read only) */
+      chargeCheck: (id: string) => c.get<ChargeCheck>(`${base}/jobs/${seg(id)}/charge-check`),
       void: (id: string, reason: string) => job(id, 'void', { reason }),
       fail: (id: string, reason: string) => job(id, 'fail', { reason }),
     },
@@ -603,5 +605,61 @@ export function createRedeemApi(c: ApiClient) {
       c.post<{ action: string; before: { status: string | null }; after: { status: string | null } }>(`${base}/cdk/${seg(action)}`, { code, confirm: true, ...(forceUnsold ? { force_unsold: true } : {}) }),
     settings: () => c.get<RedeemSettings>(`${base}/settings`),
     saveSettings: (patch: RedeemSettingsPatch) => c.put<RedeemSettings>(`${base}/settings`, patch),
+  }
+}
+
+// ------------------------------------------------------------------ card funding (ADR-048)
+export interface FundingSettings {
+  auto_recharge: boolean
+  daily_cap_usd: string
+  per_topup_max_usd: string
+  bin_priority: string[]
+}
+export interface FundingTopup {
+  id: string
+  created_at: string | null
+  state: 'planned' | 'sent' | 'done' | 'failed' | 'void'
+  card_id: string
+  amount: string
+  currency: string
+  order_id: string | null
+  job_id: string | null
+  error: string | null
+}
+export interface FundingView {
+  settings: FundingSettings
+  today: { spent_usd: string; left_usd: string }
+  topups: FundingTopup[]
+}
+export type FundingPatch = Partial<FundingSettings> & { totp_code: string }
+export interface CardCharge {
+  time: string | null
+  amount: string | null
+  currency: string | null
+  status: string | null
+  type: string | null
+  merchant: string | null
+  ai: boolean
+}
+export interface ChargeCheck {
+  payment: { order_status: string; paid: boolean; paid_at: string | null; amount_minor: number | null; currency: string }
+  supplier: null | {
+    state: 'not_sent' | 'completed' | 'pending' | 'failed' | 'not_found' | 'unknown'
+    upstream_ref: string | null
+    card_id: string | null
+    charges: CardCharge[] | null
+    topups: { state: string; card_id: string; amount: string; error: string | null }[]
+    job_created_at: string | null
+    first_sent_at: string | null
+  }
+}
+export const BIN_RE = /^\d{6,9}$/
+export const USD_RE = /^\d{1,5}(\.\d{1,2})?$/
+
+export function createFundingApi(c: ApiClient) {
+  const base = '/admin/procurement/funding'
+  return {
+    get: () => c.get<FundingView>(base),
+    save: (patch: FundingPatch) => c.put<FundingView>(base, patch),
   }
 }
