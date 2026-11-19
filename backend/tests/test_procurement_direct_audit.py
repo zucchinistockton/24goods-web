@@ -8,6 +8,7 @@ import urllib.parse
 import uuid
 from dataclasses import replace
 from datetime import datetime, timezone
+from decimal import Decimal
 
 import pytest
 from sqlalchemy import text
@@ -384,7 +385,9 @@ async def test_hand_fulfil_without_a_known_order_searches_the_vendor_first(env, 
     job = await _job(dup, order)
     assert job.upstream_ref is None and job.maybe_sent
     admin, _ = await env.login("admin")
-    r = await admin.post(f"{JOBS}/{job.id}/fulfil", json={"reason": "I did this by hand now"})
+    r = await admin.post(
+        f"{JOBS}/{job.id}/fulfil", json={"reason": "I did this by hand now", "charge_checked": True}
+    )
     assert r.status_code == 409 and r.json()["error"]["code"] == "order_in_flight"
     assert vendor.direct_executions == 1  # found by the search, never re-created
 
@@ -818,7 +821,8 @@ def _direct_spec(params=CLAUDE):
     jid = "aa" * 16
     return JobSpec(
         job_id=jid, step="sent", idempotency_key=f"pj:{jid}:submit",
-        offer=OfferSpec(kind="direct", params=params), credential=claude_session("A")
+        offer=OfferSpec(kind="direct", params=params, cost_usd=Decimal("20")),
+        credential=claude_session("A")
         if params is CLAUDE else gpt_session(new_marker()),
     )  # fmt: skip
 

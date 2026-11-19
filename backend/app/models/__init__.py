@@ -22,6 +22,7 @@ from app.models.payment_config import LegacyPayUrl, PaymentAttempt, PaymentGatew
 from app.models.procurement import (
     HalfPriceCheck,
     ProcurementCredential,
+    ProcurementFunding,
     ProcurementJob,
     RedeemAttempt,
     SupplierAccount,
@@ -65,6 +66,7 @@ __all__ = [
     "PaymentGateway",
     "PaymentTest",
     "ProcurementCredential",
+    "ProcurementFunding",
     "ProcurementJob",
     "Product",
     "ProductVariant",

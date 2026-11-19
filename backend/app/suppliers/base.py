@@ -173,6 +173,9 @@ class Result:
     card_last4: str | None = None
     card_candidates: tuple[tuple[str, str | None], ...] = ()
     candidate_masks: tuple[tuple[str, str], ...] = field(default=(), repr=False)  # as Availability
+    card_topups: tuple[tuple[str, Decimal], ...] = ()  # as Availability
+    # direct submit: the USD the adapter moved from the wallet onto the funding card (ADR-048)
+    funded: Decimal | None = None
     # direct submit: the vendor refused BEFORE an order existed AND the lookup by client request id
     # verified that none exists (the only case in which a new attempt key is allowed)
     no_order_verified: bool = False
@@ -226,11 +229,28 @@ class LedgerRow:
 
 
 @dataclass(frozen=True)
+class FundingPolicy:
+    """How a direct order's funding card may be topped up from the supplier wallet (ADR-048).
+    Built by the procurement process from the tenant's ``funding_settings`` and today's top-ups;
+    the adapter only reads it. ``allowance`` is the most ONE automatic top-up may move now (the
+    per-order cap, bounded by what is left of the daily cap)."""
+
+    auto_recharge: bool = False
+    allowance: Decimal = Decimal(0)
+    bin_priority: tuple[str, ...] = ()
+    preferred: tuple[str, ...] = ()  # card ids, the one that paid last first
+
+
+@dataclass(frozen=True)
 class OfferSpec:
     """What a ``supplier_offers`` row asks for, independent of the database model."""
 
     kind: Literal["cdk", "vcc", "direct"]
     params: Mapping[str, Any] = field(default_factory=dict)
+    # the offer's configured cost in USD (``supplier_offers.cost_estimate`` when its currency is
+    # USD): the price a direct plan quoted in another currency is budgeted from
+    cost_usd: Decimal | None = None
+    funding: FundingPolicy | None = None
 
 
 @dataclass(frozen=True)
@@ -247,6 +267,8 @@ class Availability:
     # the candidates' masked numbers (id, mask): checked against buyers' cards by the engine in the
     # same process, never stored, logged or audited
     candidate_masks: tuple[tuple[str, str], ...] = field(default=(), repr=False)
+    # direct: the USD top-up a candidate needs before it can pay (absent = none), ADR-048
+    card_topups: tuple[tuple[str, Decimal], ...] = ()
 
 
 @dataclass(frozen=True)

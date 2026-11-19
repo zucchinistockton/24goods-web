@@ -21,6 +21,8 @@ class Tenant(Base):
     settings: Mapped[dict[str, Any]] = mapped_column(default=dict)
     # redemption site switches (migration 0035); procurement may read ONLY this column
     redeem_settings: Mapped[dict[str, Any] | None] = mapped_column(deferred=True)
+    # automatic card top-ups of direct orders (migration 0038, ADR-048); procurement reads it
+    funding_settings: Mapped[dict[str, Any] | None] = mapped_column(deferred=True)
     created_at: Mapped[datetime] = created_at()
 
 

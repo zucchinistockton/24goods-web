@@ -96,6 +96,9 @@ class FulfilIn(BaseModel):
     # exactly as in the engine path, so the UNIQUE catches an engine / hand overlap
     card_id: str | None = Field(default=None, pattern=r"^[0-9]{1,20}$")
     reason: str | None = Field(default=None, max_length=200)
+    # a direct job (owner 2026-11-19, ADR-048): staff confirm they ran the charge check (buyer
+    # paid; the supplier order and the funding card show no charge for this order) first
+    charge_checked: bool = False
 
     check_reason = field_validator("reason")(_no_card_number)
 
@@ -465,6 +468,58 @@ def _schedule_recovery(job: ProcurementJob) -> bool:
     return False
 
 
+@router.get("/{job_id}/charge-check")
+async def charge_check(
+    job_id: uuid.UUID,
+    staff: User = Depends(require_staff),
+    db: AsyncSession = Depends(get_db),
+    res: Resources = Depends(get_res),
+) -> dict:
+    """Evidence before a hand top-up / reissue (ADR-048): did the buyer pay, what the supplier
+    order says, the job's automatic top-ups and the funding card's latest spends. Read only."""
+    await enforce(res.redis, RATE[0], str(staff.id), RATE[1], RATE[2])
+    tid = staff.tenant_id
+    row = (
+        await db.execute(
+            select(
+                ProcurementJob.kind, Order.status, Order.paid_at, Order.amount_minor, Order.currency
+            )
+            .join(Order, Order.id == ProcurementJob.order_id)
+            .where(ProcurementJob.id == job_id, ProcurementJob.tenant_id == tid)
+        )
+    ).first()
+    if row is None:
+        raise NotFound("Job not found")
+    await db.rollback()
+    payment = {
+        "order_status": row.status,
+        "paid": row.paid_at is not None,
+        "paid_at": _iso(row.paid_at),
+        "amount_minor": row.amount_minor,
+        "currency": row.currency,
+    }
+    if row.kind != "direct":
+        return {"payment": payment, "supplier": None}
+    token = res.settings.procurement_token
+    if len(token) < 32:
+        raise Unavailable("The procurement service is not configured", code="procurement_off")
+    try:
+        resp = await res.procurement.post(
+            "/internal/charge-check",
+            json={"tenant_id": str(tid), "job_id": str(job_id)},
+            headers={"X-Internal-Token": token},
+        )
+    except httpx.HTTPError:
+        raise Unavailable(
+            "The procurement service is unreachable", code="procurement_unreachable"
+        ) from None
+    if resp.status_code == 404:
+        raise NotFound("Job not found")
+    if resp.status_code != 200:
+        raise Unavailable("The supplier could not be read", code="procurement_unreachable")
+    return {"payment": payment, "supplier": resp.json()}
+
+
 @router.post("/{job_id}/requery")
 async def requery(
     job_id: uuid.UUID,
@@ -595,6 +650,12 @@ async def fulfil_manually(
         if len((body.reason or "").strip()) < 12:
             raise Validation(
                 "Say what you did at the supplier (at least 12 characters)", code="reason_required"
+            )
+        if not body.charge_checked:
+            raise Validation(
+                "Run the charge check first: confirm the buyer paid and that neither the supplier"
+                " order nor the funding card already charged for this order",
+                code="charge_check_required",
             )
         code = await _direct_text(db, job)
     else:

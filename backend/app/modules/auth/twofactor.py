@@ -255,6 +255,15 @@ async def _checked(
     return row
 
 
+async def step_up(
+    db: AsyncSession, redis: Redis, settings: Settings, user: User, code: str, ip: str | None
+) -> None:
+    """A fresh authenticator code for one sensitive action (ADR-048: settings that move money).
+    TOTP only (a recovery code is for getting back in, not for spending); each code works once.
+    Raises :class:`TwoFactorNotEnabled` / :class:`TwoFactorInvalid`. Caller commits."""
+    await _checked(db, redis, settings, user, code, confirmed=True, recovery=False, ip=ip)
+
+
 async def enable(
     db: AsyncSession, redis: Redis, settings: Settings, user: User, code: str, ip: str | None
 ) -> list[str]:

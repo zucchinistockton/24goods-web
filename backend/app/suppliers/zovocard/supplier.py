@@ -39,6 +39,7 @@ from app.suppliers.base import (
 )
 from app.suppliers.direct_credential import CredentialError, mask_email, validate_credential
 from app.suppliers.zovocard import direct as dr
+from app.suppliers.zovocard import funding as fd
 from app.suppliers.zovocard.client import ZovoClient
 from app.suppliers.zovocard.webhook import mask_pan, parse_webhook
 
@@ -46,6 +47,10 @@ log = logging.getLogger("app.suppliers.zovocard")
 
 DIRECT_PRODUCTS = ("gpt", "claude", "grok")  # products with a plans catalogue (``x`` has none)
 PLANS_TTL_S = 60.0
+# ADR-048 funding reads: storefront checks share them this long; a pre-check reads fresh
+FUND_TTL_S = 30.0
+FUND_MAX_PAGES = 5  # 500 cards
+FUND_MAX_USAGE_READS = 6  # usage reads per check (best candidates first)
 
 
 @dataclass(frozen=True)
@@ -307,6 +312,10 @@ class ZovoCardSupplier:
         self.env = client.config.env
         self._plans: dict[str, tuple[float, PlanCatalog]] = {}
         self._cards: tuple[float, list[CardProduct]] | None = None
+        # ADR-048: short caches for the storefront check (a fresh check never reads them)
+        self._fund_cards_hit: tuple[float, list[fd.FundCard]] | None = None
+        self._wallet_hit: tuple[float, Decimal] | None = None
+        self._usage_hit: dict[tuple[int, str, str], tuple[float, tuple[Any, ...]]] = {}
 
     async def aclose(self) -> None:
         await self.client.aclose()
@@ -822,54 +831,158 @@ class ZovoCardSupplier:
             cost = await self._direct_cost(offer)
         except SupplierError:
             cost = None
+        need = await self._card_need(spec, offer, cost)
+        if need is None:  # no price, no order (ADR-048): the plan shows sold out
+            return Availability(False, dr.COST_UNKNOWN, cost_estimate=cost, checked_at=now)
         if spec.card_mode != "fixed":
-            return await self._auto_card_availability(spec, cost, now)
+            return await self._auto_card_availability(spec, offer, cost, need, now, fresh=fresh)
         assert spec.card_id is not None
-        problem, mask = await self._funding_card_problem(spec, cost)
+        problem, mask = await self._funding_card_problem(spec, need)
         if problem is not None:
             return Availability(
                 False, problem, cost_estimate=cost, checked_at=now, funding_mask=mask
             )
         return Availability(True, cost_estimate=cost, checked_at=now, funding_mask=mask)
 
-    async def _auto_card_availability(
-        self, spec: dr.DirectSpec, cost: Money | None, now: datetime
-    ) -> Availability:
-        """Card mode ``auto_existing`` (review-v12 §21.1): ask the vendor which card it would pick
-        for this plan (``GET /gpt-direct/card-pool/schedule``, a read; nothing is reserved), then
-        run OUR checks on the pick and, when it fails them, on the next candidates that carry no
-        ``skip_reason`` (at most :data:`dr.MAX_CARD_TRIES` cards in all). The cards that pass go
-        back to the engine, which still enforces "one order in flight per card" before the send.
-        No pick, or no usable card, is a WAIT (never a failure): the job parks."""
+    async def _card_need(
+        self, spec: dr.DirectSpec, offer: OfferSpec, cost: Money | None
+    ) -> Money | None:
+        """What the funding card must hold for one order (USD), ADR-048. A USD plan: the vendor's
+        own cost (price + buffer + fee). A plan quoted in another currency (GPT in PHP): the
+        offer's configured USD cost with the vendor's buffer and :data:`fd.FX_MARGIN`. Neither ->
+        ``None`` (the caller never sends and shows the plan sold out)."""
+        if cost is not None and cost.currency == "USD" and cost.amount > 0:
+            return cost
         try:
+            catalog = await self.plans(spec.product)
+        except SupplierError:
+            return None
+        entry = catalog.registry.get(spec.plan)
+        plan = catalog.plans.get(entry.acc_plan_key if entry and entry.acc_plan_key else spec.plan)
+        need = fd.card_need(
+            offer.cost_usd, plan if isinstance(plan, Mapping) else None, usd_price=False
+        )
+        return Money(need, "USD") if need is not None else None
+
+    async def _fund_cards(self, fresh: bool) -> list[fd.FundCard]:
+        """Our cards (``GET /cards``, real-time balances when ``fresh``), up to 500."""
+        hit = self._fund_cards_hit
+        if hit is not None and not fresh and time.monotonic() - hit[0] < FUND_TTL_S:
+            return hit[1]
+        cards: list[fd.FundCard] = []
+        for page in range(1, FUND_MAX_PAGES + 1):
             resp = await self.client.get(
-                "/gpt-direct/card-pool/schedule",
-                params={"product": spec.product, "plan": spec.plan, "card_mode": "auto_existing"},
+                "/cards",
+                params={"page": str(page), "page_size": "100", **({"sync": "1"} if fresh else {})},
             )
+            rows = fd.parse_fund_cards(resp.data)
+            cards.extend(rows)
+            total = resp.data.get("total") if isinstance(resp.data, Mapping) else None
+            if not rows or not isinstance(total, int) or page * 100 >= total:
+                break
+        self._fund_cards_hit = (time.monotonic(), cards)
+        return cards
+
+    async def _wallet(self, fresh: bool) -> Decimal | None:
+        hit = self._wallet_hit
+        if hit is not None and not fresh and time.monotonic() - hit[0] < FUND_TTL_S:
+            return hit[1]
+        try:
+            spendable = (await self.balance()).spendable
+        except (SupplierError, ValueError):
+            return None
+        self._wallet_hit = (time.monotonic(), spendable)
+        return spendable
+
+    async def _usage(
+        self, card_id: int, product: str, plan: str, fresh: bool
+    ) -> tuple[int | None, bool, str | None]:
+        key = (card_id, product, "pro20" if plan.startswith("pro_20x") else "light")
+        hit = self._usage_hit.get(key)
+        if hit is not None and not fresh and time.monotonic() - hit[0] < FUND_TTL_S:
+            return hit[1]  # type: ignore[return-value]
+        try:
+            usage = await self.client.get(
+                f"/gpt-direct/cards/{card_id}/usage", params={"product": product}
+            )
+            state = dr.usage_state(usage.data, plan)
+        except SupplierError:
+            state = (None, False, None)  # [I] shape: an unreadable answer does not block
+        self._usage_hit[key] = (time.monotonic(), state)
+        return state
+
+    async def card_charges(self, card_id: int) -> list[dict[str, Any]]:
+        """The latest spends of one of OUR cards (real time), for the staff charge check before a
+        hand top-up (ADR-048). Read only; no card number is returned."""
+        resp = await self.client.get(
+            f"/cards/{card_id}/transactions", params={"page": "1", "page_size": "20", "sync": "1"}
+        )
+        return fd.parse_charges(resp.data)
+
+    async def _auto_card_availability(
+        self,
+        spec: dr.DirectSpec,
+        offer: OfferSpec,
+        cost: Money | None,
+        need: Money,
+        now: datetime,
+        *,
+        fresh: bool = False,
+    ) -> Availability:
+        """Card mode ``auto_existing`` (ADR-048, replaces the vendor's pick preview): OUR cards
+        that can pay ``need`` now, as they are or after a top-up from the wallet the funding
+        policy allows, best first (:func:`fd.plan_cards`), each checked against the vendor's
+        usage cap and busy / cooling flags. The engine still checks buyers' cards and "one order
+        in flight per card" before anything is spent. No card and no allowed top-up ->
+        ``funds_insufficient`` / ``no_funding_card``: the plan shows sold out."""
+        try:
+            cards = await self._fund_cards(fresh)
         except SupplierError as exc:
-            # the vendor itself says "no card" (a READ: nothing is sent, a guessed code only waits)
-            if exc.reason in dr.CARD_REFUSAL_CODES | dr.CARD_GUESSED_CODES:
-                return Availability(False, dr.NO_CARD_PICK, cost_estimate=cost, checked_at=now)
             return Availability(False, exc.reason, cost_estimate=cost, checked_at=now)
-        ids = dr.parse_schedule(resp.data)
-        if not ids:
-            return Availability(False, dr.NO_CARD_PICK, cost_estimate=cost, checked_at=now)
+        pol = offer.funding
+        wallet: Decimal | None = None
+        rates: dict[str, Decimal] = {}
+        if pol is not None and pol.auto_recharge:
+            wallet = await self._wallet(fresh)
+            try:
+                rates = {
+                    p.product_code: p.recharge_fee
+                    for p in await self.card_products()
+                    if p.recharge_fee is not None and p.recharge_fee >= 0
+                }
+            except SupplierError:
+                rates = {}  # unknown rates are budgeted high (fd.UNKNOWN_FEE_RATE)
+        plans = fd.plan_cards(cards, need.amount, spec.product, pol, wallet, rates)
         usable: list[tuple[str, str | None]] = []
         masks: list[tuple[str, str]] = []  # the engine checks them against buyers' cards (H1)
+        topups: list[tuple[str, Decimal]] = []
         busy = False
-        for cid in ids:
-            probe = dr.DirectSpec(
-                spec.product, spec.plan, cid, spec.country, spec.currency, spec.card_mode
+        for reads, p in enumerate(plans):
+            if len(usable) >= fd.MAX_CARDS or reads >= FUND_MAX_USAGE_READS:
+                break
+            remaining, waiting, usage_status = await self._usage(
+                p.card.id, spec.product, spec.plan, fresh
             )
-            problem, mask = await self._funding_card_problem(probe, cost)
-            if problem is None:
-                usable.append((str(cid), dr.last4_of((mask or "")[-4:])))
-                if mask:
-                    masks.append((str(cid), mask))
-            else:
-                busy = busy or problem == "funding_card_busy"
+            if usage_status is not None and usage_status != "ACTIVE":
+                continue  # e.g. DELETED meanwhile
+            problem = dr.funding_card_problem(p.card.status, True, remaining, waiting)
+            if problem == "funding_card_busy":
+                busy = True
+                continue
+            if problem is not None:
+                continue
+            usable.append((str(p.card.id), p.card.last4))
+            if p.card.mask:
+                masks.append((str(p.card.id), p.card.mask))
+            if p.topup > 0:
+                topups.append((str(p.card.id), p.topup))
         if not usable:
-            reason = dr.CARD_POOL_BUSY if busy else dr.NO_CARD_PICK
+            if busy:
+                reason = dr.CARD_POOL_BUSY
+            elif plans:
+                reason = dr.NO_FUNDING_CARD  # every card that has the money is used up
+            else:
+                reason = fd.shortfall_reason(cards, spec.product)
             return Availability(False, reason, cost_estimate=cost, checked_at=now)
         return Availability(
             True,
@@ -877,6 +990,7 @@ class ZovoCardSupplier:
             checked_at=now,
             card_candidates=tuple(usable),
             candidate_masks=tuple(masks),
+            card_topups=tuple(topups),
         )
 
     async def _funding_card_problem(
@@ -885,7 +999,8 @@ class ZovoCardSupplier:
         """The funding card must be OURS (``GET /cards/{id}`` answers for our account only: a
         404 means it is not ours), ACTIVE, hold at least the order's cost (USD) and have capacity
         left under the vendor's usage cap (``GET /gpt-direct/cards/{id}/usage``, [I] shape: an
-        unreadable answer does not block). The PAN / CVV in the card read are dropped at once."""
+        unreadable answer does not block). The PAN / CVV in the card read are dropped at once.
+        ``cost`` ``None`` = unknown: the card is NOT enough (ADR-048, fail closed)."""
         try:
             resp = await self.client.get(f"/cards/{spec.card_id}")
         except SupplierError as exc:
@@ -894,14 +1009,11 @@ class ZovoCardSupplier:
         if detail is None:
             return "funding_card_invalid", None
         mask = detail.mask
-        enough = cost is None or detail.available >= cost.amount
-        try:
-            usage = await self.client.get(
-                f"/gpt-direct/cards/{spec.card_id}/usage", params={"product": spec.product}
-            )
-            remaining, waiting, usage_status = dr.usage_state(usage.data, spec.plan)
-        except SupplierError:
-            remaining, waiting, usage_status = None, False, None
+        enough = cost is not None and detail.available >= cost.amount
+        assert spec.card_id is not None
+        remaining, waiting, usage_status = await self._usage(
+            spec.card_id, spec.product, spec.plan, True
+        )
         if usage_status is not None and usage_status != "ACTIVE":
             return "funding_card_invalid", mask  # e.g. DELETED
         return dr.funding_card_problem(detail.status, enough, remaining, waiting), mask
@@ -1002,6 +1114,40 @@ class ZovoCardSupplier:
         return AccountCheck("passed", "", **seen)
 
     async def _direct_run(self, job: JobSpec) -> Result:
+        """:meth:`_direct_run_once`, with the top-up it made (if any) reported on EVERY answer, so
+        the engine records the money that moved even when the order itself then fails."""
+        moved: list[Decimal] = []
+        res = await self._direct_run_once(job, moved)
+        return replace(res, funded=moved[0]) if moved else res
+
+    async def _topup(
+        self, card_id: int, amount: Decimal, key: str, moved: list[Decimal]
+    ) -> Result | None:
+        """``POST /cards/recharge`` (ADR-048): move ``amount`` (USD) from the wallet onto the
+        funding card, under its own idempotency key (the vendor replays the first answer per
+        key, so a retry never pays twice). ``None`` = done. A definite refusal is FATAL (staff;
+        no order was sent); anything unclear is RETRYABLE under the same key."""
+        try:
+            await self.client.request(
+                "POST",
+                "/cards/recharge",
+                json_body={"card_id": card_id, "amount": int(amount)},  # whole dollars
+                idempotency_key=key,
+                endpoint="cards.recharge",
+            )
+        except SupplierError as exc:
+            code = (exc.error_code or "").lower()
+            if code == "insufficient_balance":
+                return Result(Outcome.FATAL, error_code=dr.FUNDS_INSUFFICIENT)
+            if code == "amount_below_min":
+                return Result(Outcome.FATAL, error_code="topup_below_min")
+            if exc.status in (400, 404) and code not in ("", "rate_limited"):
+                return Result(Outcome.FATAL, error_code="topup_refused")
+            return Result(Outcome.RETRYABLE, error_code="topup_unconfirmed")
+        moved.append(amount)
+        return None
+
+    async def _direct_run_once(self, job: JobSpec, moved: list[Decimal]) -> Result:
         """Preflight, then ONE order POST under the job's key; afterwards only reads.
 
         * the recorded order id answers everything: a job that knows its order NEVER POSTs again;
@@ -1059,6 +1205,10 @@ class ZovoCardSupplier:
             over = await self._quote_problem(spec, pf, job)
             if over is not None:
                 return Result(Outcome.FATAL, error_code=over, **seen)
+            if not moved:
+                short = await self._fund_before_order(spec, job, moved)
+                if short is not None:
+                    return replace(short, **seen)
             try:
                 version = (await self.plans(spec.product, fresh=attempt > 1)).version
             except SupplierError:
@@ -1092,6 +1242,36 @@ class ZovoCardSupplier:
                 body.clear()
             return await self._direct_created(spec, resp.data, rid, seen)
         return Result(Outcome.RETRYABLE, error_code="GPT_PRICE_UNCONFIRMED", account_mask=mask)
+
+    async def _fund_before_order(
+        self, spec: dr.DirectSpec, job: JobSpec, moved: list[Decimal]
+    ) -> Result | None:
+        """The last gate before the order POST (ADR-048, owner: never send an order the card
+        cannot pay): make the planned top-up, then read the card (real time) and refuse when it
+        does not hold the order's need. ``None`` = the card can pay."""
+        assert spec.card_id is not None
+        try:
+            cost = await self._direct_cost(job.offer)
+        except SupplierError:
+            cost = None
+        need = await self._card_need(spec, job.offer, cost)
+        if need is None:
+            return Result(Outcome.FATAL, error_code=dr.COST_UNKNOWN)
+        topup = dr.picked_topup(job.offer.params) if spec.card_mode != "fixed" else None
+        if topup is not None:
+            refused = await self._topup(spec.card_id, topup[0], topup[1], moved)
+            if refused is not None:
+                return refused
+        try:
+            resp = await self.client.get(f"/cards/{spec.card_id}", params={"sync": "1"})
+        except SupplierError:
+            return Result(Outcome.RETRYABLE, error_code="card_unreadable")
+        detail = parse_card_detail(resp.data)
+        if detail is None or detail.status != "ACTIVE":
+            return Result(Outcome.FATAL, error_code="funding_card_invalid")
+        if detail.available < need.amount:
+            return Result(Outcome.FATAL, error_code=dr.FUNDS_INSUFFICIENT)
+        return None
 
     async def _quote_problem(
         self, spec: dr.DirectSpec, pf: dr.Preflight, job: JobSpec

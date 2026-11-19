@@ -114,7 +114,7 @@ class ProcurementJob(Base):
     # usable cards of its last pre-check ("id:last4,..."), and when it first waited for a card
     card_id: Mapped[str | None] = mapped_column(String(20))
     card_last4: Mapped[str | None] = mapped_column(String(4))
-    card_candidates: Mapped[str | None] = mapped_column(String(80))
+    card_candidates: Mapped[str | None] = mapped_column(String(120))  # 0038: "id:last4:cents"
     card_wait_since: Mapped[datetime | None]
     # the card the VENDOR reports as paying (card_id above stays the one we sent), when the
     # candidates were checked, and the re-keyed attempt counter (0 = the first key)
@@ -122,8 +122,33 @@ class ProcurementJob(Base):
     used_last4: Mapped[str | None] = mapped_column(String(4))
     card_candidates_at: Mapped[datetime | None]
     card_attempt: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # 0038 (ADR-048): the top-up (USD) planned for the picked card before the order
+    fund_amount: Mapped[Decimal | None] = mapped_column(AMOUNT)
+    fund_key: Mapped[str | None] = mapped_column(String(80))
     # 0034 (issue #30): vendor state, staff timeline and step times (see the migration docstring)
     progress: Mapped[dict[str, Any] | None]
+    created_at: Mapped[datetime] = created_at()
+    updated_at: Mapped[datetime] = updated_at()
+
+
+class ProcurementFunding(Base):
+    """One automatic top-up of a direct job's funding card (migration 0038, ADR-048). No card
+    number: the vendor card id and the USD amount only."""
+
+    __tablename__ = "procurement_fundings"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    supplier_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("suppliers.id"))
+    job_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("procurement_jobs.id"))
+    order_id: Mapped[uuid.UUID | None]
+    kind: Mapped[str] = mapped_column(String(8), default="recharge")
+    card_id: Mapped[str] = mapped_column(String(20))
+    amount: Mapped[Decimal] = mapped_column(Numeric(18, 6))
+    currency: Mapped[str] = mapped_column(String(3), default="USD")
+    state: Mapped[str] = mapped_column(String(8), default="planned")
+    idem_key: Mapped[str] = mapped_column(String(80), unique=True)
+    error: Mapped[str | None] = mapped_column(String(32))
     created_at: Mapped[datetime] = created_at()
     updated_at: Mapped[datetime] = updated_at()
 
