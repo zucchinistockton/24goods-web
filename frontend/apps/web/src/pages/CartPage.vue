@@ -17,6 +17,7 @@ import BuyerInputSheet from '../components/BuyerInputSheet.vue'
 import CredentialsSheet from '../components/CredentialsSheet.vue'
 import FeeLines from '../components/FeeLines.vue'
 import ManualPromise from '../components/ManualPromise.vue'
+import PreorderBadge from '../components/PreorderBadge.vue'
 import PayChannelPicker from '../components/PayChannelPicker.vue'
 import PromoField, { type AppliedPromo } from '../components/PromoField.vue'
 import TurnstileBox from '../components/TurnstileBox.vue'
@@ -55,6 +56,9 @@ function toRow(l: CartLine) {
   return { line: l, q, available: !off, loaded: !!q }
 }
 const rows = computed(() => cart.availableLines.map(toRow))
+/** U10: lines being paid that are pre-orders; the buyer confirms their windows once, before checkout. */
+const hasPreorder = computed(() => cart.payable.some((l) => !!cart.quoteByProduct.get(l.key)?.preorder))
+const preorderOk = ref(false)
 const offRows = computed(() => cart.unavailableLines.map(toRow))
 
 // ---- v5 §1: manage mode (select all / delete selected) ----
@@ -224,7 +228,7 @@ async function submit() {
   let checkoutNo: string | null = null
   try {
     // Only product ids, qty and the order information are sent; the server prices everything.
-    const r = await api.checkout.create(cart.toInputs(chosen), recalledSrc(), promo.value?.code)
+    const r = await api.checkout.create(cart.toInputs(chosen), recalledSrc(), promo.value?.code, hasPreorder.value && preorderOk.value)
     checkoutNo = r.checkout.checkout_no
     for (const o of r.orders) {
       stashAccessCode(o.id, r.access_codes[o.order_no])
@@ -311,7 +315,8 @@ async function submit() {
                     <div class="muted small">
                       {{ t('cart.unitPrice', { price: formatPrice(r.q.unit_price, r.q.currency, locale) }) }}
                     </div>
-                    <ManualPromise v-if="r.q.delivery_mode === 'manual'" class="small" :eta="r.q.delivery_eta_hours" compact />
+                    <PreorderBadge v-if="r.q.preorder" class="small" :window="r.q.preorder" compact />
+                    <ManualPromise v-else-if="r.q.delivery_mode === 'manual'" class="small" :eta="r.q.delivery_eta_hours" compact />
                   </template>
                   <button v-if="r.q?.needs_input && r.available" type="button" class="link" @click="editInput(r.line)">
                     {{ r.line.buyer_input ? t('cart.infoSet') + ' · ' + t('cart.editInfo') : t('cart.editInfo') }}
@@ -352,6 +357,7 @@ async function submit() {
           :rate="site.channel?.fee_rate"
           hide-when-free
         />
+        <van-checkbox v-if="hasPreorder" v-model="preorderOk" shape="square" icon-size="18px" class="preorder-ack">{{ t('preorder.cartAck') }}</van-checkbox>
       </div>
       <div v-if="!managing && !auth.loggedIn && cart.payableCount" class="summary"><TurnstileBox :ts="account.ts" /></div>
       <PowStatus :solving="account.solving.value" :progress="account.progress.value" />
@@ -369,7 +375,7 @@ async function submit() {
           <span class="muted small">{{ t('cart.total') }}</span>
           <span class="price big">{{ formatPrice(totals.total, currency, locale) }}</span>
         </div>
-        <van-button round type="primary" class="go" :loading="busy" :disabled="!cart.payableCount" @click="checkout">
+        <van-button round type="primary" class="go" :loading="busy" :disabled="!cart.payableCount || (hasPreorder && !preorderOk)" @click="checkout">
           {{ t('cart.checkout', { n: cart.payableCount }) }}
         </van-button>
       </div>
@@ -570,5 +576,11 @@ async function submit() {
 }
 .stale {
   margin: 4px 0 8px;
+}
+.preorder-ack {
+  min-height: 44px;
+  margin-top: 8px;
+  font-size: 13px;
+  line-height: 1.4;
 }
 </style>

@@ -117,6 +117,23 @@ class SubscriptionConfig(BaseModel):
     telegram_reminders: bool = True
 
 
+class PreorderIn(BaseModel):
+    """Pre-order window (U10): delivered within ``min_days``..``max_days`` after payment."""
+
+    model_config = ConfigDict(extra="forbid")
+    min_days: int = Field(1, ge=0, le=60)
+    max_days: int = Field(3, ge=1, le=60)
+    ends_at: datetime | None = None
+    note: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("note")
+    @classmethod
+    def _note(cls, v: dict[str, str]) -> dict[str, str]:
+        if set(v) - {"en", "zh-CN"} or any(len(x) > 200 for x in v.values()):
+            raise ValueError("note: en / zh-CN, 200 characters each at most")
+        return v
+
+
 class ProductIn(BaseModel):
     title_i18n: dict[str, str]
     description_i18n: dict[str, str] = Field(default_factory=dict)
@@ -142,6 +159,7 @@ class ProductIn(BaseModel):
     source_url: str | None = None
     # v5.2: manual stock; omitted on a manual product = 1, explicit null = unlimited
     manual_stock: int | None = Field(None, ge=0, le=10**6)
+    preorder: PreorderIn | None = None
 
     @field_validator("source_url")
     @classmethod
@@ -261,6 +279,7 @@ class ProductPatch(BaseModel):
     cost_minor: int | None = Field(None, ge=0, le=10**12)
     source_url: str | None = None
     manual_stock: int | None = Field(None, ge=0, le=10**6)  # explicit null = unlimited
+    preorder: PreorderIn | None = None  # explicit null = not a pre-order
 
     @field_validator("source_url")
     @classmethod

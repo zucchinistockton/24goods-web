@@ -90,6 +90,8 @@ export interface ProductSummary {
   after_sales_months?: number | null
   /** v5 §11: manual products only; promised shipping window in hours. */
   delivery_eta_hours?: number | null
+  /** U10: pre-order window shown before paying (null = not a pre-order). */
+  preorder?: PreorderWindow | null
   /** Order-information form (null = off). Lists carry it too, so quick buy asks for it (issue 49 B). */
   buyer_input?: BuyerInputConfig | null
   /** v12 M3: for `upstream_direct` products, which account the buyer connects (detail only). */
@@ -130,8 +132,17 @@ export interface BuyerInputConfig {
   placeholder: string
 }
 export type I18nText = Record<Locale, string>
+/** U10: the stored pre-order config (staff view). */
+export interface AdminPreorder {
+  min_days: number
+  max_days: number
+  ends_at: string | null
+  note: I18nText
+}
 export interface AdminProduct
-  extends Omit<Product, 'title' | 'description' | 'buyer_input' | 'variants' | 'has_variants' | 'price_from'> {
+  extends Omit<Product, 'title' | 'description' | 'buyer_input' | 'variants' | 'has_variants' | 'price_from' | 'preorder'> {
+  /** U10: null = not a pre-order */
+  preorder?: AdminPreorder | null
   title_i18n: I18nText
   description_i18n: I18nText
   floor_price: string
@@ -383,6 +394,8 @@ export interface Order {
   delivery_eta_hours?: number | null
   /** ISO time (manual orders): paid_at + eta. */
   delivery_deadline?: string | null
+  /** U10: the pre-order window sold (snapshot); the dates once paid. */
+  preorder?: OrderPreorder | null
   /** v8: ISO time from which a paid, undelivered order may be reported as not received. */
   not_received_from?: string | null
   /** v8: what staff entered when confirming the money was sent back (refunded orders). */
@@ -467,6 +480,21 @@ export interface CartQuoteLine {
   unavailable_reason?: UnavailableReason | null
   delivery_mode?: DeliveryMode
   delivery_eta_hours?: number | null
+  /** U10: pre-order line (the buyer confirms the window at checkout). */
+  preorder?: PreorderWindow | null
+}
+/** U10: pay now, delivered within min_days..max_days after payment. */
+export interface PreorderWindow {
+  min_days: number
+  max_days: number
+  ends_at?: string | null
+  note?: string | null
+}
+export interface OrderPreorder {
+  min_days: number
+  max_days: number
+  expected_from: string | null
+  expected_to: string | null
 }
 export type UnavailableReason =
   | 'archived'

@@ -49,6 +49,7 @@ from app.models import (
     Tenant,
     User,
 )
+from app.modules.catalog import preorder as preorder_svc
 from app.modules.catalog import upstream, variants
 from app.modules.catalog.service import claimable, get_active_product
 from app.modules.chat import service as chat
@@ -229,6 +230,15 @@ async def purchase_terms(
     return variants.effective_terms(p, variant)
 
 
+def _with_preorder(
+    terms: dict[str, Any] | None, pre: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """The purchase snapshot plus the pre-order window the buyer accepted (U10)."""
+    if pre is None:
+        return terms
+    return {**(terms or {}), "preorder": preorder_svc.snapshot(pre)}
+
+
 async def count_payables(db: AsyncSession, buyer_id: uuid.UUID) -> int:
     """Open payables: pending single orders plus pending checkouts (a checkout's member
     orders do not count on their own)."""
@@ -306,6 +316,7 @@ async def create_order(
     cred_sealer: CredentialSealer | None = None,
     half_check_id: uuid.UUID | None = None,
     half_check_confirm: bool = False,
+    preorder_ack: bool | None = None,
 ) -> tuple[Order, Message | None]:
     """Create a pending order. ``amount_minor`` is the SUBTOTAL (storefront markup included):
     the promo discount is subtracted and the channel fee added here, server-side
@@ -328,6 +339,15 @@ async def create_order(
     ):
         # nor without the account pre-check before payment (review-v12 §24)
         raise Validation("The account check is required", code="preflight_required")
+    pre: dict[str, Any] | None = None
+    if product_id is not None and delivery_mode == "manual" and kind == "goods":
+        # pre-order (U10): the buyer confirmed the window before paying (buy-now and cart send
+        # ``preorder_ack``; a staff-negotiated quote passes None and only snapshots it)
+        pre = preorder_svc.active(await get_scoped(db, Product, product_id, buyer.tenant_id))
+        if pre is not None and preorder_ack is False:
+            raise Validation(
+                "Please confirm the pre-order delivery window", code="preorder_ack_required"
+            )
     if enforce_cap:
         await enforce_payables_cap(db, settings, buyer)
     half_claimed: uuid.UUID | None = None
@@ -412,7 +432,7 @@ async def create_order(
         reseller_id=reseller_id,
         reseller_markup_minor=reseller_markup_minor,
         stock_reserved=stock_reserved,
-        terms=await purchase_terms(db, product_id, variant),
+        terms=_with_preorder(await purchase_terms(db, product_id, variant), pre),
         variant_id=variant.id if variant else None,
         variant_name=pick(variant.name_i18n, buyer.locale)[:120] if variant else None,
     )
@@ -484,6 +504,7 @@ async def buy_now(
     half_check_confirm: bool = False,
     procurement: Any = None,
     share_session: bool = False,
+    preorder_ack: bool = False,
 ) -> tuple[Order, Message | None]:
     product = await get_active_product(db, product_id)
     if product.delivery_mode == "upstream_direct" and storefront is not None:
@@ -587,6 +608,7 @@ async def buy_now(
         cred_sealer=cred_sealer,
         half_check_id=half_check_id,
         half_check_confirm=half_check_confirm,
+        preorder_ack=preorder_ack,
     )
     if ev is not None:
         await promo_svc.reserve(db, ev, buyer, order_id=order.id, ip=ip)

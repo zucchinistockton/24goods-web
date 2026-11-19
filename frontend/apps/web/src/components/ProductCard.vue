@@ -19,7 +19,8 @@ const soldOut = computed(() => isSoldOut(props.product))
     </div>
     <div class="pcard-body">
       <div class="pcard-title">
-        <span :class="isInstantMode(product.delivery_mode) ? 'badge-instant' : 'badge-manual'">{{
+        <span v-if="product.preorder" class="badge-preorder">{{ t('preorder.short') }}</span>
+        <span v-else :class="isInstantMode(product.delivery_mode) ? 'badge-instant' : 'badge-manual'">{{
           t(`deliveryMode.${product.delivery_mode}`)
         }}</span>
         {{ product.title }}
@@ -95,7 +96,8 @@ const soldOut = computed(() => isSoldOut(props.product))
   min-height: 40px;
 }
 .pcard-title .badge-instant,
-.pcard-title .badge-manual {
+.pcard-title .badge-manual,
+.pcard-title .badge-preorder {
   margin-right: 4px;
   vertical-align: 1px;
 }

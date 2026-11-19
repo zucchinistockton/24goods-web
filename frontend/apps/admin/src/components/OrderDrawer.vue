@@ -468,6 +468,7 @@ defineExpose({ reload: () => props.orderId && load(props.orderId) })
           <el-descriptions-item v-if="order.kind === 'reseller_signup'" :label="t('v5.orders.kind')"><el-tag size="small" type="warning">{{ t('v5.orders.kindSignup') }}</el-tag></el-descriptions-item>
           <el-descriptions-item v-if="order.delivery_deadline" :label="t('v5.orders.deadline')">
             {{ formatDateTime(order.delivery_deadline, locale) }}<el-tag v-if="order.overdue_manual" size="small" type="danger" class="ml">{{ t('v5.orders.overdue') }}</el-tag>
+            <el-tag v-if="order.preorder" size="small" type="warning" class="ml">{{ t('v5.orders.preorder', { min: order.preorder.min_days, max: order.preorder.max_days }) }}</el-tag>
           </el-descriptions-item>
           <el-descriptions-item v-if="order.subtotal" :label="t('orders.info.total')"><b class="price">{{ money(order.amount) }}</b></el-descriptions-item>
           <el-descriptions-item v-if="order.checkout_no" :label="t('orders.info.checkout')">

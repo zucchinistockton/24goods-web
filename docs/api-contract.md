@@ -674,3 +674,14 @@ Internal (procurement only, token): `POST /internal/cards/{pool,schedule,rules,r
 - Redemption proxy (public listener `:8006`, Caddy-forwarded): new `GET /redeem/config` -> `{data: {maintenance, maintenance_message: {en, zh}, announcement: {en, zh}}}`; while maintenance is on `GET /redeem/config` is sent with `Cache-Control: public, max-age=30` (every other answer is `no-store`), so a maintenance switch shows within 30 s; every `POST /redeem/{preview,preflight,redeem}` answers 503 `{"error": {"code": "maintenance"}}` without calling the vendor; `result` still works for a token the proxy issued before maintenance began (a read, no new vendor spend on a new code), any other token gets 503.
 
 Internal (procurement only, token): `POST /internal/redeem/cdk-status {tenant_id, code}` -> `{found, id?, status?, plan?, supplier, env}`; `POST /internal/redeem/cdk-set {tenant_id, code, action: disable|enable}` -> `{id, before, after, supplier, env}` (409 `production_writes_disabled` / `supplier_disabled` / `cdk_rejected`, 404 `cdk_not_found`).
+
+
+## Pre-orders (U10, 2026-11-19)
+
+- Product views (`GET /products`, `/products/{id}`, cart quote lines): `preorder: {min_days, max_days, ends_at, note} | null`.
+- `POST /orders` and `POST /checkout`: `preorder_ack: bool` (default false). An active pre-order without it →
+  `422 preorder_ack_required`.
+- Order views: `preorder: {min_days, max_days, expected_from, expected_to} | null` (dates once paid);
+  `delivery_eta_hours` / `delivery_deadline` follow `max_days`.
+- Admin product create/patch: `preorder: {min_days 0-60, max_days 1-60, ends_at?, note?: {en, zh-CN}} | null`
+  (manual products only: `preorder_manual_only`; bad window: `preorder_invalid`).

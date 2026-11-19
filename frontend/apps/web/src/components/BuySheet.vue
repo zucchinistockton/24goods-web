@@ -21,6 +21,8 @@ import HalfCheckSheet from './HalfCheckSheet.vue'
 import VariantPicker from './VariantPicker.vue'
 import FeeLines from './FeeLines.vue'
 import ManualPromise from './ManualPromise.vue'
+import PreorderBadge from './PreorderBadge.vue'
+import { preorderRange } from '../lib/preorder'
 import PromoField, { type AppliedPromo } from './PromoField.vue'
 import TurnstileBox from './TurnstileBox.vue'
 import VariantChips from './VariantChips.vue'
@@ -61,6 +63,8 @@ const showSession = ref(false)
 /** issue #27: the passed half-price eligibility check an order of a half-price plan is created with */
 const halfId = ref<string | null>(null)
 const halfConfirmed = ref(false)
+/** U10: the buyer ticked "I understand this is a pre-order" (required before ordering). */
+const preorderOk = ref(false)
 const showHalf = ref(false)
 const halfMethod = ref<HalfCheckMethod | null>(null)
 
@@ -99,7 +103,9 @@ watch(siteAccessCleared, () => {
   if (props.show && resolveFailed.value) void resolveConfig()
 })
 const soldOut = computed(() => (p.value ? isSoldOut(p.value) : false))
-const canSubmit = computed(() => configKnown.value && !soldOut.value && (!hasVariants(base.value) || variant.value !== null))
+const canSubmit = computed(
+  () => configKnown.value && !soldOut.value && (!hasVariants(base.value) || variant.value !== null) && (!p.value?.preorder || preorderOk.value),
+)
 const price = computed(() => (p.value ? priceParts(p.value.price, p.value.currency, locale.value) : null))
 /** A direct product is applied to ONE account: one unit, and the account session comes with the order. */
 const isDirect = computed(() => p.value?.delivery_mode === 'upstream_direct')
@@ -125,6 +131,7 @@ watch(
       sessionValue.value = null
       halfId.value = null
       halfConfirmed.value = false
+      preorderOk.value = false
       promo.value = null
       void site.loadChannels()
       void resolveConfig()
@@ -170,7 +177,7 @@ async function placeOrder() {
     const session = sessionValue.value
     sessionValue.value = null // one use: a failed order asks for it again
     const half = halfId.value
-    const order = await api.orders.create(x.id, qty.value, props.src ?? recalledSrc(), inputValue.value, promo.value?.code, variant.value?.id, session, half, halfConfirmed.value, shareValue.value)
+    const order = await api.orders.create(x.id, qty.value, props.src ?? recalledSrc(), inputValue.value, promo.value?.code, variant.value?.id, session, half, halfConfirmed.value, shareValue.value, preorderOk.value)
     halfId.value = null // consumed: it can never be used twice
     halfConfirmed.value = false
     stashAccessCode(order.id, order.access_code)
@@ -323,7 +330,11 @@ async function credsDone() {
         <van-stepper v-model="qty" :min="1" :max="maxQty" integer :input-width="48" :button-size="36" />
       </div>
       <p v-if="isDirect" class="muted small sheet-note">{{ t('direct.sheetNote') }}</p>
-      <ManualPromise v-if="p.delivery_mode === 'manual'" class="sheet-manual" :eta="p.delivery_eta_hours" compact />
+      <template v-if="p.preorder">
+        <PreorderBadge class="sheet-manual" :window="p.preorder" />
+        <van-checkbox v-model="preorderOk" shape="square" icon-size="18px" class="sheet-note preorder-ack">{{ t('preorder.ack', { range: preorderRange(t, p.preorder) }) }}</van-checkbox>
+      </template>
+      <ManualPromise v-else-if="p.delivery_mode === 'manual'" class="sheet-manual" :eta="p.delivery_eta_hours" compact />
       <p v-if="soldOut" class="muted small sheet-note" role="alert">{{ t('product.outOfStock') }}</p>
       <div v-else-if="resolveFailed" class="sheet-note sheet-retry" role="alert">
         <span>{{ t('buy.configFailed') }}</span>
@@ -446,6 +457,11 @@ async function credsDone() {
 .retry {
   flex-shrink: 0;
   min-height: 44px;
+}
+.preorder-ack {
+  min-height: 44px;
+  font-size: 13px;
+  line-height: 1.4;
 }
 .guest-note {
   margin: 0 0 4px;

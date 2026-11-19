@@ -18,6 +18,8 @@ import { useNoindex } from '../composables/useNoindex'
 import { api } from '../api'
 import BuySheet from '../components/BuySheet.vue'
 import BuyerInputSheet from '../components/BuyerInputSheet.vue'
+import PreorderBadge from '../components/PreorderBadge.vue'
+import { preorderRange } from '../lib/preorder'
 import ManualPromise from '../components/ManualPromise.vue'
 import MiniStrip from '../components/MiniStrip.vue'
 import VariantChips from '../components/VariantChips.vue'
@@ -208,6 +210,7 @@ function back() {
         </div>
         <div class="facts">
           <span v-if="isAuto" class="badge-instant">{{ t(`deliveryMode.${product.delivery_mode}`) }}</span>
+          <PreorderBadge v-else-if="product.preorder" :window="product.preorder" compact />
           <ManualPromise v-else :eta="product.delivery_eta_hours" compact />
           <span v-if="product.stock !== null && product.stock !== undefined" class="muted">
             {{ soldOut ? t('product.outOfStock') : isAuto || product.stock >= 10 ? t('product.stock', { n: product.stock }) : t('product.onlyLeft', { n: product.stock }) }}
@@ -219,6 +222,10 @@ function back() {
           <strong>{{ t('product.deliveryFormat') }}</strong> {{ labels.join(' · ') }}
         </p>
         <p v-if="isAuto" class="hint muted">{{ t('product.instantHint') }}</p>
+        <template v-else-if="product.preorder">
+          <p class="hint muted">{{ t('preorder.hint', { range: preorderRange(t, product.preorder) }) }}</p>
+          <p v-if="product.preorder.note" class="hint muted">{{ product.preorder.note }}</p>
+        </template>
         <ManualPromise v-else class="hint" :eta="product.delivery_eta_hours" note-only />
       </section>
 

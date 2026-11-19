@@ -32,6 +32,7 @@ from app.core.money import fmt, to_decimal
 from app.core.resources import Resources
 from app.core.storefront import Storefront
 from app.models import Checkout, Order, Payment, Product, User
+from app.modules.catalog import preorder as preorder_svc
 from app.modules.catalog import variants as variants_svc
 from app.modules.catalog.service import product_stock
 from app.modules.chat import service as chat
@@ -206,6 +207,7 @@ async def quote_cart(
                 "qty": it.qty,
                 "line_subtotal": fmt(line_sub),
                 "discount_minor": 0,
+                "preorder": preorder_svc.public_view(p, lang),
             }
         )
     promo: dict[str, Any] | None = None
@@ -341,6 +343,7 @@ async def create_checkout(
     channel: str | None = None,
     promo_code: str | None = None,
     storefront: Storefront | None = None,
+    preorder_ack: bool = False,
 ) -> dict[str, Any]:
     if not 1 <= len(items) <= MAX_LINES:
         raise Validation(f"a checkout has 1 to {MAX_LINES} lines")
@@ -494,6 +497,7 @@ async def create_checkout(
             expires_at=expires_at,
             enforce_cap=False,
             variant=variant,
+            preorder_ack=preorder_ack,
         )
         orders.append(order)
         codes[order.order_no] = order.access_code_plain  # type: ignore[attr-defined]

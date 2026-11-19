@@ -53,6 +53,7 @@ async def buy_now(
         half_check_confirm=body.half_check_confirm,
         procurement=res.procurement,
         share_session=body.share_session,
+        preorder_ack=body.preorder_ack,
     )
     code = getattr(order, "access_code_plain", None)  # shown exactly once
     await service.broadcast_order(res, db, order, [msg])

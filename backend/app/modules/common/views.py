@@ -11,6 +11,7 @@ from app.core.markdown import render
 from app.core.money import fmt
 from app.core.settings_v5 import manual_eta_hours
 from app.models import AfterSales, Attachment, Message, Order, Product, User
+from app.modules.catalog import preorder as preorder_svc
 from app.modules.common.buyerinput import admin_config, public_config
 from app.modules.common.modes import CODE_MODES, STOCKED_MODES
 from app.modules.common.sitedefaults import resolve_after_sales_hours, resolve_after_sales_months
@@ -107,6 +108,8 @@ def product_summary(
         else None,
         # lists carry the order-information form too: quick buy from Home/Search must ask for it
         "buyer_input": public_config(p.buyer_input, lang),
+        # pre-order window shown before paying (U10); None when not a (current) pre-order
+        "preorder": preorder_svc.public_view(p, lang),
     }
 
 
@@ -184,6 +187,7 @@ def admin_product_view(p: Product, stock: int | None) -> dict[str, Any]:
         "cost_minor": p.cost_minor,
         "source_url": p.source_url,
         "archived_at": iso(p.archived_at),
+        "preorder": p.preorder,
     }
 
 
@@ -246,7 +250,12 @@ def order_view(
     manual = None
     eta = deadline = None
     if o.delivery_mode == "manual":  # the manual-delivery promise (review-v5 §11)
-        eta = (product.delivery_eta_hours if product else None) or manual_eta_default
+        # a pre-order promises its window's end (snapshot at purchase, U10)
+        eta = (
+            preorder_svc.eta_hours(o)
+            or (product.delivery_eta_hours if product else None)
+            or manual_eta_default
+        )
         if o.paid_at is not None:
             deadline = iso(o.paid_at + timedelta(hours=eta))
     if o.delivery_mode == "manual" and (o.manual_delivery_text or attachment is not None):
@@ -297,6 +306,7 @@ def order_view(
         "delivery_mode": o.delivery_mode,
         "delivery_eta_hours": eta,
         "delivery_deadline": deadline,
+        "preorder": preorder_svc.order_view(o),
         # v8 A.4: from this moment a paid, undelivered goods order may be escalated by the buyer
         "not_received_from": iso(
             o.paid_at + timedelta(hours=eta if o.delivery_mode == "manual" else 1)

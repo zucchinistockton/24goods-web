@@ -29,6 +29,7 @@ from app.models import (
     User,
 )
 from app.modules.aftersales.schemas import ActionIn, OpenIn
+from app.modules.catalog import preorder as preorder_svc
 from app.modules.chat.messages import post_system
 from app.modules.common.modes import UPSTREAM_MODES
 from app.modules.common.orderviews import REFUND_PREFIX
@@ -165,6 +166,9 @@ async def _escalate_after(db: AsyncSession, order: Order) -> timedelta:
     auto-card: one hour."""
     if order.delivery_mode != "manual":
         return AUTO_CARD_ESCALATE_AFTER
+    pre_hours = preorder_svc.eta_hours(order)  # a pre-order: its window's end (U10)
+    if pre_hours is not None:
+        return timedelta(hours=pre_hours)
     product = (
         await db.scalar(
             select(Product).where(

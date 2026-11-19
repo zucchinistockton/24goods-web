@@ -263,10 +263,13 @@ export function createBuyerApi(c: ApiClient) {
         half_check_confirm?: boolean,
         /** upstream_direct: the buyer lets support see the session if the top-up fails */
         share_session?: boolean,
+        /** pre-order products: the buyer confirmed the delivery window (U10) */
+        preorder_ack?: boolean,
       ) =>
         c.post<Order>('/orders', {
           product_id,
           qty,
+          ...(preorder_ack ? { preorder_ack: true } : {}),
           ...(session ? { session } : {}),
           ...(session && share_session ? { share_session: true } : {}),
           ...(half_check_id ? { half_check_id } : {}),
@@ -316,9 +319,16 @@ export function createBuyerApi(c: ApiClient) {
         ...(turnstileToken ? { headers: { 'X-Turnstile-Token': turnstileToken } } : {}),
       }),
     checkout: {
-      create: (items: readonly CheckoutLineInput[], source?: string | null, promo_code?: string | null) =>
+      create: (
+        items: readonly CheckoutLineInput[],
+        source?: string | null,
+        promo_code?: string | null,
+        /** the cart holds pre-order lines and the buyer confirmed their windows (U10) */
+        preorder_ack?: boolean,
+      ) =>
         c.post<CheckoutResult>('/checkout', {
           items,
+          ...(preorder_ack ? { preorder_ack: true } : {}),
           ...(source ? { source } : {}),
           ...(promo_code ? { promo_code } : {}),
         }),

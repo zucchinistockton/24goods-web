@@ -504,3 +504,16 @@ Consequences: one extra vendor read per direct checkout and checkout depends on 
 Context: support could not see what went wrong with a failed direct top-up; the session is the only evidence and it was deleted with the order's credential.
 Decision: the buyer may tick (default ticked) "let support see this session if the top-up fails"; the flag is stored with the sealed credential; when the job goes to staff or fails, procurement copies the SEALED blob into `support_sessions` for 72 h (deleted early on delivery); staff read it through procurement with a written reason, rate limited and audited as critical. The API never stores or opens a session.
 Consequences: migration 0036 (one column, one table with FORCE RLS and column grants); a deliberate, bounded exposure of consented failing sessions to staff; the 6 h credential ceiling and its checkout pause are unchanged (the copy lives in its own table).
+
+### ADR-047: Pre-orders extend manual delivery; the window is a purchase snapshot (owner request 2026-11-19, plan U10)
+
+**Context:** the owner wants items that are paid before they are made, delivered in about 1–3 days. 24goods already
+has manual delivery, a per-product ETA, the overdue filter and buyer escalation.
+**Decision:** `products.preorder` (migration `0037`) holds `{min_days, max_days, ends_at, note}` on **manual** products
+only. While active, buyers see the window on cards, the product page, the buy sheet and the cart, and must confirm it:
+`preorder_ack` on `POST /orders` and `POST /checkout`, otherwise `preorder_ack_required`. A staff quote snapshots without
+the tick. The order keeps the window in `orders.terms["preorder"]` (no orders column), and `max_days` drives the
+delivery deadline, the staff overdue filter and the buyer's escalation time. The stock limit is the existing
+`manual_stock` (units sellable ahead).
+**Consequences:** editing or ending a pre-order never changes a sold order's promise. Card-key backorders (deliver on
+import), deposits, per-variant windows and late alerts by Telegram are later steps.
