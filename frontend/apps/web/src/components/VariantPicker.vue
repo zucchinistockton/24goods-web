@@ -7,7 +7,7 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { ProductVariant } from '@24goods/shared'
-import { moneyParts } from '@24goods/shared'
+import { priceParts } from '@24goods/shared'
 import { planLabel, plansOf, regionLabel, regionsOf, soldOutVariant } from '../lib/variantOptions'
 
 const props = defineProps<{ variants: readonly ProductVariant[]; modelValue: string | null; currency: string }>()
@@ -34,7 +34,7 @@ function pickRegion(v: ProductVariant) {
   if (!soldOutVariant(v)) emit('update:modelValue', v.id)
 }
 const label = (p: string) => planLabel(p, (k) => (te(k) ? t(k) : null))
-const price = (v: ProductVariant) => moneyParts(v.price, props.currency, locale.value)
+const price = (v: ProductVariant) => priceParts(v.price, props.currency, locale.value)
 </script>
 
 <template>

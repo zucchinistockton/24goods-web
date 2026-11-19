@@ -2,11 +2,11 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ProductThumb } from '@24goods/shared/ui'
-import { moneyParts, type ProductSummary } from '@24goods/shared'
+import { priceParts, type ProductSummary } from '@24goods/shared'
 
 const props = defineProps<{ product: ProductSummary }>()
 const { locale } = useI18n()
-const price = computed(() => moneyParts(props.product.price, props.product.currency, locale.value))
+const price = computed(() => priceParts(props.product.price, props.product.currency, locale.value))
 </script>
 
 <template>

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { formatMoney, fromMinor, toMinor } from '@24goods/shared'
+import { formatPrice, fromMinor, toMinor } from '@24goods/shared'
 
 /** Subtotal / Payment fee (Alipay 3%) / Total. Display only: the server owns the numbers. */
 const props = defineProps<{
@@ -29,7 +29,7 @@ const total = computed(() => {
 const feeLabel = computed(() =>
   props.label && props.rate ? t('fee.line', { label: props.label, rate: props.rate }) : t('fee.lineNoLabel'),
 )
-const money = (v: string) => formatMoney(v, props.currency, locale.value)
+const money = (v: string) => formatPrice(v, props.currency, locale.value)
 </script>
 
 <template>

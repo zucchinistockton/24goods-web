@@ -98,6 +98,48 @@ export function moneyParts(amount: string, currency: string, locale: string): { 
   return { symbol, value }
 }
 
+/** Buyer-facing price (owner rule 2026-11-19: whole prices, no decimals where possible): like
+ *  `formatMoney`, but a whole amount drops its ".00" ("¥121"); an amount with cents keeps both
+ *  digits ("¥61.50"), so nothing is ever rounded. Staff pages keep `formatMoney` (bookkeeping). */
+export function formatPrice(amount: string | null | undefined, currency: string, locale: string): string {
+  if (amount === null || amount === undefined) return '—'
+  const norm = normalizeAmount(amount)
+  if (norm === null) return amount
+  return (isWhole(norm) ? wholeFormatter(locale, currency) : moneyFormatter(locale, currency)).format(
+    norm as unknown as number,
+  )
+}
+
+/** `moneyParts` with the same whole-amount rule as `formatPrice`. */
+export function priceParts(amount: string, currency: string, locale: string): { symbol: string; value: string } {
+  const norm = normalizeAmount(amount) ?? amount
+  if (!isWhole(norm)) return moneyParts(amount, currency, locale)
+  const parts = wholeFormatter(locale, currency).formatToParts(norm as unknown as number)
+  return {
+    symbol: parts.filter((p) => p.type === 'currency').map((p) => p.value).join(''),
+    value: parts.filter((p) => p.type !== 'currency' && p.type !== 'literal').map((p) => p.value).join(''),
+  }
+}
+
+function isWhole(norm: string): boolean {
+  return /^-?\d+(\.0+)?$/.test(norm)
+}
+
+const wholeCache = new Map<string, Intl.NumberFormat>()
+function wholeFormatter(locale: string, currency: string): Intl.NumberFormat {
+  const key = `${locale}|${currency}`
+  let f = wholeCache.get(key)
+  if (!f) {
+    try {
+      f = new Intl.NumberFormat(locale, { style: 'currency', currency, minimumFractionDigits: 0, maximumFractionDigits: 0 })
+    } catch {
+      f = new Intl.NumberFormat(locale, { minimumFractionDigits: 0, maximumFractionDigits: 0 })
+    }
+    wholeCache.set(key, f)
+  }
+  return f
+}
+
 export function formatNumber(n: number, locale: string): string {
   return new Intl.NumberFormat(locale).format(n)
 }
