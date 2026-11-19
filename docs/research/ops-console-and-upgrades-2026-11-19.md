@@ -1,201 +1,274 @@
-# Owner ops console + 24goods upgrades: requirements, feasibility, plan (2026-11-19)
+# Owner ops console + 24goods upgrades: requirements, feasibility, plan (2026-11-19, v2)
 
-Owner request 2026-11-19: verify the regional prices, check what the reference projects
-(`kesiv-commerce-mvp`, Dujiao-Next, `zovo_card_cdk_auto`, `okx/onchainos-skills`, BEpusdt) can add to 24goods,
-and plan a **separate owner-only admin console** (new repository, dev environment first, own DNS name).
-Status: **plan only.** Nothing in this document is built yet, except the demo price correction (§1).
+Owner requests 2026-11-19:
+- v1: verify the regional prices; check what the reference projects can add to 24goods (`kesiv-commerce-mvp`,
+  Dujiao-Next, `zovo_card_cdk_auto`, `okx/onchainos-skills`, BEpusdt); plan an owner-only admin console.
+- v2: the owner's answers, plus two requests: whole-number prices, and pre-orders (pay now, ships in 1–3 days).
+
+Status: **plan**. Built so far:
+- the demo price correction and whole prices (§1, PR #74);
+- the server-side OKX wallet CLI and login (§6).
 
 Legend: **V** = verified in this session (source named), **I** = inferred / to confirm.
 
 ---
 
-## 1. Prices: verified and corrected on the demo
+## 0. Owner answers (2026-11-19) and what they change
 
-| Plan | Cheapest region | Official web price | Net of VAT | USD (FX 19 Nov) | CNY | Demo price (CNY) |
-|---|---|---|---|---|---|---|
-| Go | Egypt | EGP 220 | EGP 192.98 | 3.59 | 23.97 | 29.80 |
-| Plus | Philippines | PHP 1,100 | PHP 982.14 | 15.42 | 103.05 | 120.10 |
-| Pro 100 ("Pro 5x") | Chile | CLP 102,990 | CLP 86,364.78 (owner) | 86.93 | 580.78 | 665.80 |
-| Pro 200 ("Pro 20x") | Philippines | PHP 9,990 | PHP 8,919.64 | 140.08 | 935.87 | 1,071.40 |
-| Pro 500 ("Pro 50x") | Chile | CLP 509,990 | CLP 428,563.03 | 431.38 | 2,881.96 | 3,294.30 |
-
-- **V:** all five owner figures are correct. Each one is the official **web** checkout price minus local VAT
-  (PH 12 %, EG 14 %, CL 19 %, JP 10 %, US none). That is the method of hvoyai.com ("pre-tax price", verified
-  2026-11-19), where the owner's numbers come from. Small CNY differences are FX (CLP 993.47 per USD today).
-- **What was wrong:** the demo costs (18 Nov) used **App Store prices with VAT included** (geosub.org lists App
-  Store only), and Pro 500 was USD 500 everywhere. Costs were 12–19 % too high, and Go Egypt used the App Store
-  EGP 249.99 when the web price is EGP 220. The selling prices were too high, never below cost.
-- **Fixed on the demo (2026-11-19, audited console actions, pre-change dump `demo-20261119T033343Z.dump`):** all
-  30 direct sources (5 plans × PH/EG/CL/JP/US, plus Plus half price) now cost the net web price at today's FX.
-  Price = (cost + supplier service fee USD 0.30 + 2 % top-up fee + failure allowance) × 1.12, and floor = cost
-  with fees and without the markup. Every price is above its floor and every floor covers the cost (checked in the
-  database).
-- **Owner choice (D6):** the 12 % is added **after** the supplier's fees, because the fees are real costs. Plus PH
-  is ¥120.10 this way. If the markup goes on the official price only, it would be ¥115.41, and on Go the USD 0.30
-  fee would take about 8 points of the 12 % margin.
-- **Naming:** OpenAI now calls the tiers Pro 100 / Pro 200 / Pro 500 (GeoSub says "5x" URLs are historical). The
-  demo products still say Pro 5x / 20x / 50x. Rename when they go to production.
-- Production prices are untouched. Production should take cost from the supplier's live quote
-  (`gpt-direct/plans`), with this table as the cross-check (§4, U1).
+| Topic | Owner answer | Effect on the plan |
+|---|---|---|
+| Prices | Whole numbers, rounded first | Recommendations round **up** to ¥1 (margin never shrinks). Buyer pages show `¥121`, not `¥121.00`. Demo done; code PR #74 (§1) |
+| Pre-orders | Wanted: pay first, ships in about 1–3 days | New upgrade **U10** (§4.1) |
+| Licences | `kesiv-commerce-mvp` is the owner's own work (separate GitHub account). The vendor provides `zovo_card_cdk_auto` free to use | Both may be used as sources. Recorded as the owner's statement (the vendor repo still has no licence file; a one-line written permission from the vendor would settle it for good) |
+| Domains | No `-` in host names. Dev console at **`opsdev.kesiv.com`** | Applied. `tools.kesiv.com` exists already (§5.1) |
+| Repository | Prefer integrating into **`/root/02project/08mywebtools`** over a new repo | Assessed in §5.1: yes, with conditions |
+| SOCKS5 | Optional, **off by default**. Credentials in `/root/.secrets/ipcook.env` (V: host, port, user prefix, password, default geo, IP-list URL) | Proxy module is opt-in per job (§5.3) |
+| Wallet | `opsdev.kesiv.com` and the shop `kesiv.com` **share one OKX Agentic Wallet** ("Wallet 1"). The server must be able to make payments | CLI installed and login started on this server (§6) |
+| 3-D Secure | Not now; future plans | Removed from scope; listed under "later" |
+| Timeline | No fixed timeline | Effort columns removed; phases are an order, not dates |
+| Address generator | No invented "tax-free state" addresses (OpenAI policy). Keep the kesiv **autofill capability** as an optional, off-by-default feature for learning, review and attack testing in dev | Autofill kept as an opt-in dev tool; it fills real card details only (§5.3, §7) |
+| Own protocol | Not finished; hold | Adapter contract stays defined, implementation later |
 
 ---
 
-## 2. The owner's requirements, organised
+## 1. Prices (verified; demo corrected; whole numbers)
 
-### A. Existing shop (24goods)
-| # | Requirement | Where it lands |
+| Plan | Cheapest region | Official web price | Net of VAT | CNY cost | Demo price |
+|---|---|---|---|---|---|
+| Go | Egypt | EGP 220 | EGP 192.98 | 23.97 | **¥30** |
+| Plus | Philippines | PHP 1,100 | PHP 982.14 | 103.05 | **¥121** |
+| Pro 100 ("Pro 5x") | Chile | CLP 102,990 | CLP 86,364.78 | 580.78 | **¥666** |
+| Pro 200 ("Pro 20x") | Philippines | PHP 9,990 | PHP 8,919.64 | 935.87 | **¥1,072** |
+| Pro 500 ("Pro 50x") | Chile | CLP 509,990 | CLP 428,563.03 | 2,881.96 | **¥3,295** |
+
+- **V:** the owner's five figures are the official **web** price minus local VAT (PH 12 %, EG 14 %, CL 19 %,
+  JP 10 %, US none). That is hvoyai.com's "pre-tax price" (verified 2026-11-19). Each one is the cheapest region of
+  its plan.
+- **Demo (2026-11-19):** all 30 direct sources (5 plans × PH/EG/CL/JP/US, plus Plus half price) cost the net web
+  price at the day's FX (open.er-api.com, CNY 6.680778 per USD).
+  - Price = (cost + supplier fee USD 0.30 + 2 % top-up fee + failure allowance) × 1.12, **rounded up to a whole
+    yuan** (`round_step_minor` 100).
+  - Floor = that cost without the markup, also rounded up to a whole yuan.
+  - **V (database):** 0 prices and 0 floors with decimals; no floor above its price.
+  - Pre-change dump: `/root/demo-backups/demo-20261119T033343Z.dump`.
+- **Code (PR #74):** the default rounding step is now ¥1. Buyer pages drop `.00` on whole amounts but keep real
+  cents (`¥61.50` after a discount, fees such as `¥0.30`), so nothing is ever rounded on display. The staff
+  console keeps two decimals for bookkeeping.
+- **Open (D6):** the 12 % is added **after** the supplier's fees, because the fees are real costs. On the official
+  price alone, Plus PH would be ¥116.
+- The demo still names the tiers "Pro 5x / 20x / 50x"; OpenAI now says Pro 100 / 200 / 500. Rename before
+  production.
+- Production prices are untouched. In production the cost comes from the supplier's live quote, with this table as
+  the cross-check (U1).
+
+---
+
+## 2. Requirements, organised
+
+### A. Shop (24goods)
+| # | Requirement | Where |
 |---|---|---|
-| A1 | Regional prices right: cheapest region, net web price, 12 % on ChatGPT | done on demo (§1); U1 |
-| A2 | Take good ideas from the reference projects (storefront, CDK hub, card platform, payment) | §3, §4 |
-| A3 | Receive buyer payments into the OKX wallet ("Wallet 1") | U2 |
-| A4 | Pay suppliers from the OKX wallet | console B6 (manual-confirm first) |
-| A5 | Track that goods were received (buyer's plan really active; supplier really credited) | U5, B6 |
-| A6 | CDK / card platform upgrades ("card PIN upgrades" = upgrade plans such as Plus → Pro) | U3, U4 |
-| A7 | Second supplier `card.zzshu.pro` and switching to it when the main channel fails | U3 |
-| A8 | First order of a buyer goes to the owner for a manual top-up | U6 |
+| A1 | Right regional prices: net web price, cheapest region, 12 % on ChatGPT, whole numbers | §1 done on demo; U1 |
+| A2 | Use the good parts of the reference projects | §3, §4 |
+| A3 | Receive buyer payments into the shared OKX wallet | U2 |
+| A4 | Pay suppliers from the same wallet (server-side) | §6, console step 6 |
+| A5 | Know that goods were received: buyer's plan really active; supplier really credited | U5, §6 |
+| A6 | CDK / card platform upgrades, incl. upgrade plans (Plus → Pro) | U3, U4, U7 |
+| A7 | `card.zzshu.pro` as a second supplier, with failover | U3 |
+| A8 | Buyer's first order to the owner for a manual top-up | U6 |
+| A9 | **Pre-orders**: pay now, ships within a stated window (e.g. 1–3 days) | **U10** |
 
-### B. New owner-only console (separate repo, dev first)
+### B. Owner console (in `08mywebtools`, dev at `opsdev.kesiv.com`)
 | # | Requirement |
 |---|---|
-| B-a | Paste a customer session; see account, plan, expiry; check order status |
-| B-b | Top up through: Zovocard API, `card.zzshu.pro` API, or **my own card** through **my own protocol** |
-| B-c | Several charges for one large amount; see the "wear" (fees, declines, FX spread) per job and per card |
-| B-d | Use cards from other regions/issuers; SOCKS5 proxy per job; browser with the session injected for manual checkout |
-| B-e | OKX wallet balances and history in the console |
-| B-f | One button: cheapest region now, cost, profit, suggested selling price |
-| B-g | Owner-only, dev environment now (Cloudflare DNS with the existing token), production later |
+| B-a | Paste a customer session: account, plan, expiry; check an order's status |
+| B-b | Top up through Zovocard or `card.zzshu.pro`, or (later) my own card through my own protocol |
+| B-c | Several charges for one large amount; see fees and losses per job, card and region |
+| B-d | Cards from other regions/issuers. SOCKS5 optional (ipcook), off by default. Optional dev-only checkout autofill |
+| B-e | Shared OKX wallet: balances, history, supplier payments from the server |
+| B-f | One button: cheapest region now, cost, profit, suggested whole-number price |
+| B-g | Owner-only. Dev now (`opsdev.kesiv.com`, Cloudflare token), production later |
 
 ---
 
-## 3. Reference projects: what they are and what we may take
+## 3. Reference projects
 
-| Project | Licence (V, GitHub API) | What it is | What we take |
-|---|---|---|---|
-| `dujiao-next/dujiao-next` | **GPL-3.0** | Go/Gin/Vue card shop; Casbin RBAC, TOTP, coupons, affiliate, BEpusdt/EPay/Stripe adapters, Telegram | **Ideas only** (GPL; copying code would force GPL on our code). 24goods already has promo, resellers, 2FA, Telegram alerts, BEpusdt, EPay. Worth adopting: their **route-coverage test** (every admin route must be in a role) and **import-rule architecture tests**. |
-| `zovocard/zovo_card_cdk_auto` | **none = all rights reserved** | The supplier's CDK redemption hub (Go + Vue) | **Feature checklist only, no code** (ADR-044). Gaps vs our redemption site: batch redemption, after-sales lookup, subscription/billing lookup, captcha step, subscription recovery. |
-| `okx/onchainos-skills` | **MIT** | `onchainos` CLI + MCP: Agentic Wallet (keys in OKX's TEE), balances, send, history, Policy (limits/whitelist set on OKX's portal), a2a-pay / x402 payments | Use the **CLI as a tool** (no code copy needed). Wallet balance/history, guarded sends, a2a-pay later. |
-| `v03413/bepusdt` | **GPL-3.0** | Self-hosted USDT/USDC gateway, watches addresses on TRON, BSC, Ethereum, Polygon, **X Layer**, Solana, Arbitrum, Base… | Already in 24goods as an unmodified container (pinned digest). Only its **receive addresses** change (U2). |
-| `kesiv-commerce-mvp` (owner's local repo) | private | Design docs (Dujiao-Next + cdk-station + BEpusdt + OKX), `cdk-station` (a modified copy of `zovo_card_cdk_auto`) with zzshu failover, OKX treasury, checkout autofill | **Docs and API notes**: the zzshu API, Zovocard limits (50 USDT minimum deposit, 20 USDT reserve, decline fees), the OKX treasury guard rails. **No code from `cdk-station`**: it derives from the unlicensed vendor repo. Keep that repo private. |
+| Project | Licence | What we use |
+|---|---|---|
+| `kesiv-commerce-mvp` (owner's) | owner's own work | Docs, API notes and logic may be reused freely: the zzshu API, Zovocard limits (50 USDT minimum deposit, 20 USDT reserve, decline fees), treasury guard rails, autofill selectors |
+| `zovocard/zovo_card_cdk_auto` | no licence file; **owner: provided by the vendor, free to use** | Feature checklist and code as needed: batch redemption, after-sales lookup, subscription/billing lookup, captcha step, subscription recovery, upgrade plans |
+| `dujiao-next/dujiao-next` | GPL-3.0 (V) | Ideas only (copying code would put our code under GPL). Worth adopting: the admin route-coverage test and the import-rule architecture tests |
+| `okx/onchainos-skills` | MIT (V) | The `onchainos` CLI, installed on this server (§6) |
+| `v03413/bepusdt` | GPL-3.0 (V) | Already runs in 24goods as an unmodified pinned container; only its receive addresses change (U2). Supports X Layer (V, README) |
 
-**Assessment:** 24goods already covers most of what the Dujiao-Next + cdk-station design proposes, and its security
-model is stronger: sealed sessions, a separate procurement process, row-level security, audited state changes. Switching
-to Dujiao-Next would mean a GPL dependency and losing that work. So the plan is **to keep 24goods and add the
-missing pieces** (§4). The console gets the owner-only tools that do not belong in a public shop (§5).
+**Assessment (unchanged):** keep 24goods and add what is missing. It already covers most of the Dujiao-Next +
+cdk-station design, with a stronger security model.
 
 ---
 
-## 4. Part A: upgrades to 24goods (priority order)
+## 4. Shop upgrades (in priority order; each one is a PR to the demo first, production on the owner's go-ahead)
 
-| ID | Upgrade | Value | Effort (I) | Risk / review |
-|---|---|---|---|---|
-| **U1** | **Price reference table**: per plan × region, store the official web price, VAT, source and date, plus daily FX. The console's pricing panel shows supplier quote vs reference vs our price. Alert when the cost goes above the price or the reference is more than 7 days old. | prevents selling below cost | 1.5 d | low |
-| **U2** | **Receive into OKX Wallet 1**: set BEpusdt receive addresses to Wallet 1 addresses on TRON (USDT-TRC20), BSC and **X Layer** (OKX's chain, gas-free inside the OKX wallet). Guard: changing an address needs 2FA re-auth, an audit row and a Telegram alert, and the console shows the address with a checksum. | owner's own wallet | 0.5 d code + config | **production change → go-ahead; 1 USDT live test per chain** |
-| **U3** | **`card.zzshu.pro` as a second supplier** (procurement adapter): `direct` order with a card + full session, status polling, Stripe 3-D Secure hand-off to staff. **Failover:** when Zovocard's direct channel fails but the funded virtual card still holds the money, retry on zzshu with the same card (zzshu charges only on success, per its API docs as quoted in `kesiv-commerce-mvp` doc 04; I: confirm live). The card number is read from Zovocard inside procurement and never stored. | fewer failed orders, no stranded card balance | 4 d | **security-reviewer** (card data in procurement) |
-| **U4** | **Upgrade products**: Plus → Pro, to Pro 200, Pro 200 renew (zzshu plan types `plus_to_5x`, `to_20x`, `renew_20x`; zovo equivalents), priced from the supplier's upgrade quote. | new sales from existing subscribers | 2 d | low |
-| **U5** | **"Really received" checks**: after delivery, re-check the account through the same pre-check (plan now active). Show "Verified active" to buyer and support; a mismatch opens a support case automatically. The supplier-credit side is in console B6. | fewer disputes | 1.5 d | low |
-| **U6** | **First-order manual review** (setting, off by default): a buyer's first direct order goes to the manual queue with reason `first_order_review`, and its session is kept for staff (#65). Plus an **ops API** for the console: a scoped service token (list manual queue, read order, reveal kept session with reason, mark fulfilled/failed with evidence), each call audited. | the owner's first-order workflow | 3 d | **security-reviewer**; migration |
-| **U7** | Redemption-site gaps from the vendor checklist: lookup by code or e-mail (status, history), batch redemption, subscription/billing lookup. | parity with the vendor hub | 3 d | i18n review |
-| **U8** | Route-coverage test (every admin route in a role) and module import rules (ideas from Dujiao-Next). | regressions caught by CI | 1 d | none |
-| U9 | (later) OKX a2a-pay / x402 for Agent-API buyers. | agents can pay | 3 d | payment-auditor |
+| ID | Upgrade | Review |
+|---|---|---|
+| **U1** | **Price reference table**: plan × region → web price, VAT, source, date, plus daily FX. Shown in the pricing panel beside the supplier quote and our price. Alerts when a cost goes above its price or a reference is more than 7 days old | — |
+| **U10** | **Pre-orders** (§4.1) | security-reviewer (order states, refunds) |
+| **U2** | **Receive into the shared OKX wallet**: BEpusdt receive addresses = the wallet's TRON (USDT-TRC20), BSC and X Layer addresses. Changing an address needs 2FA re-auth, an audit row and a Telegram alert | production go-ahead; a 1 USDT live test per chain |
+| **U3** | **`card.zzshu.pro` as a second supplier**: `direct` with card + full session, status polling. **Failover:** when Zovocard's direct channel fails but the funded virtual card still holds the money, retry on zzshu with the same card. The card number is read inside procurement and never stored | security-reviewer |
+| **U4** | **Upgrade products** (Plus → Pro, to Pro 200, Pro 200 renew), priced from the supplier's upgrade quote | — |
+| **U5** | **"Really received" check**: after delivery, re-run the account pre-check. Show "Verified active" to buyer and support; a mismatch opens a support case | — |
+| **U6** | **First-order manual review** (setting, off by default) + **ops API** for the console: scoped service token; manual queue, order read, reveal kept session with reason, mark fulfilled/failed; every call audited | security-reviewer; migration |
+| **U7** | Redemption site, from the vendor checklist: lookup by code or e-mail, batch redemption, subscription/billing lookup | i18n review |
+| **U8** | Route-coverage test + module import rules | — |
+| U9 | (later) OKX a2a-pay / x402 for Agent-API buyers | payment-auditor |
 
-Each of these is a separate PR on the demo first. Production only gets them with the owner's go-ahead.
+### 4.1 U10 Pre-orders: design
+
+**What exists (V, code):**
+- manual-delivery products;
+- `products.delivery_eta_hours` with a site default;
+- the staff "overdue manual orders" filter;
+- the delivery deadlines and after-sales timers.
+
+Pre-orders extend these. They are not a new order type.
+
+| Part | Design |
+|---|---|
+| Product setting | "Pre-order" on a product (or variant): delivery window **min–max days** (default 1–3), optional **quota** (most units sold ahead), optional **end date**, optional note ("made to order"). Works for manual products and card-key products. Not offered on direct top-ups, which complete in minutes |
+| Buyer, before paying | Badge "Pre-order · ships in 1–3 days" on the card, product page and checkout. A required tick: "I understand this is delivered within 1–3 days after payment". Price and payment are as usual (full payment) |
+| Buyer, after paying | Order shows **"Pre-order: expected between <date> and <date>"**, with the step "Being prepared", then delivery as usual. Live updates use the existing stream |
+| Card-key products | May sell beyond stock up to the quota. **When new cards are imported, waiting pre-orders are delivered first, oldest paid first, automatically**, through the normal vault path (no plaintext anywhere new) |
+| Manual products | Staff deliver as now. The staff queue gets a **"Pre-orders" tab sorted by due time** (`paid_at + max days`) |
+| Late orders | Staff alert (console + Telegram) at 75 % of the window and when overdue. Once overdue, the buyer sees an apology and a **"Cancel and refund"** button (full refund through the existing cancel/refund path). An optional automatic refund after a grace period is a setting, off by default |
+| Records | Every state change audited (order events + audit rows). Tenant-scoped like all order data; reseller stores inherit the setting. Migration: `products.preorder` (JSON: window, quota, end date, note) and `orders.preorder_due_at` |
+| Not now | Deposits / pay-the-rest-later, per-variant windows (can follow) |
 
 ---
 
-## 5. Part B: the owner's console (new repository)
+## 5. Owner console
 
-### 5.1 Shape
-- **Repo:** private `kesiv-ops` (name D1). Owned code from 24goods may be reused: the Zovocard client, session
-  parser, cost model, FX and sealing patterns. No code from `cdk-station` or the vendor repo.
-- **Stack (recommended):** Python 3.12 + FastAPI, Vue 3 + Element Plus (same as the 24goods console), SQLite
-  (WAL), one container, Caddy in front. About 100–150 MB of RAM, so it fits the dev box beside the demo.
-  Go would match the reference projects but means rewriting adapters 24goods already has.
-- **Dev URL:** `ops-dev.kesiv.com` (D2): Cloudflare DNS record made with the owner's token (proxied), host Caddy
-  site, origin locked to Cloudflare. If the token allows it, also put Cloudflare Access (one e-mail) in front.
-- **Login:** single owner account. Passkey or password + TOTP, 12 h session, and re-auth (TOTP) before money
-  actions: a send, a top-up, revealing a session or card.
+### 5.1 Integrate into `08mywebtools`? Findings and recommendation
 
-### 5.2 Modules
+**Findings (V, 2026-11-19):**
+- `08mywebtools` is a **public** GitHub repo (`stackoracode/mywebtools`). This machine's GitHub login
+  (`zucchinistockton`) can read it but **cannot push**.
+- It is a personal media toolbox for the LAN (Windows PC + ARM board): FastAPI single process, vanilla-JS SPA,
+  JSON-file storage, in-memory job queue with live progress (SSE), a tool registry, and an **optional**
+  password.
+- **`tools.kesiv.com` serves a different app:** "VPS Console" (`arifulcrypto/vps-console`, service
+  `vps-console`, port 8091 on this server). It is not `mywebtools`.
+
+**Recommendation: yes, integrate, under four conditions.**
+1. **Make the repo private before the first ops commit**, or keep the ops package in a private repo that
+   `mywebtools` loads. A public repo would publish the supplier integrations, wallet tooling and how the business
+   works. Trade-off: the README notes that GitHub's free arm64 runners need a public repo, so arm64 tests would move
+   to the board or be dropped.
+2. **One codebase, two deployments.** On the LAN: media tools on, ops off. On this server at
+   **`opsdev.kesiv.com`**: ops on, media off, chosen by a profile setting. Shared: UI shell, i18n, job queue,
+   live progress, settings, presets. `mywebtools`'s job-and-progress model fits top-up jobs well.
+3. **The ops profile raises security:**
+   - login is **mandatory**, with password + TOTP;
+   - TOTP re-check before money actions;
+   - SQLite for ops data (the JSON job file is not enough);
+   - sessions, cards and proxy credentials stored sealed;
+   - an append-only audit log;
+   - the origin accepts Cloudflare only (like the existing `tools.kesiv.com` site file).
+4. **Push access:** add `zucchinistockton` as a collaborator on `stackoracode/mywebtools`, or tell me which
+   account to push with.
+
+`tools.kesiv.com` stays on VPS Console unless the owner wants it repointed (D9).
+
+### 5.2 Deployment (dev)
+- DNS `opsdev.kesiv.com` → this server, proxied, created with the owner's Cloudflare token.
+- Host Caddy site (Cloudflare-only origin), `systemctl restart caddy` (Caddy runs with `admin off`).
+- systemd service under its own user. It calls the wallet CLI as user `onchainos` through a narrow sudo rule
+  (§6).
+
+### 5.3 Modules
 | Module | What it does |
 |---|---|
-| **Session desk** | Paste a session: parse e-mail, account id, plan, expiry and validity (same safe paste as the shop). Check the account through the Zovocard preflight, zzshu `subscription-lookup`, or a direct check through the job's proxy. Stored **sealed**, shown masked, deleted automatically 72 h after the job closes. Never logged. |
-| **Jobs** | One job = one customer upgrade (plan, region, target amount, linked 24goods order or manual). Stages and timeline with seconds; every attempt kept: channel, card, proxy, amount, fees, result. **Several charges:** a job can be funded in several attempts or cards; the console shows charged vs needed and stops at the target. |
-| **Channels** (one adapter contract: `check`, `quote`, `submit`, `status`, `cancel`) | **Zovocard** direct and virtual-card · **zzshu** direct with card · **My protocol**: the console sends a signed JSON job (plan, region, session ref, card ref, proxy) to the owner's endpoint and takes signed status callbacks · **Manual**: the owner records the outcome |
-| **Cards** | Three kinds: **issuer-held** (Zovocard card id; details fetched at use time, never stored); **manual** (number and expiry sealed, **CVV never stored**: typed per use); **protocol-held** (the owner's protocol keeps the card; the console knows only an alias). Per card: region, issuer, balance, fees, success rate, effective cost per successful upgrade. |
-| **Proxies** | SOCKS5/HTTP pool with region tag, credentials sealed, health and exit-IP check, sticky binding per customer session (the same exit for the whole job). Supplier APIs go out from the whitelisted server IP, not the proxy. |
-| **Browser helper** | A small **local** program on the owner's PC (Playwright). It pulls a job, opens a fresh profile through the job's proxy, sets the session cookie, opens chatgpt.com, and the owner completes the checkout. It returns the result to the job. Local because headless Chrome does not fit the 2 GB box, and the owner must be present for 3-D Secure. |
-| **Pricing** ("cheapest region" button) | Reference table (U1 data; Hvoy-method web prices with manual override) + supplier live quotes + FX. Per plan: every region sorted by total cost (price + channel fees + card fees + FX spread), suggested price at the chosen markup, profit per sale, our current 24goods price. Optional "push to 24goods" through the audited pricing action. |
-| **Ledger** | Per job: revenue (24goods order or typed), costs (card charge in local currency at the real FX, supplier fee, decline/small-amount fees, proxy), profit. Per day/week and per card/region/channel. CSV export. |
-| **Wallet** (§6) | Wallet 1 balances and incoming transfers; supplier top-ups with confirmation; "credited?" tracking. |
-| **Audit** | Append-only log of every action (who, what, before/after, when, IP). |
+| **Session desk** | Paste a session (same safe paste as the shop): e-mail, account id, plan, expiry, validity. Account check through Zovocard preflight or zzshu `subscription-lookup`. Stored **sealed**, shown masked, deleted 72 h after the job closes, never logged |
+| **Jobs** | One job = one customer upgrade (plan, region, amount, linked 24goods order or manual). Timeline with seconds; every attempt recorded (channel, card, proxy, amount, fees, result). **Several charges** per job until the target is met |
+| **Channels** (contract `check` / `quote` / `submit` / `status` / `cancel`) | Zovocard direct and virtual-card · zzshu direct · Manual (record the outcome) · **My protocol: on hold** until the owner's protocol is ready (signed JSON job + signed callbacks) |
+| **Cards** | Issuer-held (Zovocard card id; details fetched at use, never stored) · manual (number and expiry sealed; **CVV never stored**) · protocol-held (later). Per card: region, issuer, balance, fees, success rate, cost per successful upgrade |
+| **Proxies (optional, off by default)** | ipcook SOCKS5 from `/root/.secrets/ipcook.env`: per-job checkbox, unticked by default. Region from the job, sticky exit for the whole job, exit-IP check. Session queries normally go direct |
+| **Checkout autofill (optional, off by default, dev only)** | From the kesiv autofill script: a local Playwright helper fills a checkout form with a card's **real** stored details, for learning, review and attack testing in dev. No address generator; billing comes from the card record. Never submits unless explicitly asked |
+| **Pricing button** | Reference table (U1) + supplier quotes + FX → each region sorted by total cost, suggested whole-yuan price at the chosen markup, profit per sale, current 24goods price. Optional push through the audited pricing action |
+| **Ledger** | Per job: revenue, costs (local-currency charge at real FX, supplier and card fees, declines, proxy), profit. Per day/card/region/channel, CSV export |
+| **Wallet** | §6 |
+| **Audit** | Append-only log of every action |
 
-### 5.3 Phases (each = PRs with CI; acceptance in brackets)
-| Phase | Content | Effort (I) |
-|---|---|---|
-| **B0** | Decisions D1–D5; repo, CI (ruff, pytest, vitest, gitleaks, Trivy, pinned actions), README | 0.5 d |
-| **B1** | Skeleton, owner login + TOTP, audit log, sealing keys, DNS `ops-dev.kesiv.com` + Caddy [owner can log in; everything behind login] | 2 d |
-| **B2** | Session desk + account check (Zovocard preflight, zzshu lookup) [paste → masked summary + current plan] | 2 d |
-| **B3** | Jobs + channels Zovocard, zzshu, Manual; multi-charge; timeline [a sandbox job runs end to end] | 4–5 d |
-| **B4** | Cards + proxies [job bound to card + proxy; exit IP shown] | 2 d |
-| **B5** | Pricing button + ledger [table matches §1; profit per job] | 3 d |
-| **B6** | Wallet: balances, history, supplier top-up with confirmation and credit tracking [test transfer on the cheapest chain] | 3 d |
-| **B7** | 24goods link (needs U6): manual queue, reveal kept session, mark fulfilled [first-order flow works on the demo] | 2 d |
-| **B8** | "My protocol" adapter + local browser helper [the owner's protocol completes a job] | 3 d |
-| B9 | Production environment (own host or c4 beside the shop), backups | 1 d |
-
-Order: B0 → B1 → B2 → B3 first. That alone replaces the manual top-up work. Then B5, which pays back fastest, then the rest.
+### 5.4 Order of work (no dates)
+1. Repo conditions (§5.1), skeleton of the ops profile: login + TOTP, audit, sealing, DNS `opsdev.kesiv.com`.
+2. Session desk + account check.
+3. Jobs + Zovocard, zzshu and Manual channels, with several charges per job.
+4. Pricing button + ledger.
+5. Cards + optional proxies.
+6. Wallet page: balances, history, supplier payment with confirmation and credit tracking.
+7. 24goods link (needs U6): manual queue, kept session, mark fulfilled.
+8. Optional dev autofill helper.
+9. Own protocol adapter (when ready); 3-D Secure (later); production deployment.
 
 ---
 
-## 6. OKX wallet design
+## 6. Shared OKX wallet (server side)
 
-- **Receive (shop):** BEpusdt watches the Wallet 1 addresses (U2). No key on any server, and the balance can be
-  read from public addresses.
-- **See balances (console):** read Wallet 1 by its **public addresses** (onchainos public-address portfolio or the
-  chain explorers), so the console has no power to move funds from it.
-- **Pay suppliers:** use a **separate Agentic Wallet account as a small hot wallet**. Its keys stay in OKX's TEE,
-  and it gets topped up from Wallet 1 by hand. On OKX's web portal, set its **Policy**: whitelist = supplier deposit
-  addresses only (e.g. Zovocard's), plus per-send and daily limits. The Policy is enforced by OKX, so even a
-  compromised console cannot send elsewhere or more.
-- **Flow:** the console proposes a top-up (Zovocard minimum 50 USDT; trigger on `spendable_balance`). The owner
-  re-authenticates and confirms, then the console runs `onchainos wallet send` (first without `--force`, shows OKX's
-  confirmation text, then with it). It records the tx hash, then matches it with Zovocard `balance-logs` and marks
-  it **credited**. Automatic top-ups only later, inside the Policy limits, if the owner wants them.
-- **I / D3:** if "Wallet 1" is a normal OKX Wallet app wallet (seed on the phone), it stays receive-only, and sends
-  happen in the app or from the Agentic hot wallet. If it is already an Agentic Wallet, the same Policy rules apply
-  to it directly.
-
----
-
-## 7. Risks and limits (stated plainly)
-
-- **Customer sessions are full account access.** They stay sealed, are masked on screen, deleted after 72 h, and
-  revealed only with a reason (audited). A console breach would expose them, so access is owner-only behind
-  2FA (and Cloudflare Access).
-- **Card data:** storing card numbers and CVVs brings PCI-DSS obligations. The design never stores a CVV and
-  prefers issuer-held cards.
-- **Billing details:** the console uses each card's real billing details. It will not generate invented
-  ("tax-free state") addresses like the `kesiv-commerce-mvp` autofill script. That misstates the buyer's location
-  for tax, and I will not build it.
-- **Platform rules:** buying in another region through proxies breaks OpenAI's terms. Accounts can be flagged, and
-  card issuers can decline or close cards. The console reduces this (sticky region per customer, few calls) but
-  cannot remove it. Price it into the margin.
-- **3-D Secure and captchas are completed by the owner**; the console never tries to bypass them.
-- **Money-moving code** (wallet sends, U2 address change, U3 card handling) gets the security-reviewer /
-  payment-auditor pass, and production changes need the owner's go-ahead in the same turn.
-- **Resources:** the dev box has 2 GB. Builds and tests run in GitHub CI, and the browser helper runs on the owner's PC.
+- **Installed (V, 2026-11-19):**
+  - `onchainos` 4.6.11 from OKX's GitHub release, the static Linux build, SHA-256 checked against the release's
+    `checksums.txt`, at `/usr/local/bin/onchainos`.
+  - It runs as its own system user `onchainos` (home `/var/lib/onchainos`, mode 700). The wallet session lives
+    there, not under root or any app user.
+  - Only the CLI was installed. OKX's full installer also installs AI-agent skills and a background "A2A" daemon,
+    which the server does not need.
+- **Login:** started 2026-11-19 with OKX's browser login (the owner signs in with e-mail on OKX's page; the e-mail
+  is never sent from this server). Result recorded in `docs/progress.md`.
+- **One wallet, two uses:**
+  - **Receive:** the shop's BEpusdt (production on c4) watches the wallet's **public** addresses and needs no login
+    there (U2).
+  - **Pay:** only this server holds the login and can send.
+- **Guard rails (owner action on OKX's web portal, right after login):**
+  - set the wallet **Policy**: whitelist = supplier deposit addresses only (e.g. Zovocard's), plus per-send and daily
+    limits;
+  - OKX enforces these, so a compromised server cannot send elsewhere or more;
+  - large or new-address sends trigger OKX's e-mail approval code.
+- **Payment flow:** the console proposes a supplier top-up (Zovocard minimum 50 USDT; trigger on
+  `spendable_balance`).
+  1. The owner re-authenticates (TOTP) and confirms.
+  2. The console runs `onchainos wallet send` first **without** `--force` and shows OKX's confirmation text.
+  3. Only after the owner confirms does it re-run with `--force`.
+  4. It records the tx hash, matches it with Zovocard `balance-logs`, and marks the payment **credited**.
+  Automatic top-ups come later, inside the Policy limits, if wanted.
+- **Option:** a second account under the same login (`wallet add`) to separate "receive" from "spend". Still one
+  wallet, but a server compromise could then reach only the spend balance.
 
 ---
 
-## 8. Decisions needed from the owner
+## 7. Risks and limits
+
+- Customer sessions are full account access: sealed, masked, 72 h, reveal with reason (audited), owner-only
+  behind 2FA.
+- Card data: no CVV stored ever; issuer-held cards preferred (PCI-DSS).
+- **No invented billing addresses.** The optional dev autofill uses real card details only.
+- **OpenAI's rules:** the owner's instruction is not to break them. Buying a plan through another country's
+  checkout or through proxies can conflict with them, and the account can be flagged. The optional proxy feature
+  is off by default.
+- 3-D Secure and captchas: not automated; future plans.
+- Money-moving code (wallet sends, U2, U3) gets the security-reviewer / payment-auditor pass. Production changes
+  need the owner's go-ahead in the same turn.
+- Dev box has 2 GB: tests and builds run in GitHub CI; any browser tooling runs on the owner's PC.
+- **The wallet login on this server is a live spending credential.** Set the OKX Policy before any funds are sent.
+  This server also runs the demo, so a breach of the demo host would expose the wallet session (contained by the
+  Policy).
+
+---
+
+## 8. Decisions still needed
 
 | # | Decision | Recommendation |
 |---|---|---|
-| D1 | Repo name and visibility | private `kesiv-ops` |
-| D2 | Dev hostname | `ops-dev.kesiv.com` (production later `ops.kesiv.com`) |
-| D3 | Is "Wallet 1" an OKX Wallet app wallet or an onchainos Agentic Wallet? | app wallet = receive-only + a separate Agentic hot wallet for supplier payments |
-| D4 | How is "my protocol" called (HTTP? CLI?) and what does it need (card, session, proxy, region)? | HTTP endpoint with HMAC-signed job + callbacks |
-| D5 | Card storage: CVV never stored, card numbers preferably issuer-held | yes |
-| D6 | 12 % on top of supplier fees (current) or on the official price only | on top of fees |
-| D7 | Start with the console (B0–B3) or the shop upgrades (U1, U6) first | console B0–B3, then U6 + B7 |
-| D8 | Production go-ahead for #62–#71, migration `0036`, Redis ACL line (#47), and production prices | open |
+| D4 | Own protocol | on hold (owner) |
+| D6 | 12 % after supplier fees (current) or on the official price only | after fees |
+| D9 | `tools.kesiv.com`: keep VPS Console there, or repoint it to mywebtools | keep; ops on `opsdev.kesiv.com` |
+| D10 | Make `stackoracode/mywebtools` private (or a private ops package), and push access for `zucchinistockton` | private + collaborator |
+| D11 | Pre-orders (U10): build now on the demo? | yes, after PR #74 |
+| D12 | OKX Policy: whitelist + limits (owner, on OKX's portal) | before the first send |
+| D8 | Production go-ahead for #62–#74, migration `0036`, Redis ACL line (#47), production prices | open |
