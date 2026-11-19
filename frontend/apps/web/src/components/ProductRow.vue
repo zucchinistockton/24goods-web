@@ -2,14 +2,14 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ProductThumb } from '@24goods/shared/ui'
-import { formatNumber, isInstantMode, moneyParts, type ProductSummary } from '@24goods/shared'
+import { formatNumber, isInstantMode, priceParts, type ProductSummary } from '@24goods/shared'
 import { afterSalesLabel } from '../lib/afterSales'
 import { isSoldOut } from '../lib/stock'
 
 const props = defineProps<{ product: ProductSummary }>()
 const emit = defineEmits<{ buy: [p: ProductSummary] }>()
 const { t, locale } = useI18n()
-const price = computed(() => moneyParts(props.product.price, props.product.currency, locale.value))
+const price = computed(() => priceParts(props.product.price, props.product.currency, locale.value))
 const soldOut = computed(() => isSoldOut(props.product))
 const as = computed(() => afterSalesLabel(props.product?.after_sales_hours, props.product?.after_sales_months))
 </script>

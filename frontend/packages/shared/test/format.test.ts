@@ -10,6 +10,8 @@ import {
   fromMinor,
   isValidAmount,
   moneyParts,
+  formatPrice,
+  priceParts,
   multiplyAmount,
   normalizeAmount,
   toMinor,
@@ -57,6 +59,19 @@ describe('money', () => {
 
   it('keeps exact decimals for large amounts (string input)', () => {
     expect(formatMoney('99999999.99', 'CNY', 'en')).toContain('99,999,999.99')
+  })
+
+  it('shows whole buyer prices without decimals and keeps real cents', () => {
+    expect(formatPrice('121.00', 'CNY', 'zh-CN')).toBe('¥121')
+    expect(formatPrice('121', 'CNY', 'en')).toMatch(/^(CN)?¥121$/)
+    expect(formatPrice('61.50', 'CNY', 'zh-CN')).toBe('¥61.50')
+    expect(formatPrice('0.30', 'CNY', 'zh-CN')).toBe('¥0.30')
+    expect(formatPrice('1234567.00', 'CNY', 'en')).toContain('1,234,567')
+    expect(formatPrice('1234567.00', 'CNY', 'en')).not.toContain('.')
+    expect(formatPrice(null, 'CNY', 'en')).toBe('—')
+    expect(formatPrice('garbage', 'CNY', 'en')).toBe('garbage')
+    expect(priceParts('3295.00', 'CNY', 'zh-CN')).toEqual({ symbol: '¥', value: '3,295' })
+    expect(priceParts('8.50', 'CNY', 'zh-CN').value).toBe('8.50')
   })
 
   it('splits currency symbol and value', () => {

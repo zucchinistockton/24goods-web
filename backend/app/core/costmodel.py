@@ -52,7 +52,7 @@ _INT_FIELDS: dict[str, tuple[int, int, int]] = {  # default, lo, hi
     # (vendor default 2); the cost bound of the switch assumes all of them are used and billed
     "max_auto_switches": (2, 2, 10),  # floor = the vendor default: we send no switch cap
     "chargeback_tier1_min_tx": (100, 0, 1_000_000),
-    "round_step_minor": (10, 1, 100_000),
+    "round_step_minor": (100, 1, 100_000),  # whole shop-currency units (owner 2026-11-19)
     "fx_max_age_days": (7, 1, 365),
 }
 DEFAULT_SERVICE_FEE = {"gpt": "0.30", "grok": "0.15", "claude": "0"}

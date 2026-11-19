@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { formatMoney, safePayUrl, type EpayPaymentView } from '@24goods/shared'
+import { formatPrice, safePayUrl, type EpayPaymentView } from '@24goods/shared'
 import { api } from '../api'
 import { toastError } from '../ui'
 
@@ -39,7 +39,7 @@ onBeforeUnmount(() => clearInterval(timer))
     <section class="card pad pay-card">
       <van-loading v-if="busy && !view" />
       <template v-if="view">
-        <h2>{{ formatMoney(view.amount, view.currency, locale) }}</h2>
+        <h2>{{ formatPrice(view.amount, view.currency, locale) }}</h2>
         <p v-if="done">{{ t('pay.confirmed') }}</p>
         <p v-else-if="view.status === 'manual_review'">{{ t('pay.review') }}</p>
         <p v-else-if="view.expired">{{ t('pay.expired') }}</p>

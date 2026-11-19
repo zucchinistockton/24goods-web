@@ -13,7 +13,7 @@ import {
   goBack,
   formatCountdown,
   formatDateTime,
-  formatMoney,
+  formatPrice,
   isApiError,
   safeAssetUrl,
   type AfterSales,
@@ -451,7 +451,7 @@ function gotCode() {
         />
         <div v-else class="o-amount">
           <span class="muted">{{ t('order.amount') }}</span>
-          <span class="price big">{{ formatMoney(live.amount, order.currency, locale) }}</span>
+          <span class="price big">{{ formatPrice(live.amount, order.currency, locale) }}</span>
         </div>
         <p v-if="order.status === 'cancelled' && order.cancel_reason" class="muted small reason">
           {{ t('cancel.reason', { reason: order.cancel_reason }) }}
@@ -480,11 +480,11 @@ function gotCode() {
           class="sib"
         >
           <span class="sib-title">{{ s.title }}</span>
-          <span class="price">{{ formatMoney(s.amount, s.currency, locale) }}</span>
+          <span class="price">{{ formatPrice(s.amount, s.currency, locale) }}</span>
         </RouterLink>
         <div v-if="checkout" class="sib-total">
           <span class="muted">{{ t('cancel.checkoutTotal') }}</span>
-          <span class="price">{{ formatMoney(checkout.amount, checkout.currency, locale) }}</span>
+          <span class="price">{{ formatPrice(checkout.amount, checkout.currency, locale) }}</span>
         </div>
       </section>
 
@@ -581,7 +581,7 @@ function gotCode() {
 
       <div v-if="order.status === 'pending_payment'" class="dock action-dock">
         <div class="pay-info">
-          <span class="price">{{ formatMoney(checkout && order.checkout_no ? liveCheckoutAmount : live.amount, order.currency, locale) }}</span>
+          <span class="price">{{ formatPrice(checkout && order.checkout_no ? liveCheckoutAmount : live.amount, order.currency, locale) }}</span>
           <span v-if="countdown" class="cd">{{ t('order.payWithin', { time: countdown }) }}</span>
         </div>
         <van-button round plain class="cancel-btn" :loading="cancelling" @click="cancelIt">{{ t('cancel.action') }}</van-button>
