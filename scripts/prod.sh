@@ -184,11 +184,25 @@ cmd_smoke() {
     ok "/mockpay gateway not served (SPA fallback only)"
   else bad "/mockpay gateway is served"; fi
 
-  for path in /admin/ /admin/index.html /api/v1/admin/me; do
-    code=$(curl -sS -m 15 -o /dev/null -w '%{http_code}' "$base$path" || echo 000)
-    if [[ "$code" == 403 ]]; then ok "$path -> 403 from this (non-allowlisted) box"
-    else bad "$path -> $code (expected 403; is this box in ADMIN_ALLOW_IPS?)"; fi
-  done
+  # The staff gate (ADMIN_ALLOW_IPS) can only be proven closed from a box that is NOT on the list.
+  # The dev box 107.173.10.79 was added on 2026-11-19 (owner), so from there the gate must be open.
+  local me allow
+  me=$(curl -sS -m 10 https://api.ipify.org 2>/dev/null || true)
+  allow=$(rsh "grep -E '^ADMIN_ALLOW_IPS=' $RDEPLOY/.env | cut -d= -f2- | tr -d '\"'" 2>/dev/null || true)
+  if [[ -n "$me" && " $allow " == *" $me "* ]]; then
+    for path in /admin/ /admin/index.html; do
+      code=$(curl -sS -m 15 -o /dev/null -w '%{http_code}' "$base$path" || echo 000)
+      if [[ "$code" == 200 ]]; then ok "$path -> 200 from this allowlisted box ($me)"
+      else bad "$path -> $code (this box $me is in ADMIN_ALLOW_IPS; expected 200)"; fi
+    done
+    echo "  note: the closed staff gate is not testable from an allowlisted box; check from another network"
+  else
+    for path in /admin/ /admin/index.html /api/v1/admin/me; do
+      code=$(curl -sS -m 15 -o /dev/null -w '%{http_code}' "$base$path" || echo 000)
+      if [[ "$code" == 403 ]]; then ok "$path -> 403 from this (non-allowlisted) box"
+      else bad "$path -> $code (expected 403; is this box in ADMIN_ALLOW_IPS?)"; fi
+    done
+  fi
 
   # direct hit on the origin without the Cloudflare client cert must not complete
   code=$(curl -ksS -m 10 -o /dev/null -w '%{http_code}' "https://$HOST:$ORIGIN_PORT/" 2>/dev/null || true)
