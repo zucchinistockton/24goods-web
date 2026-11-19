@@ -378,9 +378,9 @@ async def test_unit_estimate_row_with_components_and_recommendation(env):
     assert row["gross_margin_pct"] == "33.33" and row["net_margin_pct"] == "29.35"
     assert row["target_margin_pct"] == "30.00" and row["cost_incomplete"] is False
     rec = row["recommended"]
-    # P = (20 + .3 + .4 + .015) / (1 - .016 - .3) USD, x 7.2, rounded up to a whole CNY (default step 100)
+    # P = (20 + .3 + .4 + .015) / (1 - .016 - .3) USD, x 7.2, rounded up to a whole CNY
     exact = D("20.715") / D("0.684") * D("7.2")
-    assert rec["minor"] == int((exact * 100 / 100).to_integral_value(rounding="ROUND_CEILING")) * 100
+    assert rec["minor"] == int(exact.to_integral_value(rounding="ROUND_CEILING")) * 100
     assert rec["currency"] == "CNY" and rec["diff_minor"] == rec["minor"] - 21600
     assert body["fx"]["CNY"]["per_usd"] == "7.2"
 
