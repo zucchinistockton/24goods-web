@@ -1107,6 +1107,7 @@ export default {
         target_margin: 'Default target net margin (fraction)',
         target_markup: 'Markup on cost (fraction, 0.12 = cost × 1.12; 0 = use the net margin)',
         round_step_minor: 'Round suggested prices up to (minor units)',
+        markup_on_price: 'Markup base (1 = official price only, never below full cost; 0 = full cost incl. fees)',
         service_fee_direct: 'Direct service fee: {product} (USD)',
         uses_per_card: 'Uses per card: {tier}',
       },
