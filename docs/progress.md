@@ -6,6 +6,15 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 **Hand-off 2026-11-18 (after PR #49; the owner's order #29 → #30 → #31 is done on the demo). START HERE.**
 
+- **2026-11-19 21:46 UTC PRODUCTION DEPLOY of the 2FA step-up fix (#87, owner: "deploy the 2FA fix to production").**
+  c4 runs `53588c6` (image revision verified). Cause (audit 21:12-21:15 UTC): the card-funding save answered a wrong / reused
+  code with 401, the console signed out on 401, each new sign-in spent the next code and the owner retyped it: a loop. Now
+  422 `two_factor_invalid` / `two_factor_used`, session kept. Pre-deploy dump `/root/kesiv-backups/predeploy-20261119T214445Z/`
+  (sha256 `a8b36eb5…0b86`, also on c4; 54 tables, 45 orders); no migration (still `0038`); rollback images
+  `goods24-{api,web}:rollback-a6c3b9c` and `:rollback-8704a64` (removed `:rollback-55ad99a`; disk 92 %, 1.8 GB free);
+  `prod.sh smoke` all pass, no errors in the logs. The owner has two accounts with separate 2FA entries: admin
+  `a***@kesiv.com` (shop + admin dashboard) and buyer `a***@gmail.com` (Google, shop only).
+
 - **2026-11-19 PRODUCTION DEPLOY of ADR-048 (owner: "deploy ADR-048 to production", same message).** c4 runs `a6c3b9c`
   (image revision label verified), started 20:59 UTC. Pre-deploy dump `/root/kesiv-backups/predeploy-20261119T205836Z/goods24.dump`
   (sha256 `731ec09c…eb92`, identical on c4 in `/opt/kesiv/backups/predeploy-20261119T205836Z/` with the old `.env`; 53
