@@ -53,6 +53,9 @@ _INT_FIELDS: dict[str, tuple[int, int, int]] = {  # default, lo, hi
     "max_auto_switches": (2, 2, 10),  # floor = the vendor default: we send no switch cap
     "chargeback_tier1_min_tx": (100, 0, 1_000_000),
     "round_step_minor": (100, 1, 100_000),  # whole shop-currency units (owner 2026-11-19)
+    # owner rule 2026-11-19: the markup goes on the official (supplier) price only, not on the
+    # fees, because supplier fees keep changing; 0 = markup on the full price-independent cost
+    "markup_on_price": (1, 0, 1),
     "fx_max_age_days": (7, 1, 365),
 }
 DEFAULT_SERVICE_FEE = {"gpt": "0.30", "grok": "0.15", "claude": "0"}
@@ -454,12 +457,17 @@ def recommend_usd(
 ) -> Decimal | None:
     """Sale price (USD) whose NET margin is ``margin``: ``P = C / (1 - g - m)`` with ``C`` the
     price-independent cost and ``g`` the channel fee rate; or, with a ``target_markup`` above 0,
-    ``P = C x (1 + markup)``. ``None`` when unreachable."""
+    ``P = supplier price x (1 + markup)`` (never below ``C``) when ``markup_on_price`` is set,
+    else ``P = C x (1 + markup)``. ``None`` when unreachable."""
     if src.supplier_price_usd is None or src.supplier_price_usd <= 0:
         return None
     markup = Decimal(settings.get("target_markup") or 0)
     if markup > 0:
-        return _components(settings, src)[0] * (Decimal(1) + markup)
+        cost = _components(settings, src)[0]
+        if settings.get("markup_on_price", 1):
+            # official price x (1 + markup), but never below the full cost (fees included)
+            return max(src.supplier_price_usd * (Decimal(1) + markup), cost)
+        return cost * (Decimal(1) + markup)
     denom = Decimal(1) - channel_rate - margin
     if denom <= 0:
         return None
