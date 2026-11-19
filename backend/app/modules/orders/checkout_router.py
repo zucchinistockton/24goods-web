@@ -88,6 +88,7 @@ async def checkout(
         promo_code=body.promo_code,
         storefront=sf,
         channel=body.channel,
+        preorder_ack=body.preorder_ack,
     )
     return out
 

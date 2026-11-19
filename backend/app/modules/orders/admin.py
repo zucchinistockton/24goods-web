@@ -737,6 +737,8 @@ async def list_orders(
     if overdue_manual:  # manual orders still awaiting delivery past paid_at + ETA
         default_eta = section(await tenant_settings(db, tenant_id), "delivery")["manual_eta_hours"]
         eta = func.coalesce(
+            # a pre-order's promise is its window's end (snapshot in terms, U10)
+            Order.terms["preorder"]["max_days"].as_integer() * 24,
             select(Product.delivery_eta_hours)
             .where(Product.id == Order.product_id, Product.tenant_id == tenant_id)
             .scalar_subquery(),

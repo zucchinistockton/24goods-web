@@ -379,6 +379,8 @@ export interface OrderV5Fields {
   overdue_manual?: boolean
   delivery_eta_hours?: number | null
   delivery_deadline?: string | null
+  /** U10: the pre-order window sold (snapshot) */
+  preorder?: { min_days: number; max_days: number; expected_from: string | null; expected_to: string | null } | null
   /** v9 §1.3: payment attempts whose outcome is unknown; staff can resolve them. */
   unresolved_attempts?: { id: string; status: string; created_at: string }[]
   /** #72 B2: why a manual_review order is held, and whether a payment is recorded. */

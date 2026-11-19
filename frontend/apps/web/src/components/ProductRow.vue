@@ -21,9 +21,10 @@ const as = computed(() => afterSalesLabel(props.product?.after_sales_hours, prop
       <div class="prow-body">
         <div class="prow-title">{{ product.title }}</div>
         <div class="prow-badges">
-          <span :class="isInstantMode(product.delivery_mode) ? 'badge-instant' : 'badge-manual'">{{
-            t(`deliveryMode.${product.delivery_mode}`)
-          }}</span>
+          <span v-if="product.preorder" class="badge-preorder">{{ t('preorder.short') }}</span>
+        <span v-else :class="isInstantMode(product.delivery_mode) ? 'badge-instant' : 'badge-manual'">{{
+          t(`deliveryMode.${product.delivery_mode}`)
+        }}</span>
           <span v-if="as" class="badge-as">{{ t(as.key, { n: as.n }) }}</span>
         </div>
         <div class="prow-meta muted">

@@ -110,7 +110,8 @@ a {
   margin: 12px;
 }
 .badge-instant,
-.badge-manual {
+.badge-manual,
+.badge-preorder {
   display: inline-flex;
   align-items: center;
   gap: 2px;
@@ -128,6 +129,11 @@ a {
 .badge-manual {
   background: var(--c-info-soft);
   color: var(--c-info-ink);
+}
+/* U10 pre-order: paid now, delivered later */
+.badge-preorder {
+  background: var(--c-warn-soft);
+  color: var(--c-warn-ink);
 }
 .skeleton {
   background: linear-gradient(90deg, var(--c-skeleton) 25%, var(--c-fill) 37%, var(--c-skeleton) 63%);

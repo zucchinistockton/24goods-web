@@ -107,6 +107,10 @@ export const API_ERROR_CODES = [
   'preflight_account_blocked',
   'preflight_unavailable',
   'preflight_required',
+  // U10 pre-orders
+  'preorder_ack_required',
+  'preorder_invalid',
+  'preorder_manual_only',
   // issue #27 half-price check, plan x region variants
   'half_check_required',
   'half_check_invalid',

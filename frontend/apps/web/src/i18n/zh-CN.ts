@@ -612,6 +612,17 @@ const zhCN: WebMessages = {
     nothingSelected: '请至少选择一件商品',
     working: '正在创建订单…',
   },
+  preorder: {
+    short: '预售',
+    badge: '预售 · {range}',
+    range: '付款后 {min}–{max} 天发货',
+    days: '付款后 {n} 天发货',
+    within: '付款后 {n} 天内发货',
+    hint: '这是预售商品：现在付款，{range}。',
+    ack: '我已了解这是预售商品：{range}。',
+    cartAck: '我已了解购物车中的预售商品将按各自标注的时间发货。',
+    expected: '预计发货时间',
+  },
   manual: {
     eta: '人工发货 · {hours} 小时内发货',
     deadline: '预计发货时间',

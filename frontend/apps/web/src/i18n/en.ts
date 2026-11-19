@@ -615,6 +615,17 @@ export default {
     nothingSelected: 'Select at least one item',
     working: 'Creating your order…',
   },
+  preorder: {
+    short: 'Pre-order',
+    badge: 'Pre-order · {range}',
+    range: 'ships {min}–{max} days after payment',
+    days: 'ships {n} days after payment',
+    within: 'ships within {n} days after payment',
+    hint: 'This is a pre-order: you pay now and it {range}.',
+    ack: 'I understand this is a pre-order: it {range}.',
+    cartAck: 'I understand the pre-order items in my cart are delivered later, as shown on each item.',
+    expected: 'Expected delivery',
+  },
   manual: {
     eta: 'Manual · ships within {hours} h',
     deadline: 'Expected delivery by',

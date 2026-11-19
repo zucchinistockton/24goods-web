@@ -28,6 +28,8 @@ class BuyNowIn(BaseModel):
     half_check_id: uuid.UUID | None = None
     # a ``manual`` check is decided by staff AFTER payment: the buyer confirms that first
     half_check_confirm: bool = False
+    # pre-order products (U10): the buyer confirmed the delivery window before paying
+    preorder_ack: bool = False
 
     @field_validator("src")
     @classmethod
@@ -105,6 +107,8 @@ class CheckoutIn(BaseModel):
     items: list[CartItemIn] = Field(min_length=1, max_length=20)
     source: str | None = Field(None, max_length=200)
     promo_code: str | None = Field(None, max_length=40)
+    # the cart holds pre-order lines (U10): the buyer confirmed their delivery windows
+    preorder_ack: bool = False
 
     @field_validator("source")
     @classmethod

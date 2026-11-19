@@ -16,6 +16,7 @@ from app.core.money import MoneyError, parse_amount
 from app.models import Attachment, Product, User
 from app.modules.admin import variants as variant_svc
 from app.modules.admin.schemas import BulkProductsIn, ProductIn, ProductPatch
+from app.modules.catalog import preorder as preorder_svc
 from app.modules.catalog.categories import category_slugs
 from app.modules.catalog.service import apply_search, prepare_search, product_stock
 from app.modules.common.vcc import VCC_MODE, ensure_sellable, vcc_sales_enabled
@@ -68,6 +69,7 @@ def _summary(p: Product) -> dict[str, Any]:
         "after_sales_months": p.after_sales_months,
         "subscription": p.subscription,
         "manual_stock": p.manual_stock,
+        "preorder": p.preorder,
         "redeem_url": p.redeem_url,
         "archived_at": p.archived_at.isoformat() if p.archived_at else None,
     }
@@ -166,6 +168,9 @@ async def create(
             if body.delivery_mode == "manual"
             else None
         ),
+        preorder=preorder_svc.normalize(
+            body.preorder.model_dump(mode="json") if body.preorder else None, body.delivery_mode
+        ),
     )
     _card_format(p)
     db.add(p)
@@ -255,6 +260,13 @@ async def patch(
         p.after_sales_hours = None
     if "after_sales_months" in data:
         p.after_sales_months = data["after_sales_months"]
+    if "preorder" in data:  # explicit null = not a pre-order
+        po = body.preorder
+        p.preorder = preorder_svc.normalize(
+            po.model_dump(mode="json") if po is not None else None, p.delivery_mode
+        )
+    elif p.preorder is not None and p.delivery_mode != "manual":
+        p.preorder = None  # pre-orders are manual-only: leaving manual clears the window
     if "subscription" in data:  # explicit null = not a subscription
         sb = body.subscription
         p.subscription = sb.model_dump() if sb is not None else None

@@ -49,6 +49,8 @@ class Product(Base):
     archived_at: Mapped[datetime | None]
     # v5.2: manual-delivery stock; NULL = unlimited (reserved at order, released on cancel/expiry)
     manual_stock: Mapped[int | None] = mapped_column(Integer)
+    # pre-order window (U10): {"min_days", "max_days", "ends_at", "note"}; NULL = not a pre-order
+    preorder: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
     created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[datetime] = created_at()
     updated_at: Mapped[datetime] = updated_at()

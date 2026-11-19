@@ -28,6 +28,7 @@ import AfterSalesSheet from '../components/AfterSalesSheet.vue'
 import AfterSalesStatus from '../components/AfterSalesStatus.vue'
 import BuyerInputSheet from '../components/BuyerInputSheet.vue'
 import FeeLines from '../components/FeeLines.vue'
+import PreorderBadge from '../components/PreorderBadge.vue'
 import ManualPromise from '../components/ManualPromise.vue'
 import PayChannelPicker from '../components/PayChannelPicker.vue'
 import { cancelPending, payCheckout, payOrder } from '../lib/orderActions'
@@ -430,6 +431,7 @@ function gotCode() {
           <span v-if="isInstantMode(order.delivery_mode)" class="badge-instant">
             {{ t(`deliveryMode.${order.delivery_mode}`) }}
           </span>
+          <PreorderBadge v-else-if="order.preorder" :window="order.preorder" compact />
           <ManualPromise v-else :eta="order.delivery_eta_hours" compact />
           <span v-if="order.reseller" class="muted small">{{ t('order.viaStore', { name: order.reseller.store_name }) }}</span>
           <span v-if="order.quote_id" class="muted small">{{ t('order.fromQuote') }}</span>
@@ -564,7 +566,12 @@ function gotCode() {
           <van-cell v-if="order.paid_at" :title="t('order.paidAt')" :value="formatDateTime(order.paid_at, locale)" />
           <van-cell v-if="order.delivered_at" :title="t('order.deliveredAt')" :value="formatDateTime(order.delivered_at, locale)" />
           <van-cell
-            v-if="order.delivery_mode === 'manual' && order.paid_at && !order.delivered_at && order.delivery_deadline"
+            v-if="order.preorder?.expected_from && order.preorder.expected_to && !order.delivered_at"
+            :title="t('preorder.expected')"
+            :value="`${formatDateTime(order.preorder.expected_from, locale)} – ${formatDateTime(order.preorder.expected_to, locale)}`"
+          />
+          <van-cell
+            v-else-if="order.delivery_mode === 'manual' && order.paid_at && !order.delivered_at && order.delivery_deadline"
             :title="t('manual.deadline')"
             :value="formatDateTime(order.delivery_deadline, locale)"
           />

@@ -11,6 +11,7 @@ import {
   isValidAmount,
   normalizeAmount,
   usePasteImage,
+  type AdminPreorder,
   type Category,
   type DeliveryMode,
   type ProductStatus,
@@ -141,6 +142,8 @@ const form = reactive({
 })
 const eta = ref<number | null>(null)
 const manualStock = ref<number | null>(1) // manual only; empty = unlimited
+/** U10 pre-order (manual only): pay now, delivered min..max days after payment. */
+const pre = reactive({ on: false, min: 1, max: 3, ends: '' as string, noteEn: '', noteZh: '' })
 const cost = ref('')
 const sourceUrl = ref('')
 const biTab = ref<'en' | 'zh-CN'>('en')
@@ -185,6 +188,12 @@ watch(
     form.usage_zh = p?.usage_i18n?.['zh-CN'] ?? ''
     usageTab.value = 'en'
     manualStock.value = p ? (p.manual_stock ?? null) : 1
+    pre.on = !!p?.preorder
+    pre.min = p?.preorder?.min_days ?? 1
+    pre.max = p?.preorder?.max_days ?? 3
+    pre.ends = p?.preorder?.ends_at ?? ''
+    pre.noteEn = p?.preorder?.note?.en ?? ''
+    pre.noteZh = p?.preorder?.note?.['zh-CN'] ?? ''
     eta.value = p ? (p.delivery_eta_hours ?? null) : d ? (props.defaultEtaHours ?? 24) : null
     cost.value = p?.cost_minor != null ? minorToYuan(p.cost_minor) : d?.cost_minor != null ? minorToYuan(d.cost_minor) : ''
     sourceUrl.value = p?.source_url ?? d?.source_url ?? ''
@@ -253,12 +262,16 @@ function validate(): boolean {
   if (sourceUrl.value.trim() && !/^https?:\/\/\S+$/i.test(sourceUrl.value.trim())) e.source = t('delivery.redeemInvalid')
   if (eta.value !== null && (!Number.isInteger(eta.value) || eta.value < 1 || eta.value > 720)) e.eta = t('v5.payment.etaInvalid')
   if (validateBuyerInput(form.bi)) e.bi = t('products.bi.invalid')
+  if (form.delivery_mode === 'manual' && pre.on) {
+    const ok = Number.isInteger(pre.min) && Number.isInteger(pre.max) && pre.min >= 0 && pre.max >= 1 && pre.max <= 60 && pre.min <= pre.max
+    if (!ok || pre.noteEn.length > 200 || pre.noteZh.length > 200) e.preorder = t('v5.product.preorderInvalid')
+  }
   errors.value = e
   if (e.title) tab.value = 'en'
   return Object.keys(e).length === 0
 }
 
-function payload(): AdminProductInputV3 & { manual_stock: number | null; buyer_input: BuyerInputForm; delivery_eta_hours: number | null; cost_minor: number | null; source_url: string | null } {
+function payload(): AdminProductInputV3 & { preorder: AdminPreorder | null; manual_stock: number | null; buyer_input: BuyerInputForm; delivery_eta_hours: number | null; cost_minor: number | null; source_url: string | null } {
   const usage = { en: form.usage_en.trim(), 'zh-CN': form.usage_zh.trim() }
   const trim = (o: { en: string; 'zh-CN': string }) => ({ en: o.en.trim(), 'zh-CN': o['zh-CN'].trim() })
   return {
@@ -269,6 +282,10 @@ function payload(): AdminProductInputV3 & { manual_stock: number | null; buyer_i
       placeholder_i18n: trim(form.bi.placeholder_i18n),
     },
     manual_stock: form.delivery_mode === 'manual' ? manualStock.value : null,
+    preorder:
+      form.delivery_mode === 'manual' && pre.on
+        ? { min_days: pre.min, max_days: pre.max, ends_at: pre.ends || null, note: { en: pre.noteEn.trim(), 'zh-CN': pre.noteZh.trim() } }
+        : null,
     delivery_eta_hours: form.delivery_mode === 'manual' ? eta.value : null,
     cost_minor: cost.value.trim() ? yuanToMinor(cost.value) : null,
     source_url: sourceUrl.value.trim() || null,
@@ -476,6 +493,24 @@ async function removeImage(url: string) {
         <el-form-item :label="t('v5.product.manualStock')">
           <el-input-number v-model="manualStock" :min="0" :max="1000000" :placeholder="t('v5.product.unlimited')" />
           <div class="hint muted">{{ t('v5.product.manualStockHint') }}</div>
+        </el-form-item>
+        <el-form-item :label="t('v5.product.preorder')" :error="errors.preorder">
+          <el-switch v-model="pre.on" />
+          <div class="hint muted">{{ t('v5.product.preorderHint') }}</div>
+          <template v-if="pre.on">
+            <div class="pre-row">
+              <span class="muted">{{ t('v5.product.preorderDays') }}</span>
+              <el-input-number v-model="pre.min" :min="0" :max="60" size="small" />
+              <span>–</span>
+              <el-input-number v-model="pre.max" :min="1" :max="60" size="small" />
+            </div>
+            <div class="pre-row">
+              <span class="muted">{{ t('v5.product.preorderEnds') }}</span>
+              <el-date-picker v-model="pre.ends" type="datetime" value-format="YYYY-MM-DDTHH:mm:ssZ" :placeholder="t('v5.product.preorderNoEnd')" size="small" />
+            </div>
+            <el-input v-model="pre.noteEn" maxlength="200" show-word-limit :placeholder="t('v5.product.preorderNoteEn')" class="pre-note" />
+            <el-input v-model="pre.noteZh" maxlength="200" show-word-limit :placeholder="t('v5.product.preorderNoteZh')" class="pre-note" />
+          </template>
         </el-form-item>
       </template>
 
@@ -783,5 +818,16 @@ async function removeImage(url: string) {
   border: 1px solid var(--el-color-primary-light-7);
   font-family: ui-monospace, monospace;
   font-size: 12px;
+}
+.pre-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+.pre-note {
+  margin-top: 8px;
 }
 </style>
