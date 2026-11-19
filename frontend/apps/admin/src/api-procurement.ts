@@ -278,6 +278,8 @@ export interface PricingSettings {
   /** above 0: recommended price = cost x (1 + markup), target_margin unused (owner rule 2026-11-18) */
   target_markup: string
   round_step_minor: number
+  /** 1: the markup goes on the official (supplier) price only, never below the full cost; 0: on the full cost */
+  markup_on_price: number
   service_fee_direct: Record<'gpt' | 'grok' | 'claude', string>
   uses_per_card: Record<'standard' | 'pro20x', number>
   fx: Record<string, { per_usd: string; updated_at: string; updated_by: string }>

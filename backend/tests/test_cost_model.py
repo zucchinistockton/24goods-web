@@ -1034,7 +1034,7 @@ def test_markup_on_cost_replaces_the_net_margin_rule():
     """Owner rule 2026-11-18: 12 % on cost (cost 100 -> price 112), whatever the margin target
     and the channel fee say; 0 keeps the net-margin rule."""
     D = Decimal
-    s = cm.normalize({"target_markup": "0.12", "target_margin": "0.30"})
+    s = cm.normalize({"target_markup": "0.12", "target_margin": "0.30", "markup_on_price": 0})
     src = cm.Source("direct", D("20"), "gpt")
     cost = cm.fixed_cost(s, src)
     assert cm.recommend_usd(s, src, D("0.05"), D("0.30")) == cost * D("1.12")
@@ -1042,3 +1042,17 @@ def test_markup_on_cost_replaces_the_net_margin_rule():
     assert cm.recommend_usd(off, src, D("0"), D("0.30")) == cost / D("0.70")
     with pytest.raises(cm.CostSettingsError):
         cm.validate_patch({"target_markup": "1.5"})
+
+
+def test_markup_goes_on_the_official_price_by_default_never_below_cost():
+    """Owner rule 2026-11-19: 12 % on the official (supplier) price, not on the fees; a price
+    below the full cost (fees included) is never recommended."""
+    D = Decimal
+    s = cm.normalize({"target_markup": "0.12"})
+    assert s["markup_on_price"] == 1
+    src = cm.Source("direct", D("15.4246"), "gpt")  # Plus PH net web price
+    assert cm.recommend_usd(s, src, D("0.05"), D("0.30")) == D("15.4246") * D("1.12")
+    cheap = cm.Source("direct", D("1"), "gpt")  # USD 0.30 fee > 12 % of USD 1
+    assert cm.recommend_usd(s, cheap, D("0"), D("0.30")) == cm.fixed_cost(s, cheap)
+    with pytest.raises(cm.CostSettingsError):
+        cm.validate_patch({"markup_on_price": 2})

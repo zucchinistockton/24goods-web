@@ -1106,6 +1106,7 @@ const zhCN: AdminMessages = {
         target_margin: '默认目标净利率（小数）',
         target_markup: '成本加价（小数，0.12 = 成本 × 1.12；0 = 使用净利率）',
         round_step_minor: '建议价向上取整到（最小单位）',
+        markup_on_price: '加价基数（1 = 仅按官方价加价，且不低于含费用的总成本；0 = 按含费用的总成本）',
         service_fee_direct: '代充服务费：{product}（美元）',
         uses_per_card: '每卡可用次数：{tier}',
       },
