@@ -255,13 +255,44 @@ async def _checked(
     return row
 
 
+class StepUpInvalid(ApiError):
+    """A wrong code for a sensitive action. 422, NOT 401: the session is fine, and a 401 makes the
+    console sign the user out (each new sign-in then spends the next code: a loop, 2026-11-19)."""
+
+    status, code = 422, "two_factor_invalid"
+
+
+class StepUpUsed(ApiError):
+    """The code was already accepted (sign-in, enabling 2FA, an earlier action): wait for the
+    next one. Codes work once, also inside the +-30 s window."""
+
+    status, code = 422, "two_factor_used"
+
+
 async def step_up(
     db: AsyncSession, redis: Redis, settings: Settings, user: User, code: str, ip: str | None
 ) -> None:
     """A fresh authenticator code for one sensitive action (ADR-048: settings that move money).
     TOTP only (a recovery code is for getting back in, not for spending); each code works once.
-    Raises :class:`TwoFactorNotEnabled` / :class:`TwoFactorInvalid`. Caller commits."""
-    await _checked(db, redis, settings, user, code, confirmed=True, recovery=False, ip=ip)
+    Raises :class:`TwoFactorNotEnabled` / :class:`StepUpUsed` / :class:`StepUpInvalid`."""
+    uid, tid = user.id, user.tenant_id  # (the failure path commits: ``user`` is expired after)
+    try:
+        await _checked(db, redis, settings, user, code, confirmed=True, recovery=False, ip=ip)
+    except TwoFactorInvalid:
+        row = await db.scalar(
+            select(UserTotp).where(UserTotp.user_id == uid, UserTotp.tenant_id == tid)
+        )
+        secret = (
+            totp.open_secret(settings.totp_secret(), tid, uid, row.secret_sealed)
+            if row is not None
+            else None
+        )
+        if secret and row is not None and row.last_step is not None:
+            if totp.verify(secret, code, last_step=None) is not None and (
+                totp.verify(secret, code, last_step=row.last_step) is None
+            ):
+                raise StepUpUsed("This code was already used: wait for the next one") from None
+        raise StepUpInvalid("The code is not valid") from None
 
 
 async def enable(
