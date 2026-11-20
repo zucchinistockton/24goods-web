@@ -26,6 +26,17 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
   as designed. **Owner next:** turn on 2FA for the admin account, then Procurement -> Cards -> Card funding -> automatic
   top-ups ON (TOTP).
 
+- **2026-11-20: opsdev SMS follow-up live** (mywebtools #10–#13, deployed by 10:18 UTC; owner go-ahead).
+  #10 relay alerts: "xray/mihomo is unknown" was one empty `systemctl is-active` answer (services were up); now
+  3 readings for a real down state, 6 for unknown, `[relay ok]` on recovery. #11 quality: HeroSMS 24 h delivery
+  rates per country / operator (shrunk by volume), own code and registration rates, score 0–10, sort quality /
+  value (price ÷ own registration rate) / price, best pick with automatic buy and fallback, every attempt recorded
+  (registration result marked by the owner), "My success rates". #12 usability: searchable service / country
+  pickers (EN / zh, ISO, +dial, favourites), numbers shown grouped and copied as digits, sheets, timers, code
+  alerts; one 2FA code opens a 30-minute window for SMS / email purchases and settings. #13 email codes (HeroSMS
+  email activations, 0.5 USD per email, shared daily cap). Opsdev DB copy before #11:
+  `/root/mwtops-ops-predeploy-20261120.db`. Not checked in a browser (needs the owner's sign-in).
+
 - **2026-11-20: opsdev SMS tab live** (mywebtools #9, `4d4cefa`, deployed 05:15 UTC; owner request: personal SMS
   reception, HeroSMS only). One-time numbers (SMS / call / voice) and rentals (1–180 days) from live offers; resend /
   finish / cancel with refund / swap / extend / reuse; history, stats; Telegram push of new codes. Fresh TOTP per money
