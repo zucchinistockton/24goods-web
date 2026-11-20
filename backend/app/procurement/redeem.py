@@ -66,6 +66,8 @@ STEPS = ("preview", "preflight", "redeem", "result")
 DEVICE_RE = re.compile(r"^[A-Za-z0-9._-]{8,64}$")
 CODE_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 TOKEN_RE = re.compile(r"^[A-Za-z0-9._~+/=:-]{8,512}$")
+# the vendor's preflight token is a compact JWE of ~9.8 KB (measured 2026-11-20 on production)
+PREFLIGHT_TOKEN_RE = re.compile(r"^[A-Za-z0-9._~+/=:-]{8,32768}$")
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,80}$")
 SESSION_MAX = 65536
 _CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
@@ -204,7 +206,7 @@ def shape_preview(data: Any) -> dict[str, Any]:
 def shape_preflight(data: Any) -> dict[str, Any]:
     d = _dict(data)
     token = d.get("preflight_token")
-    if token is not None and not (isinstance(token, str) and TOKEN_RE.fullmatch(token)):
+    if token is not None and not (isinstance(token, str) and PREFLIGHT_TOKEN_RE.fullmatch(token)):
         raise RedeemError("unavailable")
     country, currency = d.get("payment_country"), d.get("payment_currency")
     recovery = d.get("subscription_recovery_required")
@@ -319,7 +321,7 @@ def parse_body(step: str, body: dict[str, Any]) -> dict[str, Any]:
     elif step == "redeem":
         out["client_request_id"] = _check_str(body.get("client_request_id"), REQUEST_ID_RE)
         if body.get("preflight_token") is not None:
-            out["preflight_token"] = _check_str(body["preflight_token"], TOKEN_RE)
+            out["preflight_token"] = _check_str(body["preflight_token"], PREFLIGHT_TOKEN_RE)
         if body.get("credential") is not None:
             out["credential"] = _credential(body["credential"])
         if "preflight_token" not in out and "credential" not in out:
