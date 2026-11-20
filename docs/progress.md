@@ -26,6 +26,17 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
   as designed. **Owner next:** turn on 2FA for the admin account, then Procurement -> Cards -> Card funding -> automatic
   top-ups ON (TOTP).
 
+- **2026-11-20: opsdev SMS tab live** (mywebtools #9, `4d4cefa`, deployed 05:15 UTC; owner request: personal SMS
+  reception, HeroSMS only). One-time numbers (SMS / call / voice) and rentals (1–180 days) from live offers; resend /
+  finish / cancel with refund / swap / extend / reuse; history, stats; Telegram push of new codes. Fresh TOTP per money
+  action; limits one-time 2 USD, rental 10 USD, day 10 USD (UTC), owner-approved, editable in Settings → `sms`.
+  Webhook `https://opsdev.kesiv.com/hook/herosms/<token>` (owner entered it in HeroSMS; token in
+  `/root/.secrets/herosms.env`): unsigned upstream, so path token + source IPs `84.32.223.53`, `185.138.88.87` via
+  `CF-Connecting-IP`; the body is a hint, codes are fetched from the API; poller 8 s while a number is open, else 5 min.
+  Key + token added to `/etc/mwtops/secrets.env` (backup `.bak-20261120`); old code `/root/mwtops-src-rollback-20261120`.
+  Checked: Cloudflare passes the POST to the origin (403 from a non-HeroSMS IP, 404 on a wrong token), first sync OK,
+  balance USD 3.0076. **Owner next:** a real webhook test from HeroSMS and the first purchase (needs the console TOTP).
+
 - **2026-11-19 CHECKPOINT (owner: Pro plan 5-hour window; resume here).** Branch `feat/card-funding`, draft PR (ADR-048).
   **Done and tested locally** (138 tests: card modes, direct, direct audit, funding API, unit): own card pick from
   `GET /cards`, card need in USD (fail closed), automatic top-ups (off by default, 2FA-gated settings
