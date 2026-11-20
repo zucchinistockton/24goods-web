@@ -373,6 +373,12 @@ class MockZovo:
             self.forced[path].append(quirk)
 
 
+def _jwe_like_token() -> str:
+    """Shaped like the real vendor token (2026-11-20): a compact JWE of ~9.8 KB."""
+    parts = (secrets.token_urlsafe(n) for n in (60, 192, 12, 7200, 12))
+    return ".".join(parts)
+
+
 def _env(code: int, data: Any = None, msg: str = "ok") -> dict[str, Any]:
     return {"code": code, "msg": msg, "data": data}
 
@@ -620,7 +626,7 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
             )
         mock.preflights += 1
         account = _session_account(cred["session"]) if mock.catalog_full else {}
-        token = "pf-" + secrets.token_hex(12)
+        token = _jwe_like_token()
         expires = time.monotonic() + DIRECT_TOKEN_TTL_S
         if mock.direct_expire_next > 0:
             mock.direct_expire_next -= 1
@@ -1189,7 +1195,7 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
             if not _good_credential(body.get("credential")):
                 return _rerr(400, "GPT_SESSION_INVALID", "session rejected")
             sess["credential_ok"] = True
-            ptoken = None if tokenless else "pf_" + secrets.token_hex(16)
+            ptoken = None if tokenless else _jwe_like_token()
             sess["preflight"] = ptoken
             return JSONResponse(
                 _env(

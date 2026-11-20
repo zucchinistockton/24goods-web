@@ -209,12 +209,19 @@ class Preflight:
     promotions: tuple[str, ...] = ()
 
 
+# the vendor's preflight token is a compact JWE (five base64url parts) of ~9.8 KB, measured
+# 2026-11-20 on production; it was a short opaque string before. Kept in memory only.
+PREFLIGHT_TOKEN_MAX = 32768
+
+
 def parse_preflight(data: Any, parse_time: Any) -> Preflight | None:
     """``POST /gpt-direct/preflight`` answer -> what the adapter needs. ``None`` = unreadable."""
     if not isinstance(data, Mapping):
         return None
     token = data.get("preflight_token")
-    if token is not None and (not isinstance(token, str) or not (8 <= len(token) <= 512)):
+    if token is not None and (
+        not isinstance(token, str) or not (8 <= len(token) <= PREFLIGHT_TOKEN_MAX)
+    ):
         return None
     plan = data.get("currentPlan")
     quotes: dict[str, tuple[int, str, int]] = {}

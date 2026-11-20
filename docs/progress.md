@@ -6,6 +6,13 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 **Hand-off 2026-11-18 (after PR #49; the owner's order #29 → #30 → #31 is done on the demo). START HERE.**
 
+- **2026-11-20 fix: every direct order refused its account check (`fix/preflight-token-length`, NOT deployed yet).**
+  Owner's Go PH orders at 18:45 and 18:48 UTC: `POST /orders` 503 `preflight_unavailable`; audit
+  `order.direct_preflight_refused` `vendor_reason=malformed_preflight`. Cause: ZovoCard's preflight token is now a
+  compact JWE of 9,832 characters (measured on production, read-only preflight); `parse_preflight` capped it at 512,
+  so every preflight was "unreadable" and every direct product failed closed. Same cap in `redeem.py` (separate
+  `PREFLIGHT_TOKEN_RE` now; the redemption token keeps 512). The mock now issues a JWE-shaped ~9.8 KB token.
+
 - **2026-11-19 21:46 UTC PRODUCTION DEPLOY of the 2FA step-up fix (#87, owner: "deploy the 2FA fix to production").**
   c4 runs `53588c6` (image revision verified). Cause (audit 21:12-21:15 UTC): the card-funding save answered a wrong / reused
   code with 401, the console signed out on 401, each new sign-in spent the next code and the owner retyped it: a loop. Now
