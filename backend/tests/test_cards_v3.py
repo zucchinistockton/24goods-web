@@ -49,7 +49,6 @@ async def test_import_creates_batch_with_note_and_expiry(env):
     (b,) = r.json()["items"]
     assert b["id"] == res["batch_id"] and b["note"] == "Nov batch" and b["count"] == 3
     assert b["available"] == 3 and b["sold"] == 0 and b["void"] == 0
-    assert b["expires_at"].startswith(exp[:7])  # valid through the whole day
     d = datetime.fromisoformat(b["expires_at"].replace("Z", "+00:00"))
     assert d.hour == 0 and d.date() == (datetime.fromisoformat(exp).date() + timedelta(days=1))
     # nothing imported -> no batch
