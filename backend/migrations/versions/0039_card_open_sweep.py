@@ -25,7 +25,7 @@ UP = [
 ]
 
 DOWN = [
-    f"DELETE FROM {T} WHERE kind IN ('open', 'sweep')",
+    "DELETE FROM procurement_fundings WHERE kind IN ('open', 'sweep')",
     f"ALTER TABLE {T} DROP CONSTRAINT IF EXISTS {T}_kind_check",
     f"ALTER TABLE {T} ADD CONSTRAINT {T}_kind_check CHECK (kind IN ('recharge'))",
 ]
