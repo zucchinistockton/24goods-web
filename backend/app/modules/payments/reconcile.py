@@ -7,6 +7,7 @@ import logging
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import and_, inspect, or_, select
@@ -299,6 +300,7 @@ async def run(res: Resources) -> int:
             await alert_dead_jobs(res, db, tid, now)
             await alert_procurement_jobs(res, db, tid, now)
             await alert_supplier_breakers(res, db, tid)
+            await alert_wallet_low(res, db, tid, now)
             await purge_overdue_sessions(res, db, tid)
             await alert_declining_offers(res, db, tid, now)
             refs = list(
@@ -709,6 +711,66 @@ async def alert_supplier_breakers(res: Resources, db: AsyncSession, tid: uuid.UU
             once=(f"supplier_breaker:{sid}:{int(at.timestamp())}", 30 * 86400),
         )
     return len(rows)
+
+
+WALLET_ALERT_EVERY_H = 6
+WALLET_FRESH = timedelta(hours=2)
+
+
+async def alert_wallet_low(res: Resources, db: AsyncSession, tid: uuid.UUID, now: datetime) -> int:
+    """ADR-049 (owner 2026-11-21): a ZovoCard production wallet below ``wallet_alert_usd`` (tenant
+    funding settings, USD 60 by default) raises one staff alert per 6 hours while it stays low.
+    Reads the balance procurement last recorded (fresh within 2 h); ``0`` switches it off."""
+    from app.core import funding as fs
+    from app.core import notify_tg
+    from app.models import SupplierAccount, Tenant
+
+    raw = await db.scalar(select(Tenant.funding_settings).where(Tenant.id == tid))
+    limit = Decimal(str(fs.normalize(raw)["wallet_alert_usd"]))
+    rows = (
+        []
+        if limit <= 0
+        else list(
+            (
+                await db.execute(
+                    select(SupplierAccount.id, SupplierAccount.code, SupplierAccount.last_balance)
+                    .where(
+                        SupplierAccount.tenant_id == tid,
+                        SupplierAccount.adapter == "zovocard",
+                        SupplierAccount.env == "production",
+                        SupplierAccount.enabled.is_(True),
+                        SupplierAccount.last_balance.is_not(None),
+                        SupplierAccount.last_balance_at >= now - WALLET_FRESH,
+                    )
+                    .limit(5)
+                )
+            ).all()
+        )
+    )
+    await db.rollback()
+    n = 0
+    bucket = f"{now:%Y%m%d}{now.hour // WALLET_ALERT_EVERY_H}"
+    for sid, code, bal in rows:
+        if bal is None or Decimal(bal) >= limit:
+            continue
+        n += 1
+        notify_tg.notify_bg(
+            res,
+            tid,
+            "payment_review",
+            [
+                notify_tg.T(
+                    "proc.wallet_low",
+                    code=code,
+                    balance=f"{Decimal(bal):.2f}",
+                    limit=f"{limit:.0f}",
+                ),
+                notify_tg.T("proc.wallet_low_hint"),
+            ],
+            link=notify_tg.admin_link(res, "procurement"),
+            once=(f"wallet_low:{sid}:{bucket}", WALLET_ALERT_EVERY_H * 3600),
+        )
+    return n
 
 
 STALE_UNKNOWN = timedelta(hours=24)

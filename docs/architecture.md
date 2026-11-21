@@ -541,3 +541,40 @@ cap and stays on the job: only THAT top-up (same card, same key) may go again, a
 (payment audit H1); only the vendor's documented refusals mark a top-up failed; a failed wallet / catalogue read is a retry,
 never "no money"; the caps are per tenant; a direct hand fulfil needs a charge check run by the same staff member in the
 last 30 minutes (server-side marker); issuing NEW cards per order stays reserved (§21.4) until the owner asks.
+
+### ADR-049: Open new funding cards on demand, sweep used-up cards, alert on a low wallet (owner 2026-11-21)
+
+**Context.** ZovoCard allows each card 3 Go/Plus ("light") uses. Once every card had used its 3, plans showed sold
+out although the wallet held money ("Out of Stock" on 2026-11-21). Money also stayed stuck on used-up cards (card
+·8575: USD 12.62). The owner approved: open cards on demand, keep the card's balance at what the order needs, move
+leftovers back, pick card ranges by the BIN list, switches on by default, a Telegram alert below USD 60 ("simple and
+efficient; security is not a priority for now").
+
+**Decision.**
+- `tenants.funding_settings` gains `auto_open_cards` and `sweep_leftover` (default **on**, but they act only
+  while the master switch `auto_recharge` is on, which stays off by default for a new tenant and is on in production),
+  and `wallet_alert_usd` (default 60, 0 = off). Saved through the same 2FA-gated console call.
+- **Open on demand.** When `auto_existing` finds no card with a use left and the wallet covers the opening fee + the
+  first load: the storefront check only reports the plan in stock (nothing is spent while buyers browse); the FRESH
+  check of a paid job (`availability_fresh`, engine pre-check) calls `POST /cards/open` and offers the new card as the
+  only candidate. Product: the owner's BIN priority, then the smallest total; never one whose `restricted_merchants`
+  blocks the product's checkout. First load = the order's card need (price + vendor buffer + FX margin) in whole
+  dollars, at least the product minimum. Cardholder name = the newest card's. Idempotency key = hash(card ids, product,
+  UTC hour): concurrent checks and retries open one card. The engine records it in `procurement_fundings`
+  (`kind='open'`, fee + load) against the daily cap and audits `procurement.card_opened`.
+- **Sweep.** After a direct order's submit / query, cards whose uses for that tier are spent (usage `remaining == 0`,
+  not busy / cooling / reserved, ACTIVE) move `balance - refund_keep_min` (vendor value; USD 1 when not stated) back
+  to the wallet with `POST /cards/refund`, if at least USD 1. Never a card bought for a buyer (id and masked-number
+  clash checks, as for candidates) and never a card with a job in flight. Recorded as `kind='sweep'` (never counted
+  as spending), audited `procurement.card_swept`. Pro 20x uses on those cards stay; a later Pro order tops up again.
+- **Wallet alert.** The API reconciler compares the ZovoCard production balance procurement last recorded (fresh
+  within 2 h) with `wallet_alert_usd` and sends one Telegram alert per 6-hour window while it stays low.
+- Vendor setting changed by hand on the owner's word (2026-11-21): `count_failures=false` for gpt / claude / grok
+  card rules, so a blocked checkout (not charged) no longer spends one of a card's 3 uses.
+- Migration `0039_card_open_sweep` widens the `kind` check to `recharge|open|sweep`.
+
+**Consequences.** Plans stay in stock while the wallet can open a card (about USD 19.50 for Plus PH: fee 1.50 +
+first load 18). Each card costs USD 1.50 per 3 orders. Money no longer piles up on used-up cards. A failed opening is a
+retry of the pre-check (`card_open_failed`); a successful opening whose ledger write failed is still visible in the
+vendor's card list. The wallet itself is still topped up by hand (USDT to the vendor's EVM deposit address); an
+automatic refill from the OKX Agentic Wallet is a separate, later step.

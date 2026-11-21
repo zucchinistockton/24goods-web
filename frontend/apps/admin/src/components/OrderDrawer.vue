@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRouter } from 'vue-router'
 import type { UploadRequestOptions } from 'element-plus'
 import {
   compareAmount,
@@ -335,6 +336,10 @@ const holdReasonText = computed(() => {
 })
 const canReleaseHold = computed(() => auth.isAdmin && !!hold.value && order.value?.kind !== 'reseller_signup')
 const holdDlg = reactive({ open: false, outcome: 'accept' as 'accept' | 'close', reason: '', busy: false })
+const router = useRouter()
+function openSupplierJob(id: string) {
+  void router.push({ name: 'procurement', query: { job: id } })
+}
 function openHold(outcome: 'accept' | 'close') {
   holdDlg.outcome = outcome
   holdDlg.reason = ''
@@ -417,9 +422,10 @@ defineExpose({ reload: () => props.orderId && load(props.orderId) })
           show-icon
           :closable="false"
           :title="t('orders.hold.title', { reason: holdReasonText })"
-          :description="t(hold.has_payment ? 'orders.hold.withPayment' : 'orders.hold.noPayment')"
+          :description="t(hold.job_id ? 'orders.hold.viaJob' : hold.has_payment ? 'orders.hold.withPayment' : 'orders.hold.noPayment')"
         >
-          <template v-if="canReleaseHold">
+          <el-button v-if="hold.job_id" size="small" type="primary" plain @click="openSupplierJob(hold.job_id)">{{ t('orders.hold.openJob') }}</el-button>
+          <template v-else-if="canReleaseHold">
             <el-button v-if="hold.has_payment" size="small" type="warning" plain @click="openHold('accept')">{{ t('orders.hold.accept') }}</el-button>
             <el-button v-else size="small" type="danger" plain @click="openHold('close')">{{ t('orders.hold.close') }}</el-button>
           </template>

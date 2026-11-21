@@ -611,6 +611,12 @@ export function createRedeemApi(c: ApiClient) {
 // ------------------------------------------------------------------ card funding (ADR-048)
 export interface FundingSettings {
   auto_recharge: boolean
+  /** ADR-049: open a new card when no card has a use left (only while auto_recharge is on) */
+  auto_open_cards: boolean
+  /** ADR-049: move a used-up card's money back to the wallet (only while auto_recharge is on) */
+  sweep_leftover: boolean
+  /** ADR-049: Telegram alert when the ZovoCard wallet is below this (USD; 0 = off) */
+  wallet_alert_usd: string
   daily_cap_usd: string
   per_topup_max_usd: string
   bin_priority: string[]
@@ -619,6 +625,7 @@ export interface FundingTopup {
   id: string
   created_at: string | null
   state: 'planned' | 'sent' | 'done' | 'failed' | 'void'
+  kind?: 'recharge' | 'open' | 'sweep'
   card_id: string
   amount: string
   currency: string

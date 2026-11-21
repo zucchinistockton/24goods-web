@@ -14,6 +14,10 @@ pays, and how much must move onto it first":
 * :func:`plan_cards` - the cards that can pay, best first, each with the top-up it needs
   (``0`` = pays as is). Order: no money moves > the card that paid last > the owner's BIN
   priority > the lowest minimum top-up > the largest balance.
+* :func:`pick_open_product` (ADR-049) - when no card can pay: which card product to open (the
+  owner's BIN priority, then the smallest first load) and its first load (the order's need in
+  whole dollars, at least the product minimum), if the wallet and the daily cap allow it.
+* :func:`sweep_amount` (ADR-049) - what a card whose uses are spent can move back to the wallet.
 
 Nothing here performs I/O.
 """
@@ -23,7 +27,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from decimal import ROUND_CEILING, Decimal, InvalidOperation
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal, InvalidOperation
 from typing import Any
 
 from app.suppliers.base import FundingPolicy
@@ -45,6 +49,10 @@ _BLOCKING = {
     "grok": frozenset({"GROK", "XAI", "X.AI"}),
 }
 _CODE_RE = re.compile(r"[^A-Za-z0-9_.-]")
+_TEXT_RE = re.compile(r"[^A-Za-z0-9 ._*:/#&-]")
+_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z .'-]{0,39}$")
+DEFAULT_HOLDER = ("Digital", "Goods")
+SWEEP_MIN = Decimal(1)  # smaller leftovers stay on the card
 
 
 @dataclass(frozen=True)
@@ -58,6 +66,9 @@ class FundCard:
     bin6: str
     restricted: tuple[str, ...] = ()
     mask: str | None = field(default=None, repr=False)  # first six + last four; never stored
+    refund_keep: Decimal = Decimal(1)  # what must stay on the card after a refund (vendor)
+    holder: tuple[str, str] | None = field(default=None, repr=False)  # first, last name
+    created: str = ""  # vendor ``created_at`` (ISO text; sorts by time)
 
 
 @dataclass(frozen=True)
@@ -135,6 +146,16 @@ def parse_fund_cards(data: Any) -> list[FundCard]:
         digits = re.sub(r"\D", "", str(item.get("card_number") or ""))
         has_pan = len(digits) >= 12
         minr = _dec(item.get("min_recharge"))
+        keep = _dec(item.get("refund_keep_min"))
+        first, last = item.get("first_name"), item.get("last_name")
+        holder = (
+            (first, last)
+            if isinstance(first, str)
+            and isinstance(last, str)
+            and _NAME_RE.fullmatch(first)
+            and _NAME_RE.fullmatch(last)
+            else None
+        )
         restricted = item.get("restricted_merchants")
         out.append(
             FundCard(
@@ -149,6 +170,9 @@ def parse_fund_cards(data: Any) -> list[FundCard]:
                     str(r)[:40] for r in (restricted if isinstance(restricted, list) else [])
                 ),
                 mask=mask_pan(item.get("card_number")) if has_pan else None,
+                refund_keep=keep if keep is not None and keep >= 0 else Decimal(1),
+                holder=holder,
+                created=_TEXT_RE.sub("", str(item.get("created_at") or ""))[:32],
             )
         )
     return out
@@ -206,13 +230,82 @@ def plan_cards(
     return sorted(plans, key=key)
 
 
+@dataclass(frozen=True)
+class OpenPlan:
+    product_code: str
+    init: Decimal  # first load (USD), lands on the card
+    fee: Decimal  # opening fee (USD), from the wallet
+
+    @property
+    def total(self) -> Decimal:
+        return self.init + self.fee
+
+
+def pick_open_product(
+    products: Iterable[Any],
+    need: Decimal,
+    product: str,
+    policy: FundingPolicy | None,
+    wallet: Decimal | None,
+) -> OpenPlan | None:
+    """ADR-049: the card product to open for an order that no card can pay, or ``None``. Only an
+    enabled product with a known opening fee and minimum that does not block ``product``'s
+    checkout; first load = ``need`` in whole dollars up, at least the product's minimum (and at
+    most its maximum). It must fit the policy's allowance and the wallet (with the product's
+    top-up fee rate, unknown = :data:`UNKNOWN_FEE_RATE`). Order: the owner's BIN priority, then
+    the smallest total."""
+    pol = policy or FundingPolicy()
+    if not pol.auto_open or wallet is None:
+        return None
+    best: tuple[tuple[Any, ...], OpenPlan] | None = None
+    for p in products:
+        code = getattr(p, "product_code", None)
+        fee, low = getattr(p, "open_fee", None), getattr(p, "min_amount", None)
+        if getattr(p, "enabled", None) is not True or not isinstance(code, str) or not code:
+            continue
+        if fee is None or low is None or fee < 0 or low <= 0:
+            continue
+        if blocked_for(product, getattr(p, "restricted", ()) or ()):
+            continue
+        init = max(need.to_integral_value(rounding=ROUND_CEILING), low)
+        high = getattr(p, "max_amount", None)
+        if high is not None and init > high:
+            continue
+        rate = getattr(p, "recharge_fee", None)
+        rate = rate if rate is not None and rate >= 0 else UNKNOWN_FEE_RATE
+        if init + fee > pol.allowance or init * (1 + rate) + fee > wallet:
+            continue
+        bin6 = re.sub(r"\D", "", str(getattr(p, "bin", "") or ""))[:6]
+        plan = OpenPlan(code, init, fee)
+        key = (_bin_rank(bin6, pol.bin_priority), plan.total, code)
+        if best is None or key < best[0]:
+            best = (key, plan)
+    return best[1] if best else None
+
+
+def holder_for(cards: Iterable[FundCard]) -> tuple[str, str]:
+    """The cardholder name of our newest card (the owner's choice), else a neutral default."""
+    named = [c for c in cards if c.holder]
+    if not named:
+        return DEFAULT_HOLDER
+    newest = max(named, key=lambda c: (c.created, c.id))
+    assert newest.holder is not None
+    return newest.holder
+
+
+def sweep_amount(card: FundCard) -> Decimal | None:
+    """What a card can send back to the wallet: its balance less the vendor's keep, in cents
+    down; ``None`` below :data:`SWEEP_MIN`."""
+    amt = (card.available - card.refund_keep).quantize(CENT, rounding=ROUND_FLOOR)
+    return amt if card.status == "ACTIVE" and amt >= SWEEP_MIN else None
+
+
 def shortfall_reason(cards: Iterable[FundCard], product: str) -> str:
     """Why no card qualifies, for staff (never shown to buyers)."""
     usable = [c for c in cards if c.status == "ACTIVE" and not blocked_for(product, c.restricted)]
     return "funds_insufficient" if usable else "no_funding_card"
 
 
-_TEXT_RE = re.compile(r"[^A-Za-z0-9 ._*:/#&-]")
 CHARGE_MERCHANTS = ("OPENAI", "CHATGPT", "CLAUDE", "ANTHROPIC", "GROK", "X.AI")
 
 

@@ -2,7 +2,11 @@
 
 Shared by the console (validated write behind a fresh 2FA code) and the procurement engine
 (read). Unknown keys are dropped; a stored value that no longer validates falls back to its
-default (automatic top-ups OFF), so a bad row can never switch spending on.
+default, so a bad row can never switch spending on: ``auto_recharge`` is the master switch and
+stays OFF by default. ADR-049 (owner 2026-11-21): ``auto_open_cards`` (open a new card when no
+card has a use left) and ``sweep_leftover`` (move a used-up card's money back to the wallet) are
+ON by default but only act while ``auto_recharge`` is on; ``wallet_alert_usd`` is the vendor
+wallet level below which staff get a Telegram alert.
 """
 
 from __future__ import annotations
@@ -20,14 +24,16 @@ _BIN_RE = re.compile(r"^\d{6,9}$")
 LIMITS: dict[str, tuple[Decimal, Decimal, Decimal]] = {
     "daily_cap_usd": (Decimal(300), Decimal(0), Decimal(10000)),
     "per_topup_max_usd": (Decimal(200), Decimal(0), Decimal(5000)),
+    "wallet_alert_usd": (Decimal(60), Decimal(0), Decimal(100000)),
 }
+# switch -> default (ADR-049: the two card switches act only under ``auto_recharge``)
+BOOLS: dict[str, bool] = {"auto_recharge": False, "auto_open_cards": True, "sweep_leftover": True}
 
 
 def defaults() -> dict[str, Any]:
     return {
-        "auto_recharge": False,
-        "daily_cap_usd": str(LIMITS["daily_cap_usd"][0]),
-        "per_topup_max_usd": str(LIMITS["per_topup_max_usd"][0]),
+        **BOOLS,
+        **{key: str(lim[0]) for key, lim in LIMITS.items()},
         "bin_priority": list(DEFAULT_BINS),
     }
 
@@ -62,7 +68,7 @@ def validate(patch: Mapping[str, Any], current: Mapping[str, Any] | None = None)
     """``current`` (normalised) with ``patch`` applied; raises ``ValueError(<field>)``."""
     out = dict(normalize(current))
     for key, v in patch.items():
-        if key == "auto_recharge":
+        if key in BOOLS:
             if not isinstance(v, bool):
                 raise ValueError(key)
             out[key] = v
@@ -80,8 +86,9 @@ def normalize(raw: Mapping[str, Any] | None) -> dict[str, Any]:
     out = defaults()
     if not isinstance(raw, Mapping):
         return out
-    if isinstance(raw.get("auto_recharge"), bool):
-        out["auto_recharge"] = raw["auto_recharge"]
+    for key in BOOLS:
+        if isinstance(raw.get(key), bool):
+            out[key] = raw[key]
     for key in LIMITS:
         try:
             out[key] = str(_money(raw.get(key), key))

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
- * Card funding (ADR-048): automatic top-ups of direct orders' funding cards from the supplier
- * wallet. Staff read; an administrator changes the settings with a fresh authenticator code.
+ * Card funding (ADR-048, ADR-049): automatic top-ups of direct orders' funding cards from the
+ * supplier wallet, automatic new cards, leftover sweeps and the wallet alert. Staff read; an administrator changes the settings with a fresh authenticator code.
  * Card ids and amounts only: no card number exists here.
  */
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
@@ -20,7 +20,15 @@ const { t, te } = useI18n()
 const view = ref<FundingView | null>(null)
 const loading = ref(false)
 const loadError = ref(false)
-const form = reactive({ auto_recharge: false, daily_cap_usd: '', per_topup_max_usd: '', bins: '' })
+const form = reactive({
+  auto_recharge: false,
+  auto_open_cards: true,
+  sweep_leftover: true,
+  wallet_alert_usd: '',
+  daily_cap_usd: '',
+  per_topup_max_usd: '',
+  bins: '',
+})
 const dlg = reactive({ open: false, code: '', error: '', saving: false })
 const errors = reactive<Record<string, string>>({})
 const codeInput = ref<{ focus: () => void } | null>(null)
@@ -29,6 +37,9 @@ function fill(v: FundingView) {
   view.value = v
   Object.assign(form, {
     auto_recharge: v.settings.auto_recharge,
+    auto_open_cards: v.settings.auto_open_cards,
+    sweep_leftover: v.settings.sweep_leftover,
+    wallet_alert_usd: v.settings.wallet_alert_usd,
     daily_cap_usd: v.settings.daily_cap_usd,
     per_topup_max_usd: v.settings.per_topup_max_usd,
     bins: v.settings.bin_priority.join(' '),
@@ -55,6 +66,7 @@ function validate(): boolean {
   if (!USD_RE.test(form.per_topup_max_usd.trim()) || Number(form.per_topup_max_usd) > 5000) errors.per_topup_max_usd = t('funding.err.perTopup')
   if (!errors.daily_cap_usd && !errors.per_topup_max_usd && Number(form.per_topup_max_usd) > Number(form.daily_cap_usd))
     errors.per_topup_max_usd = t('funding.err.perOverDaily')
+  if (!USD_RE.test(form.wallet_alert_usd.trim()) || Number(form.wallet_alert_usd) > 100000) errors.wallet_alert_usd = t('funding.err.alert')
   if (bins.value.length > 20 || bins.value.some((b) => !BIN_RE.test(b))) errors.bins = t('funding.err.bins')
   return !Object.keys(errors).length
 }
@@ -63,6 +75,9 @@ const changed = computed(() => {
   if (!s) return false
   return (
     s.auto_recharge !== form.auto_recharge ||
+    s.auto_open_cards !== form.auto_open_cards ||
+    s.sweep_leftover !== form.sweep_leftover ||
+    Number(s.wallet_alert_usd) !== Number(form.wallet_alert_usd) ||
     Number(s.daily_cap_usd) !== Number(form.daily_cap_usd) ||
     Number(s.per_topup_max_usd) !== Number(form.per_topup_max_usd) ||
     s.bin_priority.join(' ') !== bins.value.join(' ')
@@ -81,6 +96,9 @@ async function save() {
     fill(
       await api.save({
         auto_recharge: form.auto_recharge,
+        auto_open_cards: form.auto_open_cards,
+        sweep_leftover: form.sweep_leftover,
+        wallet_alert_usd: form.wallet_alert_usd.trim(),
         daily_cap_usd: form.daily_cap_usd.trim(),
         per_topup_max_usd: form.per_topup_max_usd.trim(),
         bin_priority: bins.value,
@@ -121,6 +139,18 @@ const when = (iso: string | null) => (iso ? iso.replace('T', ' ').slice(0, 16) +
           <el-switch v-model="form.auto_recharge" :aria-label="t('funding.auto')" />
           <div class="muted small">{{ t('funding.autoHint') }}</div>
         </el-form-item>
+        <el-form-item :label="t('funding.open')">
+          <el-switch v-model="form.auto_open_cards" :disabled="!form.auto_recharge" :aria-label="t('funding.open')" />
+          <div class="muted small">{{ t('funding.openHint') }}</div>
+        </el-form-item>
+        <el-form-item :label="t('funding.sweep')">
+          <el-switch v-model="form.sweep_leftover" :disabled="!form.auto_recharge" :aria-label="t('funding.sweep')" />
+          <div class="muted small">{{ t('funding.sweepHint') }}</div>
+        </el-form-item>
+        <el-form-item :label="t('funding.alert')" :error="errors.wallet_alert_usd">
+          <el-input v-model="form.wallet_alert_usd" inputmode="decimal" class="alert-input"><template #suffix>USD</template></el-input>
+          <div class="muted small">{{ t('funding.alertHint') }}</div>
+        </el-form-item>
         <div class="row">
           <el-form-item :label="t('funding.daily')" :error="errors.daily_cap_usd">
             <el-input v-model="form.daily_cap_usd" inputmode="decimal"><template #suffix>USD</template></el-input>
@@ -141,6 +171,9 @@ const when = (iso: string | null) => (iso ? iso.replace('T', ' ').slice(0, 16) +
       <el-empty v-if="!view.topups.length" :description="t('funding.none')" :image-size="60" />
       <el-table v-else :data="view.topups" size="small" class="log">
         <el-table-column :label="t('funding.col.when')" min-width="150"><template #default="{ row }">{{ when(row.created_at) }}</template></el-table-column>
+        <el-table-column :label="t('funding.col.kind')" width="110">
+          <template #default="{ row }">{{ t(`funding.kind.${row.kind || 'recharge'}`) }}</template>
+        </el-table-column>
         <el-table-column :label="t('funding.col.card')" width="110"><template #default="{ row }"><span class="mono">#{{ row.card_id }}</span></template></el-table-column>
         <el-table-column :label="t('funding.col.amount')" width="110"><template #default="{ row }">{{ row.amount }} {{ row.currency }}</template></el-table-column>
         <el-table-column :label="t('funding.col.state')" width="110">
@@ -174,6 +207,7 @@ const when = (iso: string | null) => (iso ? iso.replace('T', ' ').slice(0, 16) +
 .h3 { margin: 20px 0 8px; font-size: 15px; }
 .today { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 8px 0 12px; }
 .form { max-width: 640px; }
+.alert-input { max-width: 200px; }
 .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0 16px; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .muted { color: var(--el-text-color-secondary); }

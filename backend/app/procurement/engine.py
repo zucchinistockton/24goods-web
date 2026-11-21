@@ -63,6 +63,7 @@ from app.models import (
 from app.procurement import ledger, topups
 from app.procurement.context import ProcurementContext
 from app.procurement.funding import (
+    IN_FLIGHT_STATES,
     buyer_card_since,
     card_in_flight,
     funding_card_clash,
@@ -1805,6 +1806,7 @@ async def _availability_result(sup: Supplier, offer: OfferSpec) -> Result:
             card_candidates=av.card_candidates,
             candidate_masks=av.candidate_masks,
             card_topups=av.card_topups,
+            card_opened=av.card_opened,
         )
     reason = clean_detail(av.reason or "unavailable")
     if reason in dr.WAIT_REASONS:  # no card right now: a wait, never a refusal of the plan
@@ -2063,6 +2065,9 @@ async def _apply_precheck(
     """Nothing was sent. Available -> ready to submit; the catalog says no -> next source (or
     ``needs_manual`` without one) and the offer is marked unchecked; a failed lookup is retried."""
     o = res.outcome
+    if res.card_opened is not None and job.kind == "direct":
+        # ADR-049: the check opened a funding card from the wallet: it counts against the cap
+        await topups.record_open(db, job, *res.card_opened)
     if o is Outcome.OK and auto_card and not res.card_candidates:
         await _park_for_card(ctx, db, job, dr.NO_CARD_PICK, now)
     elif o is Outcome.OK:
@@ -2381,6 +2386,7 @@ async def _vet_candidates(db: AsyncSession, job: ProcurementJob, res: Result) ->
         funding_mask=res.funding_mask,
         card_candidates=tuple(keep),
         card_topups=tuple((c, a) for c, a in res.card_topups if c in kept),
+        card_opened=res.card_opened,
     )  # (masks dropped)
 
 
@@ -2648,12 +2654,67 @@ async def process_job(ctx: ProcurementContext, job_id: uuid.UUID, tenant_id: uui
         await _publish_progress(ctx, lease.tenant_id, lease.job_id)
     if lease.mode == "precheck":
         await process_job(ctx, job_id, tenant_id)  # a passed check sends in the same pass
+    if charged and lease.spec.offer.kind == "direct" and lease.mode not in ("void", "precheck"):
+        try:
+            await sweep_leftovers(ctx, lease.tenant_id, lease.ref, lease.spec.offer)
+        except Exception as exc:  # best effort: money stays on the card, nothing is lost
+            log.error("leftover sweep failed error=%s", type(exc).__name__)
     if charged:  # review-v12 §6: the balance (and the breaker) is refreshed after every job
         try:
             await refresh_balance(ctx, lease.ref)
         except Exception as exc:
             log.error("post-job balance refresh failed error=%s", type(exc).__name__)
     return True
+
+
+async def sweep_leftovers(
+    ctx: ProcurementContext, tenant_id: uuid.UUID, ref: SupplierRef, offer: OfferSpec
+) -> int:
+    """ADR-049 (owner 2026-11-21): after a direct order, move the money of our cards whose uses
+    for that tier are spent back to the supplier wallet (``sweep_leftover``, under the master
+    ``auto_recharge`` switch). Never a card bought for a buyer (id and masked number checks, as
+    for funding candidates) and never one with an order in flight. Returns the cards swept."""
+    async with tenant_session(ctx.maker, tenant_id) as db:
+        on = topups.sweep_on(await topups.settings_of(db, tenant_id))
+        await db.rollback()
+    if not on:
+        return 0
+    sup = engine_supplier(ctx, ref)
+    find = getattr(sup, "leftover_cards", None)
+    sweep = getattr(sup, "sweep_card", None)
+    if find is None or sweep is None:
+        return 0
+    cards = await find(offer)
+    if not cards:
+        return 0
+    keep: list[tuple[str, Decimal]] = []
+    async with tenant_session(ctx.maker, tenant_id) as db:
+        for cid, mask, amount in cards:
+            if await funding_card_clash(db, tenant_id, ref.id, cid):
+                continue
+            if mask and await funding_mask_clash(db, tenant_id, mask):
+                continue
+            busy = await db.scalar(
+                select(func.count(ProcurementJob.id)).where(
+                    ProcurementJob.tenant_id == tenant_id,
+                    ProcurementJob.state.in_(IN_FLIGHT_STATES),
+                    func.coalesce(ProcurementJob.used_card_id, ProcurementJob.card_id) == cid,
+                )
+            )
+            if not busy:
+                keep.append((cid, amount))
+        await db.rollback()
+    swept = 0
+    hour = utcnow().strftime("%Y%m%d%H")
+    for cid, amount in keep:
+        key = f"sweep:{cid}:{int(amount * 100)}:{hour}"
+        if not await sweep(cid, amount, key):
+            continue
+        swept += 1
+        async with tenant_session(ctx.maker, tenant_id) as db:
+            await topups.record_sweep(db, tenant_id, ref.id, cid, amount, key)
+            await db.commit()
+    return swept
 
 
 async def charge_check(

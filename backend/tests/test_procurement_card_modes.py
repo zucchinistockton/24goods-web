@@ -903,3 +903,45 @@ async def test_an_unreadable_wallet_is_a_retry_not_sold_out_to_staff(env, dup): 
     vendor.force("/balance", "500", times=5)
     out = await service.check_offer(dup.ctx, env.tenant_id, oid)
     assert out["available"] is False and out["reason"] == "wallet_unreadable"
+
+
+# ------------------------------------------------------------------ ADR-049: open + sweep
+async def test_no_card_with_a_use_left_opens_one_and_sweeps_the_used_up_card(env, dup):  # noqa: F811
+    """Owner 2026-11-21: every card's uses are spent but the wallet can pay -> the paid order's
+    fresh check opens ONE new card (opening fee + the order amount, counted against the daily cap)
+    and the order goes out on it; afterwards the used-up card's money goes back to the wallet."""
+    vendor = _vendor()  # card 4242 (USD 500)
+    vendor.usage_remaining[4242] = 0  # its uses for this tier are spent
+    await _funding(env, auto_recharge=True)
+    await _zovo(dup, vendor, AUTO)
+    buyer, order = await dup.paid_direct(claude_session(new_marker()))
+    await _drive(env, dup, order, buyer)
+    job = await _job(dup, order)
+    assert vendor.card_opens == 1
+    new_id = vendor.next_card  # the mock's last opened card
+    assert job.state == "fulfilled" and vendor.direct_cards_sent == [new_id]
+    keys = _posts(vendor, "/cards/open")
+    assert len(keys) == 1 and keys[0].startswith("open:")
+    rows = await _rows(
+        env, "SELECT kind, state, card_id, amount FROM procurement_fundings ORDER BY created_at"
+    )
+    kinds = {r[0]: r for r in rows}
+    assert kinds["open"][1] == "done" and kinds["open"][2] == str(new_id)
+    assert kinds["open"][3] >= Decimal(10)  # first load (whole dollars) + opening fee
+    # the used-up card keeps USD 1 (the vendor's minimum when it states none) and sends the rest
+    assert vendor.card_refunds == [(4242, 499.0)]
+    assert kinds["sweep"][1] == "done" and kinds["sweep"][3] == Decimal(499)
+    assert len(await _audit(env, "procurement.card_opened")) == 1
+    assert len(await _audit(env, "procurement.card_swept")) == 1
+
+
+async def test_without_the_switch_a_used_up_pool_still_goes_to_staff(env, dup):  # noqa: F811
+    vendor = _vendor()
+    vendor.usage_remaining[4242] = 0
+    await _funding(env, auto_recharge=True, auto_open_cards=False, sweep_leftover=False)
+    await _zovo(dup, vendor, AUTO)
+    _b, order = await dup.paid_direct(claude_session(new_marker()))
+    await _settle(dup, 3)
+    job = await _job(dup, order)
+    assert vendor.card_opens == 0 and vendor.card_refunds == []
+    assert job.state in ("needs_manual", "queued") and _posts(vendor, ORDERS) == []
