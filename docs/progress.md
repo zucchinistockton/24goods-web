@@ -6,7 +6,16 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 **Hand-off 2026-11-18 (after PR #49; the owner's order #29 → #30 → #31 is done on the demo). START HERE.**
 
-- **2026-11-21 ADR-051 built (`feat/pricing-charm-fee`; owner: Pro 5x ≈ 7.90 %, Pro 20x ≈ 7.93 %, Pro 50x ≈ 6.04 %,
+- **2026-11-21 16:58 UTC PRODUCTION DEPLOY of ADR-051 (#100, owner: "deploy the pricing change").** c4 runs
+  `e9207be` (revision verified), no migration (`0039`). Dump `/root/kesiv-backups/predeploy-20261121T165721Z/` (sha256
+  `8f7b3de9…9580`, also on c4; 48 orders); rollback images `goods24-{api,web}:rollback-8aa24a3` and `:rollback-bb0a4bd`.
+  Settings applied (audited `pricing.settings_updated`): markups Pro 5x 0.079 / Pro 20x 0.0793 / Pro 50x 0.0604,
+  `price_ending` 9, `payments.fee_round_whole` true (channel list shows `fee_whole: true`). Live recommendations
+  checked read-only: Pro 5x 729/699/629/659/639, Pro 20x 1449/1239/1229/1019/1179, Pro 50x
+  3549/3399/3059/3229/3119 (US/JP/CL/PH/EG). Prices are NOT applied yet: the owner clicks "Apply" on the 15 Pro rows
+  (Go / Plus rows also show new suggestions under the 12 % default + ending 9; the owner keeps those prices).
+
+- **2026-11-21 ADR-051 built (#100, deployed, see above; owner: Pro 5x ≈ 7.90 %, Pro 20x ≈ 7.93 %, Pro 50x ≈ 6.04 %,
   Go / Plus unchanged, endings 9 / 8, whole-yuan totals after the Alipay fee, deploy).** Per-unit `markups`,
   `price_ending`, `payments.fee_round_whole` (server + buyer previews). After deploy: settings applied in production
   (markups on the three Pro products, `price_ending` 9, fee rounding on); the owner applies the 15 Pro prices with
