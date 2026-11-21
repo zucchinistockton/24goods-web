@@ -31,6 +31,7 @@ from app.modules.auth import twofactor
 
 router = APIRouter(prefix="/admin/procurement/funding", tags=["admin"])
 COUNTED = ("planned", "sent", "done")
+SPENDING = ("recharge", "open")  # a sweep brings money back (ADR-049)
 
 
 def _day_start() -> datetime:
@@ -43,6 +44,7 @@ async def _view(db: AsyncSession, tid: Any, limit: int = 50) -> dict[str, Any]:
     spent = await db.scalar(
         select(func.coalesce(func.sum(ProcurementFunding.amount), 0)).where(
             ProcurementFunding.tenant_id == tid,
+            ProcurementFunding.kind.in_(SPENDING),
             ProcurementFunding.state.in_(COUNTED),
             ProcurementFunding.created_at >= _day_start(),
         )
@@ -67,6 +69,7 @@ async def _view(db: AsyncSession, tid: Any, limit: int = 50) -> dict[str, Any]:
                 "id": str(r.id),
                 "created_at": r.created_at.isoformat() if r.created_at else None,
                 "state": r.state,
+                "kind": r.kind,
                 "card_id": r.card_id,
                 "amount": str(Decimal(r.amount).quantize(Decimal("0.01"))),
                 "currency": r.currency,
@@ -91,6 +94,9 @@ async def get_funding(
 class FundingIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     auto_recharge: StrictBool | None = None
+    auto_open_cards: StrictBool | None = None
+    sweep_leftover: StrictBool | None = None
+    wallet_alert_usd: Decimal | None = Field(default=None, ge=0, le=100000)
     daily_cap_usd: Decimal | None = Field(default=None, ge=0, le=10000)
     per_topup_max_usd: Decimal | None = Field(default=None, ge=0, le=5000)
     bin_priority: list[str] | None = Field(default=None, max_length=fs.MAX_BINS)

@@ -133,6 +133,9 @@ def test_picked_top_up_param_is_strict():
 def test_settings_default_off_and_validate():
     st = fs.normalize(None)
     assert st["auto_recharge"] is False and st["bin_priority"] == list(fs.DEFAULT_BINS)
+    # ADR-049: the card switches default ON but act only under auto_recharge (the master switch)
+    assert st["auto_open_cards"] is True and st["sweep_leftover"] is True
+    assert st["wallet_alert_usd"] == "60"
     new = fs.validate({"auto_recharge": True, "daily_cap_usd": "50", "bin_priority": ["537872"]})
     assert new["auto_recharge"] is True and new["daily_cap_usd"] == "50.00"
     for bad in (
@@ -140,9 +143,96 @@ def test_settings_default_off_and_validate():
         {"daily_cap_usd": "-1"},
         {"per_topup_max_usd": "99999"},
         {"bin_priority": ["53787"]},
+        {"auto_open_cards": 1},
+        {"wallet_alert_usd": "-5"},
         {"unknown": 1},
     ):
         with pytest.raises(ValueError):
             fs.validate(bad)
     # a corrupted stored value can never switch spending on
     assert fs.normalize({"auto_recharge": "true", "daily_cap_usd": "x"})["auto_recharge"] is False
+
+
+# ------------------------------------------------------------------ ADR-049: open / sweep
+def _prod(code: str, bin_: str, fee: str = "1.5", low: str = "10", **kw):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        product_code=code,
+        bin=bin_,
+        open_fee=D(fee),
+        min_amount=D(low),
+        max_amount=kw.get("high"),
+        recharge_fee=kw.get("rate", D(0)),
+        enabled=kw.get("enabled", True),
+        restricted=tuple(kw.get("restricted", ())),
+    )
+
+
+OPEN = FundingPolicy(
+    auto_recharge=True, allowance=D(200), bin_priority=fs.DEFAULT_BINS, auto_open=True
+)
+
+
+def test_a_new_card_follows_the_bin_priority_and_loads_the_order_amount():
+    products = [
+        _prod("XL474613", "474613041"),
+        _prod("XL537882", "537882130"),
+        _prod("P4466BD", "446619", low="20"),
+        _prod("OPENAI_BLOCKED", "532604480", restricted=["OPENAI"]),  # first BIN, but blocked
+    ]
+    plan = fd.pick_open_product(products, D("17.92"), "gpt", OPEN, D(60))
+    assert plan is not None and plan.product_code == "XL537882"
+    assert plan.init == D(18) and plan.fee == D("1.5") and plan.total == D("19.5")
+    # a small plan still loads at least the product minimum
+    go = fd.pick_open_product(products, D("6.86"), "gpt", OPEN, D(60))
+    assert go is not None and go.init == D(10)
+
+
+def test_no_new_card_without_the_switch_the_wallet_or_the_cap():
+    products = [_prod("XL537872", "537872713")]
+    assert fd.pick_open_product(products, D(18), "gpt", None, D(60)) is None
+    off = FundingPolicy(auto_recharge=True, allowance=D(200), auto_open=False)
+    assert fd.pick_open_product(products, D(18), "gpt", off, D(60)) is None
+    assert fd.pick_open_product(products, D(18), "gpt", OPEN, D("19.49")) is None  # wallet
+    assert fd.pick_open_product(products, D(18), "gpt", OPEN, None) is None  # unknown wallet
+    tight = FundingPolicy(auto_recharge=True, allowance=D(19), auto_open=True)
+    assert fd.pick_open_product(products, D(18), "gpt", tight, D(60)) is None  # daily cap
+    off_sale = [_prod("XL537872", "537872713", enabled=False)]
+    assert fd.pick_open_product(off_sale, D(18), "gpt", OPEN, D(60)) is None
+
+
+def test_new_cards_reuse_the_newest_holder_name_and_sweeps_keep_the_vendor_minimum():
+    old = _card(1, "12.62")
+    old = fd.FundCard(**{**old.__dict__, "holder": ("Taylor", "Clark"), "created": "2026-11-14"})
+    new = fd.FundCard(
+        **{**_card(2, "1.1").__dict__, "holder": ("Bai", "Xiao"), "created": "2026-11-21"}
+    )
+    assert fd.holder_for([old, new]) == ("Bai", "Xiao")
+    assert fd.holder_for([_card(3, "0")]) == fd.DEFAULT_HOLDER
+    assert fd.sweep_amount(old) == D("11.62")  # keeps USD 1 (refund_keep default)
+    keep_cent = fd.FundCard(**{**_card(4, "1.10").__dict__, "refund_keep": D("0.01")})
+    assert fd.sweep_amount(keep_cent) == D("1.09")
+    assert fd.sweep_amount(_card(5, "1.5")) is None  # below USD 1 after the keep
+    assert fd.sweep_amount(_card(6, "50", status="FROZEN")) is None
+
+
+def test_card_rows_keep_refund_minimum_and_holder():
+    (c,) = fd.parse_fund_cards(
+        {
+            "list": [
+                {
+                    "id": 1109451,
+                    "card_number": "5378727109708264",
+                    "available_amount": 1.1,
+                    "status": "ACTIVE",
+                    "refund_keep_min": 0.01,
+                    "first_name": "bai",
+                    "last_name": "xiaokang",
+                    "created_at": "2026-11-21T08:37:26Z",
+                }
+            ]
+        }
+    )
+    assert c.refund_keep == D("0.01") and c.holder == ("bai", "xiaokang")
+    assert "bai" not in repr(c)

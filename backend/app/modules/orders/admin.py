@@ -844,7 +844,22 @@ async def order_detail(
     if order.status == "manual_review":
         # #72 B2: why it is held and which exit applies (accept needs a recorded payment)
         reason, by = await hold_reason(db, order)
-        view["hold"] = {"reason": reason, "by": by, "has_payment": pay is not None}
+        # a supplier-sourced order with a job is released through that job, not "accept"
+        job_id = await db.scalar(
+            select(ProcurementJob.id)
+            .where(
+                ProcurementJob.tenant_id == order.tenant_id,
+                ProcurementJob.order_id == order.id,
+            )
+            .order_by(ProcurementJob.created_at.desc())
+            .limit(1)
+        )
+        view["hold"] = {
+            "reason": reason,
+            "by": by,
+            "has_payment": pay is not None,
+            "job_id": str(job_id) if job_id else None,
+        }
     view["payment"] = (
         {
             "channel": pay.channel,

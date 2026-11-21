@@ -6,6 +6,20 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 **Hand-off 2026-11-18 (after PR #49; the owner's order #29 → #30 → #31 is done on the demo). START HERE.**
 
+- **2026-11-21 ADR-049 built (`feat/card-autopen`, NOT deployed; owner: "issue cards on demand … recover any
+  remaining balance … enable them by default … send an automatic Telegram notification … fix the Order button").**
+  On-demand funding cards (`POST /cards/open` from the paid job's fresh check, BIN priority, first load = order need),
+  leftover sweep after each direct order (`POST /cards/refund`, never a buyer's card / a busy card), Telegram alert when
+  the ZovoCard wallet is below `wallet_alert_usd` (60), new switches in Procurement → Cards → Card funding, migration
+  `0039`. Held supplier orders: the order drawer shows "Open supplier job" (deep link `?job=`) instead of "Accept
+  payment". Done by hand on ZovoCard (owner's word): `count_failures=false` for gpt/claude/grok (card ·2612 got its use
+  back). Findings 2026-11-21: order `7cbb54e7` (Alipay ¥121.80) failed at ChatGPT checkout (`checkout_blocked`, not
+  charged); the owner topped the account up by hand at 09:02:40 UTC on card ·2612 ($15.45); a SECOND $15.45 charge on
+  ·2612 at 09:57 UTC matches no shop order (owner to check which account). Every card had used its 3 light uses →
+  "Out of Stock". ZovoCard wallet USD 5.59; OKX Agentic Wallet ≈ USD 2.25 (X Layer USD₮0 1.15, Polygon USDT0 0.90),
+  policy: no daily limits, double confirmation ON. ZovoCard deposit address (API-verified for XLAYER/BSC/POLYGON):
+  `0x41e498B2E18F027a05071B9C74dB8B54985e5dD9`; API deposits ≥ 10 USDT, `POST /recharge/submit-tx` speeds them up.
+
 - **2026-11-21 fix: an expired buyer session is "session invalid", not an outage (`fix/session-expired-code`, NOT deployed).**
   The vendor now answers an expired session with the undocumented `400 GPT_SESSION_EXPIRED` ("not charged"). It was
   not in our list, so the pre-payment check said 503 `preflight_unavailable`, the redeem relay said "unavailable" and,

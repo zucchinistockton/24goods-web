@@ -8,6 +8,7 @@ are turned into ``Decimal(str(x))``.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import time
@@ -22,6 +23,7 @@ from app.suppliers.base import (
     Availability,
     Balance,
     Capability,
+    FundingPolicy,
     JobSpec,
     LedgerRow,
     Money,
@@ -48,6 +50,7 @@ log = logging.getLogger("app.suppliers.zovocard")
 DIRECT_PRODUCTS = ("gpt", "claude", "grok")  # products with a plans catalogue (``x`` has none)
 PLANS_TTL_S = 60.0
 # ADR-048 funding reads: storefront checks share them this long; a pre-check reads fresh
+SWEEP_MAX = 10  # cards swept per pass (each is one usage read + one refund)
 FUND_TTL_S = 30.0
 FUND_MAX_PAGES = 5  # 500 cards
 FUND_MAX_USAGE_READS = 6  # usage reads per check (best candidates first)
@@ -115,6 +118,8 @@ class CardProduct:
     max_amount: Decimal | None
     enabled: Any  # raw; usable only when it is exactly True
     recharge_fee: Decimal | None = None  # a RATE (vendor 6.1), applied to a top-up
+    bin: str = ""  # card range, e.g. 537872713 (ADR-049 BIN priority)
+    restricted: tuple[str, ...] = ()  # the range's blocked merchants
 
 
 def region_offered(catalog: PlanCatalog, country: object) -> bool:
@@ -295,6 +300,15 @@ def parse_card_products(data: Any) -> list[CardProduct]:
                 recharge_fee=_dec_or_none(p.get("recharge_fee")),
                 # the documented /products shape has no ``enabled``: listed means openable
                 enabled=p.get("enabled", True),
+                bin=re.sub(r"\D", "", str(p.get("bin") or ""))[:12],
+                restricted=tuple(
+                    str(r)[:40]
+                    for r in (
+                        p.get("restricted_merchants")
+                        if isinstance(p.get("restricted_merchants"), list)
+                        else []
+                    )
+                ),
             )
         )
     return out
@@ -979,6 +993,10 @@ class ZovoCardSupplier:
                 masks.append((str(p.card.id), p.card.mask))
             if p.topup > 0:
                 topups.append((str(p.card.id), p.topup))
+        if not usable and not busy and pol is not None and pol.auto_open:
+            opened = await self._open_for(spec, need.amount, pol, wallet, cards, cost, now, fresh)
+            if opened is not None:
+                return opened
         if not usable:
             if busy:
                 reason = dr.CARD_POOL_BUSY
@@ -995,6 +1013,114 @@ class ZovoCardSupplier:
             candidate_masks=tuple(masks),
             card_topups=tuple(topups),
         )
+
+    async def _open_for(
+        self,
+        spec: dr.DirectSpec,
+        need: Decimal,
+        pol: FundingPolicy,
+        wallet: Decimal | None,
+        cards: list[fd.FundCard],
+        cost: Money | None,
+        now: datetime,
+        fresh: bool,
+    ) -> Availability | None:
+        """ADR-049: no card can pay, but the wallet can open one. The storefront check only says
+        "available" (nothing is spent while buyers browse); the FRESH check of a paid job opens
+        the card (``POST /cards/open``) and offers it as the only candidate. ``None`` = no product
+        fits (the caller reports the shortfall); a failed opening is a retry."""
+        try:
+            products = await self.card_products(fresh=fresh)
+        except SupplierError:
+            return None
+        plan = fd.pick_open_product(products, need, spec.product, pol, wallet)
+        if plan is None:
+            return None
+        if not fresh:
+            return Availability(True, cost_estimate=cost, checked_at=now)
+        first, last = fd.holder_for(cards)
+        # one key per card set, product and hour: concurrent checks and retries open ONE card; a
+        # card that did open shows in the next list, which changes the key and (being usable)
+        # makes another opening unnecessary
+        seed = ",".join(sorted(str(c.id) for c in cards))
+        hour = now.astimezone(timezone.utc).strftime("%Y%m%d%H")
+        digest = hashlib.sha256(f"{seed}|{plan.product_code}|{hour}".encode()).hexdigest()
+        key = "open:" + digest[:32]
+        try:
+            resp = await self.client.request(
+                "POST",
+                "/cards/open",
+                json_body={
+                    "product_code": plan.product_code,
+                    "first_name": first,
+                    "last_name": last,
+                    "init_amount": wire_amount(plan.init),
+                },
+                idempotency_key=key,
+            )
+        except SupplierError as exc:
+            log.warning("funding card open failed reason=%s", exc.reason)
+            return Availability(False, "card_open_failed", cost_estimate=cost, checked_at=now)
+        card = parse_card_open(resp.data)
+        if card is None:
+            return Availability(False, "card_open_failed", cost_estimate=cost, checked_at=now)
+        card_id, mask, fee = card
+        self._fund_cards_hit = None
+        self._wallet_hit = None
+        last4 = mask[-4:] if mask and mask[-4:].isdigit() else None
+        return Availability(
+            True,
+            cost_estimate=cost,
+            checked_at=now,
+            card_candidates=((card_id, last4),),
+            candidate_masks=((card_id, mask),) if mask and mask != "****" else (),
+            card_opened=(card_id, plan.init + (fee if fee is not None else plan.fee)),
+        )
+
+    async def leftover_cards(self, offer: OfferSpec) -> list[tuple[str, str | None, Decimal]]:
+        """ADR-049: our cards whose uses for ``offer``'s tier are spent and that still hold money:
+        ``(id, masked number, amount to move back)``. Busy / cooling or unreadable usage = skip
+        (never guess). Read only."""
+        spec = dr.direct_spec(offer)
+        if spec is None:
+            return []
+        out: list[tuple[str, str | None, Decimal]] = []
+        for c in await self._fund_cards(True):
+            amt = fd.sweep_amount(c)
+            if amt is None or len(out) >= SWEEP_MAX:
+                continue
+            try:
+                usage = await self.client.get(
+                    f"/gpt-direct/cards/{c.id}/usage", params={"product": spec.product}
+                )
+            except SupplierError:
+                continue
+            remaining, waiting, status = dr.usage_state(usage.data, spec.plan)
+            data = usage.data if isinstance(usage.data, Mapping) else {}
+            reserved = any(
+                isinstance(data.get(t), Mapping) and data[t].get("reserved") not in (0, None)
+                for t in ("light", "pro20")
+            )
+            if remaining == 0 and not waiting and not reserved and status in (None, "ACTIVE"):
+                out.append((str(c.id), c.mask, amt))
+        return out
+
+    async def sweep_card(self, card_id: str, amount: Decimal, key: str) -> bool:
+        """``POST /cards/refund``: ``amount`` (USD) from one of our cards back to the wallet, under
+        ``key``. ``True`` = the vendor accepted it."""
+        try:
+            await self.client.request(
+                "POST",
+                "/cards/refund",
+                json_body={"card_id": int(card_id), "amount": wire_amount(amount)},
+                idempotency_key=key,
+            )
+        except SupplierError as exc:
+            log.warning("card sweep refused reason=%s", exc.reason)
+            return False
+        self._fund_cards_hit = None
+        self._wallet_hit = None
+        return True
 
     async def _funding_card_problem(
         self, spec: dr.DirectSpec, cost: Money | None

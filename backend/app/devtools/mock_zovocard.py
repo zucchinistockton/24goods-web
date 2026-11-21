@@ -349,6 +349,8 @@ class MockZovo:
     card_rules: dict[str, dict[str, Any]] = field(default_factory=dict)
     usage_resets: list[dict[str, Any]] = field(default_factory=list)
     usage_failed: dict[int, int] = field(default_factory=dict)  # funding card -> failed count
+    # ADR-049: card money moved back to the wallet (card id, amount) by ``POST /cards/refund``
+    card_refunds: list[tuple[int, float]] = field(default_factory=list)
     direct_product_seen: list[str] = field(default_factory=list)  # product exactly as sent
 
     def __post_init__(self) -> None:
@@ -840,6 +842,21 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
             return JSONResponse(_env(0, mock.card_rules[prod]))
         if path == "/cards/open":
             return _open_card(body)
+        if path == "/cards/refund":
+            cid, amount = body.get("card_id"), body.get("amount")
+            card = mock.cards.get(cid) if isinstance(cid, int) else None
+            if (
+                card is None
+                or isinstance(amount, bool)
+                or not isinstance(amount, (int, float))
+                or amount <= 0
+                or amount > card["available_amount"] - 0.01
+            ):
+                return JSONResponse({"code": 400, "msg": "bad refund"}, status_code=400)
+            card["available_amount"] = round(card["available_amount"] - float(amount), 2)
+            mock.card_refunds.append((cid, float(amount)))
+            _log(card, "card_refund", float(amount))
+            return JSONResponse(_env(0, {"card_id": cid, "amount": amount}))
         if path == "/cards/recharge":
             return _recharge_card(body)
         m_del = re.fullmatch(r"/cards/([0-9]{1,12})", path)

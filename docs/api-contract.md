@@ -715,3 +715,15 @@ confirm they ran the charge check), else `422 charge_check_required`.
 Buyer-visible effect: a direct plan is in stock while one of our cards, or an allowed automatic top-up, can pay it; a
 paid order that no card / money / price / cap can serve goes to `needs_manual` at once (the buyer sees the usual
 "being handled" state).
+
+### ADR-049 additions (2026-11-21)
+
+`settings` also carries `auto_open_cards` (bool, default true), `sweep_leftover` (bool, default true) and
+`wallet_alert_usd` (0–100000, default "60"); `PUT` accepts them like the other fields. The two switches act only while
+`auto_recharge` is true. Each `topups[]` row has `kind: recharge|open|sweep` (`open` = opening fee + first load of a
+card opened for a paid order, counted in `today.spent_usd`; `sweep` = money moved from a used-up card back to the
+wallet, not counted).
+
+`GET /api/v1/admin/orders/{id}`: `hold` gains `job_id` (the newest procurement job of a held supplier order, else
+`null`). The console then links to that job instead of offering "Accept payment" (which answers `409
+use_procurement_actions` for such an order).

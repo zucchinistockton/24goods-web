@@ -14,6 +14,7 @@ from datetime import datetime, time, timezone
 from decimal import Decimal
 
 from sqlalchemy import func, select, text, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import funding as fs
@@ -22,6 +23,7 @@ from app.models import ProcurementFunding, ProcurementJob, Tenant
 from app.suppliers.base import FundingPolicy, job_idempotency_key
 
 COUNTED = ("planned", "sent", "done")
+SPENDING = ("recharge", "open")  # a ``sweep`` brings money back: never counted (ADR-049)
 PREFERRED_MAX = 5
 
 
@@ -40,6 +42,7 @@ async def spent_today(db: AsyncSession, tenant_id: uuid.UUID, now: datetime) -> 
     total = await db.scalar(
         select(func.coalesce(func.sum(ProcurementFunding.amount), 0)).where(
             ProcurementFunding.tenant_id == tenant_id,
+            ProcurementFunding.kind.in_(SPENDING),
             ProcurementFunding.state.in_(COUNTED),
             ProcurementFunding.created_at >= _day_start(now),
         )
@@ -90,7 +93,97 @@ async def policy(
         allowance=_allowance(st, Decimal(spent)),
         bin_priority=tuple(str(b) for b in st["bin_priority"]),  # type: ignore[attr-defined]
         preferred=await preferred_cards(db, tenant_id, supplier_id),
+        auto_open=st["auto_recharge"] is True and st["auto_open_cards"] is True,
     )
+
+
+def sweep_on(settings: dict[str, object]) -> bool:
+    return settings.get("auto_recharge") is True and settings.get("sweep_leftover") is True
+
+
+async def _record(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    supplier_id: uuid.UUID,
+    kind: str,
+    card_id: str,
+    amount: Decimal,
+    key: str,
+    job: ProcurementJob | None,
+) -> bool:
+    res = await db.execute(
+        pg_insert(ProcurementFunding)
+        .values(
+            id=uuid.uuid4(),
+            tenant_id=tenant_id,
+            supplier_id=supplier_id,
+            job_id=job.id if job else None,
+            order_id=job.order_id if job else None,
+            kind=kind,
+            card_id=card_id[:20],
+            amount=amount,
+            state="done",
+            idem_key=key[:80],
+        )
+        .on_conflict_do_nothing(index_elements=["idem_key"])
+    )
+    return bool(res.rowcount)  # type: ignore[attr-defined]
+
+
+async def record_open(db: AsyncSession, job: ProcurementJob, card_id: str, amount: Decimal) -> None:
+    """ADR-049: a fresh check opened ``card_id`` for ``job`` (opening fee + first load, USD):
+    counted against today's cap like a top-up. A card opens once: a replay records nothing."""
+    assert job.supplier_id is not None
+    if amount <= 0 or not await _record(
+        db,
+        tenant_id=job.tenant_id,
+        supplier_id=job.supplier_id,
+        kind="open",
+        card_id=card_id,
+        amount=amount,
+        key=f"open:{card_id}",
+        job=job,
+    ):
+        return
+    await audit(
+        db,
+        tenant_id=job.tenant_id,
+        action="procurement.card_opened",
+        target=f"procurement_job:{job.id}",
+        after={"card_id": card_id, "amount": str(amount), "currency": "USD"},
+        detail={"order_id": str(job.order_id)},
+        severity="info",
+    )
+
+
+async def record_sweep(
+    db: AsyncSession,
+    tenant_id: uuid.UUID,
+    supplier_id: uuid.UUID,
+    card_id: str,
+    amount: Decimal,
+    key: str,
+) -> None:
+    """ADR-049: ``amount`` moved from a used-up card back to the wallet (not spending)."""
+    if await _record(
+        db,
+        tenant_id=tenant_id,
+        supplier_id=supplier_id,
+        kind="sweep",
+        card_id=card_id,
+        amount=amount,
+        key=key,
+        job=None,
+    ):
+        await audit(
+            db,
+            tenant_id=tenant_id,
+            action="procurement.card_swept",
+            target=f"supplier:{supplier_id}",
+            after={"card_id": card_id, "amount": str(amount), "currency": "USD"},
+            severity="info",
+        )
 
 
 async def plan(

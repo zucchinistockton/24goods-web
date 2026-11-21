@@ -174,6 +174,7 @@ class Result:
     card_candidates: tuple[tuple[str, str | None], ...] = ()
     candidate_masks: tuple[tuple[str, str], ...] = field(default=(), repr=False)  # as Availability
     card_topups: tuple[tuple[str, Decimal], ...] = ()  # as Availability
+    card_opened: tuple[str, Decimal] | None = None  # as Availability
     # direct submit: the USD the adapter moved from the wallet onto the funding card (ADR-048)
     funded: Decimal | None = None
     # direct submit: the vendor refused BEFORE an order existed AND the lookup by client request id
@@ -239,6 +240,8 @@ class FundingPolicy:
     allowance: Decimal = Decimal(0)
     bin_priority: tuple[str, ...] = ()
     preferred: tuple[str, ...] = ()  # card ids, the one that paid last first
+    # ADR-049: open a new card when no card can pay (a FRESH check for a paid job only)
+    auto_open: bool = False
 
 
 @dataclass(frozen=True)
@@ -269,6 +272,9 @@ class Availability:
     candidate_masks: tuple[tuple[str, str], ...] = field(default=(), repr=False)
     # direct: the USD top-up a candidate needs before it can pay (absent = none), ADR-048
     card_topups: tuple[tuple[str, Decimal], ...] = ()
+    # ADR-049: a fresh check opened this card for the order (id, USD taken from the wallet:
+    # opening fee + first load); the engine records it against the daily cap
+    card_opened: tuple[str, Decimal] | None = None
 
 
 @dataclass(frozen=True)

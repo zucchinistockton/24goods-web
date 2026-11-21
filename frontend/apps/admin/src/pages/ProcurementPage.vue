@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRoute } from 'vue-router'
 import { ArrowDown, ArrowUp, Download, Plus, Refresh } from '@element-plus/icons-vue'
 import { createCoalescer, formatDateTime, isApiError, type AdminVariant } from '@24goods/shared'
 import { apiV3, client } from '../api'
@@ -38,6 +39,7 @@ const api = createProcurementApi(client)
 const suppliersApi = createSuppliersApi(client)
 const auth = useAuthStore()
 const { t, te, locale } = useI18n()
+const route = useRoute()
 
 const tab = ref<'jobs' | 'sources' | 'cost' | 'pricing' | 'regions' | 'cards' | 'redeem'>('jobs')
 // decline-rate warning badge on the Cards tab (80 % of a vendor threshold); staff can read it
@@ -437,8 +439,12 @@ watch(tab, async (v) => {
     void loadCost()
   }
 })
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 onMounted(() => {
   void jobs.load()
+  // the order drawer links a held supplier order here: ?job=<id> opens that job
+  const linked = route.query.job
+  if (typeof linked === 'string' && UUID_RE.test(linked)) void openJob({ id: linked } as ProcJob)
   createCardsApi(client)
     .risk()
     .then((r) => (riskLevel.value = r.level))

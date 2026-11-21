@@ -219,3 +219,52 @@ async def test_open_breaker_raises_one_staff_alert(env, up, monkeypatch):
         assert await alert_supplier_breakers(env.res, db, env.tenant_id) == 1
     assert len(sent) == 1 and "balance_low" in sent[0]["lines"][1]
     assert sent[0]["once"][0].startswith(f"supplier_breaker:{sid}:")
+
+
+async def test_a_low_zovocard_wallet_alerts_staff_every_six_hours(env, up, monkeypatch):
+    """ADR-049 (owner 2026-11-21): ZovoCard wallet below USD 60 (default) -> Telegram alert,
+    one per 6-hour window while it stays low; 0 switches it off; a stale balance never alerts."""
+    from datetime import datetime, timezone
+
+    from app.core import notify_tg
+    from app.core.db import tenant_session
+    from app.modules.payments.reconcile import alert_wallet_low
+
+    sid, _ = await up.supplier(MockSupplier("mock_a"))
+    sent: list[dict] = []
+
+    def fake(res, tid, kind, lines, **kw):
+        sent.append({"lines": [notify_tg.render("en", x) for x in lines], "once": kw.get("once")})
+
+    monkeypatch.setattr(notify_tg, "notify_bg", fake)
+    now = datetime.now(timezone.utc)
+
+    async def run() -> int:
+        async with tenant_session(env.res.maker, env.tenant_id) as db:
+            return await alert_wallet_low(env.res, db, env.tenant_id, now)
+
+    await _sql(
+        env,
+        "UPDATE suppliers SET adapter = 'zovocard', env = 'production', enabled = true, "
+        "last_balance = 75, last_balance_at = now() WHERE id = :s",
+        s=sid,
+    )
+    assert await run() == 0  # above the line
+    await _sql(env, "UPDATE suppliers SET last_balance = 5.59 WHERE id = :s", s=sid)
+    assert await run() == 1
+    assert "5.59 USD" in sent[0]["lines"][0] and "60 USD" in sent[0]["lines"][0]
+    assert sent[0]["once"][0].startswith(f"wallet_low:{sid}:") and sent[0]["once"][1] == 6 * 3600
+    await _sql(
+        env,
+        "UPDATE tenants SET funding_settings = CAST(:j AS jsonb) WHERE id = :t",
+        j='{"wallet_alert_usd": "0"}',
+        t=env.tenant_id,
+    )
+    assert await run() == 0  # switched off
+    await _sql(env, "UPDATE tenants SET funding_settings = NULL WHERE id = :t", t=env.tenant_id)
+    await _sql(
+        env,
+        "UPDATE suppliers SET last_balance_at = now() - interval '3 hours' WHERE id = :s",
+        s=sid,
+    )
+    assert await run() == 0  # a stale reading says nothing about now
