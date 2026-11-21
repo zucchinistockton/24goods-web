@@ -6,7 +6,14 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 **Hand-off 2026-11-18 (after PR #49; the owner's order #29 → #30 → #31 is done on the demo). START HERE.**
 
-- **2026-11-21 funding follow-ups (`feat/funding-reserve-sweep`; owner: "add scheduled recovery … include pending
+- **2026-11-21 PRODUCTION DEPLOYS of #97 (15:57 UTC, `bb0a4bd`) and hotfix #98 (16:18 UTC, `8aa24a3`).** Owner's
+  go-ahead in the same message as the request. Dumps `/root/kesiv-backups/predeploy-20261121T155706Z/` (sha256
+  `5b12fe44…9739`) and `predeploy-20261121T161745Z/` (`74ec2b20…f7b3`), both also on c4; no migration (`0039`).
+  Rollback images `goods24-{api,web}:rollback-bb0a4bd` and `:rollback-38975ac`. The first scheduled sweep on `bb0a4bd`
+  failed safely (`DetachedInstanceError`, nothing moved); #98 fixed it and its first pass swept USD 11.62 from card
+  921097 (·8575) at 16:18:30 UTC (`procurement.card_swept`). Smoke all pass after both deploys.
+
+- **2026-11-21 funding follow-ups (#97 + #98, deployed, see above; owner: "add scheduled recovery … include pending
   orders in the inventory check … optimize … deploy").** (1) `topups.reserved_usd`: paid direct jobs still `queued`
   and never sent reserve `cost_estimate × 1.08` (USD offers) from the wallet in every sold-out check (`FundingPolicy.
   reserved`); a job's own pre-check excludes itself. (2) Scheduled leftover sweep every 30 min in the supplier loop
