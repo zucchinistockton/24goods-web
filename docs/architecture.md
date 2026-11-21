@@ -599,3 +599,7 @@ shared `cryptoChannelLabel`.
 unchanged (it converts the CNY amount; notifies are verified as before). The API needs the BEpusdt admin login
 (`APP_BEPUSDT_ADMIN_USER/PASSWORD/ENTRY`). A switched-on network without an enabled wallet is flagged red in the
 admin (BEpusdt would refuse the order).
+
+**ADR-049 addendum (2026-11-21).** Paid direct orders not sent yet reserve their USD cost × 1.08 from the wallet in
+the sold-out check (never two big orders against the same money); the leftover sweep also runs every 30 minutes;
+offers are re-checked right after each direct job.

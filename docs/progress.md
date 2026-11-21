@@ -6,6 +6,14 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 **Hand-off 2026-11-18 (after PR #49; the owner's order #29 → #30 → #31 is done on the demo). START HERE.**
 
+- **2026-11-21 funding follow-ups (`feat/funding-reserve-sweep`; owner: "add scheduled recovery … include pending
+  orders in the inventory check … optimize … deploy").** (1) `topups.reserved_usd`: paid direct jobs still `queued`
+  and never sent reserve `cost_estimate × 1.08` (USD offers) from the wallet in every sold-out check (`FundingPolicy.
+  reserved`); a job's own pre-check excludes itself. (2) Scheduled leftover sweep every 30 min in the supplier loop
+  (`engine.sweep_all`, same rules as the post-order sweep). (3) After a direct job the offers are re-checked at once
+  (`refresh_offers` after the balance refresh), so the storefront's stock follows the money within seconds. The
+  owner's refill line stays 60 → 100 USD ("$100 should be fine for Plus").
+
 - **2026-11-21 14:3x UTC PRODUCTION DEPLOY of ADR-050 (#95; owner: "deploy it to the production environment").**
   c4 runs `38975ac` (image revision verified), no migration (still `0039`). Pre-deploy dump
   `/root/kesiv-backups/predeploy-20261121T143256Z/` (sha256 `18d14566…5b9f`, also on c4; 48 orders); rollback images

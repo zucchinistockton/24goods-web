@@ -72,7 +72,7 @@ from app.procurement.funding import (
 )
 from app.procurement.notify import notify_progress_changed
 from app.procurement.risk import DECLINE_CODES
-from app.procurement.service import SupplierRef, make_supplier, refresh_balance
+from app.procurement.service import SupplierRef, make_supplier, refresh_balance, refresh_offers
 from app.suppliers import direct_progress as progress
 from app.suppliers.base import (
     FundingPolicy,
@@ -1391,7 +1391,7 @@ async def _lease(ctx: ProcurementContext, job_id: uuid.UUID, tenant_id: uuid.UUI
         if mode == "submit" and job.fund_key:
             await topups.mark_sent(db, job)  # committed with the lease, before any HTTP call
         policy = (
-            await topups.policy(db, job.tenant_id, offer.supplier_id, now)
+            await topups.policy(db, job.tenant_id, offer.supplier_id, now, exclude_job=job.id)
             if job.kind == "direct" and _auto_card(offer) and mode == "precheck"
             else None
         )
@@ -2661,7 +2661,10 @@ async def process_job(ctx: ProcurementContext, job_id: uuid.UUID, tenant_id: uui
             log.error("leftover sweep failed error=%s", type(exc).__name__)
     if charged:  # review-v12 §6: the balance (and the breaker) is refreshed after every job
         try:
-            await refresh_balance(ctx, lease.ref)
+            bal = await refresh_balance(ctx, lease.ref)
+            if bal is not None and lease.spec.offer.kind == "direct":
+                # the storefront's sold-out state follows the money right away, not in 5 minutes
+                await refresh_offers(ctx, lease.ref)
         except Exception as exc:
             log.error("post-job balance refresh failed error=%s", type(exc).__name__)
     return True
@@ -2714,6 +2717,39 @@ async def sweep_leftovers(
         async with tenant_session(ctx.maker, tenant_id) as db:
             await topups.record_sweep(db, tenant_id, ref.id, cid, amount, key)
             await db.commit()
+    return swept
+
+
+async def sweep_all(ctx: ProcurementContext) -> int:
+    """Scheduled leftover sweep (owner 2026-11-21): for every enabled supplier with an enabled
+    direct offer of a standard tier, :func:`sweep_leftovers` (same rules as after an order)."""
+    from app.procurement.service import enabled_suppliers
+
+    swept = 0
+    for ref in await enabled_suppliers(ctx):
+        try:
+            async with tenant_session(ctx.maker, ref.tenant_id) as db:
+                row = (
+                    await db.execute(
+                        select(SupplierOffer)
+                        .where(
+                            SupplierOffer.tenant_id == ref.tenant_id,
+                            SupplierOffer.supplier_id == ref.id,
+                            SupplierOffer.kind == "direct",
+                            SupplierOffer.enabled.is_(True),
+                            SupplierOffer.params["plan"].astext.not_like("pro_20x%"),
+                        )
+                        .order_by(SupplierOffer.priority)
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
+                await db.rollback()
+            if row is None:
+                continue
+            offer = OfferSpec(kind="direct", params=dict(row.params or {}))
+            swept += await sweep_leftovers(ctx, ref.tenant_id, ref, offer)
+        except Exception as exc:  # one supplier must not stop the others
+            log.error("scheduled sweep failed supplier=%s error=%s", ref.id, type(exc).__name__)
     return swept
 
 

@@ -958,6 +958,8 @@ class ZovoCardSupplier:
         rates: dict[str, Decimal] = {}
         if pol is not None and pol.auto_recharge:
             wallet = await self._wallet(fresh)
+            if wallet is not None and pol.reserved > 0:
+                wallet = max(Decimal(0), wallet - pol.reserved)  # paid orders not sent yet
             try:
                 rates = {
                     p.product_code: p.recharge_fee

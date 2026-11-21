@@ -431,13 +431,25 @@ async def backfill_ledgers(ctx: ProcurementContext) -> int:
     return n
 
 
+SWEEP_INTERVAL_S = 1800.0  # scheduled leftover sweep (owner 2026-11-21)
+
+
 async def run_loop(ctx: ProcurementContext, stop: asyncio.Event) -> None:
     last_ledger = float("-inf")
+    last_sweep = float("-inf")
     while not stop.is_set():
         try:
             await refresh_all(ctx)
         except Exception:
             log.exception("supplier refresh pass failed")
+        if time.monotonic() - last_sweep >= SWEEP_INTERVAL_S:
+            last_sweep = time.monotonic()
+            try:
+                from app.procurement.engine import sweep_all  # lazy: engine imports this module
+
+                await sweep_all(ctx)
+            except Exception:
+                log.exception("scheduled sweep failed")
         if time.monotonic() - last_ledger >= ctx.settings.ledger_interval_s - 1:
             last_ledger = time.monotonic()
             try:
