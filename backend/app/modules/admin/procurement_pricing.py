@@ -88,6 +88,7 @@ class SettingsIn(BaseModel):
     target_markup: str | None = Field(None, max_length=16)
     round_step_minor: int | None = None
     markup_on_price: int | None = None
+    price_ending: int | None = None  # 0 = none, 1-9 = round up to a price ending in it
     service_fee_direct: dict[str, str] | None = None
     uses_per_card: dict[str, int] | None = None
     fx_bands: dict[str, dict[str, str]] | None = None
@@ -101,6 +102,9 @@ class TargetIn(BaseModel):
     product_id: uuid.UUID
     variant_id: uuid.UUID | None = None
     margin: str | None = Field(None, max_length=16)  # null clears the override
+    # owner 2026-11-21: per product / variant markup on the official price; null clears it. Sent
+    # only when the field is present (``model_fields_set``), so a margin edit leaves it alone
+    markup: str | None = Field(None, max_length=16)
 
 
 class ApplyIn(BaseModel):
@@ -221,16 +225,18 @@ async def put_target(
         )
         if ok is None:
             raise NotFound("Variant not found")
+    tenant = await _tenant_row(db, tid)
+    cur_ts = dict(tenant.settings or {})
+    st = cm.from_tenant(cur_ts)
+    key = cm.target_key(body.product_id, body.variant_id)
+    if "markup" in body.model_fields_set:
+        return await _put_markup(db, admin, request, body, tenant, cur_ts, st, key)
     value = None
     if body.margin is not None:
         d = cm._dec(body.margin)
         if d is None or d >= 1:
             raise Validation("margin: a fraction below 1 (0.30 = 30 %)", code="bad_cost_settings")
         value = cm._s(d)
-    tenant = await _tenant_row(db, tid)
-    cur_ts = dict(tenant.settings or {})
-    st = cm.from_tenant(cur_ts)
-    key = cm.target_key(body.product_id, body.variant_id)
     old = st["targets"].get(key)
     targets = dict(st["targets"])
     if value is None:
@@ -254,6 +260,50 @@ async def put_target(
     )
     await db.commit()
     return {"key": key, "margin": value}
+
+
+async def _put_markup(
+    db: AsyncSession,
+    admin: User,
+    request: Request,
+    body: TargetIn,
+    tenant: Tenant,
+    cur_ts: dict[str, Any],
+    st: dict[str, Any],
+    key: str,
+) -> dict:
+    """Per product / variant markup on the official price (owner 2026-11-21), audited."""
+    value = None
+    if body.markup is not None:
+        d = cm._dec(body.markup)
+        if d is None or d < 0 or d >= 1:
+            raise Validation(
+                "markup: a fraction from 0 to below 1 (0.079 = 7.9 %)", code="bad_cost_settings"
+            )
+        value = cm._s(d)
+    markups = dict(st["markups"])
+    old = markups.get(key)
+    if value is None:
+        markups.pop(key, None)
+    elif key in markups or len(markups) < cm.MAX_TARGETS:
+        markups[key] = value
+    else:
+        raise Validation("Too many per-product markups", code="too_many_targets")
+    tenant.settings = {**cur_ts, cm.SETTINGS_KEY: {**st, "markups": markups}}
+    await audit(
+        db,
+        tenant_id=admin.tenant_id,
+        action="pricing.markup_updated",
+        actor_id=admin.id,
+        actor_role=admin.role,
+        target=f"product:{body.product_id}",
+        before={"markup": old},
+        after={"markup": value},
+        ip=client_ip(request),
+        detail={"variant_id": str(body.variant_id) if body.variant_id else None},
+    )
+    await db.commit()
+    return {"key": key, "markup": value}
 
 
 # ---------------------------------------------------------------------------------------------
@@ -302,10 +352,11 @@ def _row(
     src, _why = _source(offer, st, p.cost_minor, cur)
     est = cm.estimate(st, src, price_usd, channel_rate)
     margin = cm.target_margin(st, p.id, v.id if v else None)
-    rec_usd = cm.recommend_usd(st, src, channel_rate, margin)
+    markup = cm.target_markup(st, p.id, v.id if v else None)
+    rec_usd = cm.recommend_usd(st, src, channel_rate, margin, markup)
     rec: dict[str, Any] | None = None
     if rec_usd is not None and per is not None:
-        minor = cm.recommend_minor(rec_usd, per, st["round_step_minor"])
+        minor = cm.recommend_minor(rec_usd, per, st["round_step_minor"], st["price_ending"])
         rec = {
             "amount": cm.q(to_decimal(minor), cm.CENT),
             "minor": minor,
@@ -324,9 +375,10 @@ def _row(
                 "s": {
                     k: ({c: e["per_usd"] for c, e in v_.items()} if k == "fx" else v_)
                     for k, v_ in st.items()
-                    if k != "targets"
+                    if k not in ("targets", "markups")
                 },
                 "m": str(margin),
+                "k": str(markup),
                 "g": str(channel_rate),
                 "src": [src.kind, str(src.supplier_price_usd), src.direct_product, src.card_tier],
                 "rec": rec["minor"] if rec else None,
@@ -370,6 +422,7 @@ def _row(
         "gross_margin_pct": cm.pct(est.gross_margin),
         "net_margin_pct": cm.pct(est.net_margin),
         "target_margin_pct": cm.pct(margin),
+        "target_markup_pct": cm.pct(markup),
         "recommended": rec,
         "fingerprint": fingerprint,
         "fx_stale": stale,

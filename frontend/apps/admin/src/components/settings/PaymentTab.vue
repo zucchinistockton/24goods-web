@@ -30,6 +30,7 @@ const chLabel = (id: string) => cryptoChannelLabel(id, locale.value) ?? id
 const usdt = reactive<Record<string, { on: boolean; pct: number }>>(
   Object.fromEntries(USDT.map((id) => [id, { on: false, pct: 0 }])),
 )
+const feeWhole = ref(false)
 const f = reactive({ on: true, pct: permilleToPercent(DEFAULT_SURCHARGE_PERMILLE), as_unit: 'month' as 'month' | 'hour', as_value: 1, manual: 72, auto_card: 24, eta: 24, note_en: '', note_zh: '' })
 watch(
   () => props.site,
@@ -41,6 +42,7 @@ watch(
     }
     other.value = rest
     f.on = zpay_alipay?.enabled ?? true
+    feeWhole.value = s.payments?.fee_round_whole === true
     f.pct = permilleToPercent(zpay_alipay?.surcharge_permille ?? DEFAULT_SURCHARGE_PERMILLE)
     f.as_unit = s.after_sales_default?.unit ?? 'hour'
     f.as_value = s.after_sales_default?.value ?? s.after_sales_default_hours
@@ -71,7 +73,7 @@ async function save() {
   if (Object.keys(e).length) return
   const r = await run(() =>
     apiV5.site.put({
-      payments: { channels: { ...other.value, ...usdtCfg, zpay_alipay: { enabled: f.on, surcharge_permille: pm } } },
+      payments: { channels: { ...other.value, ...usdtCfg, zpay_alipay: { enabled: f.on, surcharge_permille: pm } }, fee_round_whole: feeWhole.value },
       after_sales_default: { unit: f.as_unit, value: f.as_value },
       auto_confirm_hours: { manual: f.manual, auto_card: f.auto_card },
       delivery: { manual_eta_hours: f.eta, manual_note_i18n: { en: f.note_en.trim(), 'zh-CN': f.note_zh.trim() } },
@@ -96,6 +98,8 @@ async function save() {
         <span class="unit muted">% ({{ percentToPermille(f.pct) }}‰)</span>
       </el-form-item>
       <p class="muted small">{{ t('site.feeExample', { fee: feeExample }) }}</p>
+      <el-form-item :label="t('site.feeWhole')"><el-switch v-model="feeWhole" /></el-form-item>
+      <p class="muted small">{{ t('site.feeWholeNote') }}</p>
     </section>
     <section class="panel block">
       <h2 class="h2">{{ t('v5.payment.usdtTitle') }}</h2>

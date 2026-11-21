@@ -58,6 +58,7 @@ from app.modules.payments import usdt as usdt_svc
 from app.modules.payments.channels import (
     channel_by_id,
     fee_rate,
+    fee_whole,
     is_usdt,
     split_amount,
     totals_by_channel,
@@ -240,7 +241,7 @@ async def quote_cart(
     subtotal = fee = discount = 0
     for (idx, _p, sub), disc in zip(avail, alloc, strict=True):
         # MONEY: fee on the discounted line, exactly as create_checkout will charge it
-        line_fee, _ = split_amount(sub, cfg.permille, disc)
+        line_fee, _ = split_amount(sub, cfg.permille, disc, cfg.whole)
         subtotal += sub
         discount += disc
         fee += line_fee
@@ -449,7 +450,8 @@ async def create_checkout(
         discounts = ev.allocation  # sums to ev.discount_minor, each < its line subtotal
     # fee per order on (subtotal - discount); the checkout amount is the sum of the orders
     total = sum(
-        split_amount(sub, cfg.permille, disc)[1] for sub, disc in zip(subs, discounts, strict=True)
+        split_amount(sub, cfg.permille, disc, cfg.whole)[1]
+        for sub, disc in zip(subs, discounts, strict=True)
     )
     ttl = (await tenant_order_limits(db, settings, buyer.tenant_id))[1]
     expires_at = utcnow() + timedelta(minutes=ttl)
@@ -561,8 +563,9 @@ async def recompute_fees(
         }
 
     before = snap()
+    whole = fee_whole(await tenant_settings(db, co.tenant_id))
     for o in orders:
-        fee, total = split_amount(o.subtotal_minor, permille, o.discount_minor)
+        fee, total = split_amount(o.subtotal_minor, permille, o.discount_minor, whole)
         o.fee_minor, o.fee_permille, o.amount_minor = fee, permille, total
         o.version += 1
     co.amount_minor = sum(o.amount_minor for o in orders)

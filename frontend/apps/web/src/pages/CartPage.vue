@@ -102,7 +102,7 @@ const allSelected = computed({
 const promo = ref<AppliedPromo | null>(null)
 const promoItems = computed(() => cart.payable.map((l) => ({ product_id: l.product_id, qty: l.qty, ...(l.variant_id ? { variant_id: l.variant_id } : {}) })))
 const discountMinor = computed(() => (promo.value && !promo.value.stale ? promo.value.discount_minor : 0))
-const totals = computed(() => cart.totals(site.permille, discountMinor.value))
+const totals = computed(() => cart.totals(site.permille, discountMinor.value, site.feeWhole))
 const discountApplied = computed(() => Number(toMinor(totals.value.discount) ?? 0n))
 const currency = computed(() => cart.currency)
 const groups = computed(() =>

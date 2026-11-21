@@ -138,6 +138,8 @@ class ChannelIn(BaseModel):
 
 class PaymentsIn(BaseModel):
     channels: dict[str, ChannelIn] = Field(default_factory=dict)
+    # owner 2026-11-21: round every channel fee UP to whole currency units (whole totals)
+    fee_round_whole: bool | None = None
 
     @field_validator("channels")
     @classmethod

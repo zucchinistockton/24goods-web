@@ -66,7 +66,7 @@ export interface RateLimitCfg {
 }
 export type QuickQuestions = { en: string[]; 'zh-CN': string[] }
 export interface SiteV4Fields {
-  payments: { channels: Record<string, ChannelCfg> }
+  payments: { channels: Record<string, ChannelCfg>; fee_round_whole?: boolean }
   support: { welcome_i18n: I18nText; quick_questions_i18n: QuickQuestions }
   rate_limit: RateLimitCfg
 }

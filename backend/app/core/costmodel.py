@@ -57,6 +57,9 @@ _INT_FIELDS: dict[str, tuple[int, int, int]] = {  # default, lo, hi
     # fees, because supplier fees keep changing; 0 = markup on the full price-independent cost
     "markup_on_price": (1, 0, 1),
     "fx_max_age_days": (7, 1, 365),
+    # owner 2026-11-21: a recommended price is rounded UP to the next whole price ending in this
+    # digit (9 -> ...9, 8 -> ...8; 0 = plain rounding to ``round_step_minor``)
+    "price_ending": (0, 0, 9),
 }
 DEFAULT_SERVICE_FEE = {"gpt": "0.30", "grok": "0.15", "claude": "0"}
 DEFAULT_USES = {"standard": 3, "pro20x": 3}
@@ -75,6 +78,9 @@ DEFAULTS: dict[str, Any] = {
     "fx_max_change": "0.2",
     # {"<product_id>" | "<product_id>:<variant_id>": "0.35"}: per-target margin override
     "targets": {},
+    # same keys: per-target MARKUP override of ``target_markup`` (owner 2026-11-21: Pro 5x 7.90 %,
+    # Pro 20x 7.93 %, Pro 50x 6.04 %; "12 % is too uniform")
+    "markups": {},
 }
 # informational only (never part of a unit estimate): shown next to the schedule
 INFO_FIELDS = (
@@ -142,6 +148,7 @@ def normalize(raw: dict[str, Any] | None) -> dict[str, Any]:
     out["fx_bands"] = _norm_bands(raw.get("fx_bands"), raw.get("fx_bands") is None)
     out["fx"] = _norm_fx(raw.get("fx"))
     out["targets"] = _norm_targets(raw.get("targets"))
+    out["markups"] = _norm_targets(raw.get("markups"))
     return out
 
 
@@ -248,7 +255,7 @@ def merged(cur: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
     """Settings after a partial patch (nested maps merge; ``fx``, ``targets`` untouched)."""
     new = copy.deepcopy(cur)
     for k, v in patch.items():
-        if v is None or k in ("fx", "targets") or k not in DEFAULTS:
+        if v is None or k in ("fx", "targets", "markups") or k not in DEFAULTS:
             continue
         if k == "fx_bands":
             new[k] = {**new[k], **v}
@@ -326,6 +333,14 @@ def rate_for(settings: dict[str, Any], currency: str) -> Decimal | None:
 
 def target_key(product_id: Any, variant_id: Any = None) -> str:
     return f"{product_id}:{variant_id}" if variant_id else str(product_id)
+
+
+def target_markup(settings: dict[str, Any], product_id: Any, variant_id: Any = None) -> Decimal:
+    """The markup on the official price for this unit: its own override, its product's, else the
+    shop-wide ``target_markup``."""
+    m = settings.get("markups") or {}
+    v = m.get(target_key(product_id, variant_id)) or m.get(str(product_id))
+    return Decimal(v if v is not None else settings.get("target_markup") or 0)
 
 
 def target_margin(settings: dict[str, Any], product_id: Any, variant_id: Any = None) -> Decimal:
@@ -453,7 +468,11 @@ def estimate(
 
 
 def recommend_usd(
-    settings: dict[str, Any], src: Source, channel_rate: Decimal, margin: Decimal
+    settings: dict[str, Any],
+    src: Source,
+    channel_rate: Decimal,
+    margin: Decimal,
+    markup: Decimal | None = None,
 ) -> Decimal | None:
     """Sale price (USD) whose NET margin is ``margin``: ``P = C / (1 - g - m)`` with ``C`` the
     price-independent cost and ``g`` the channel fee rate; or, with a ``target_markup`` above 0,
@@ -461,7 +480,8 @@ def recommend_usd(
     else ``P = C x (1 + markup)``. ``None`` when unreachable."""
     if src.supplier_price_usd is None or src.supplier_price_usd <= 0:
         return None
-    markup = Decimal(settings.get("target_markup") or 0)
+    if markup is None:
+        markup = Decimal(settings.get("target_markup") or 0)
     if markup > 0:
         cost = _components(settings, src)[0]
         if settings.get("markup_on_price", 1):
@@ -474,12 +494,19 @@ def recommend_usd(
     return _components(settings, src)[0] / denom
 
 
-def recommend_minor(usd: Decimal, per_usd: Decimal, step_minor: int) -> int:
+def recommend_minor(usd: Decimal, per_usd: Decimal, step_minor: int, ending: int = 0) -> int:
     """Shop-currency minor units, rounded UP to a multiple of ``step_minor`` (never below one
-    step: a free product is not a recommendation)."""
+    step: a free product is not a recommendation). ``ending`` 1-9 (owner 2026-11-21, "prices
+    ending in 9 or 8"): then UP to the next whole price whose last digit is ``ending``, which also
+    keeps it off round hundreds; never down, so the margin only grows."""
     minor = (usd * per_usd * 100).to_integral_value(rounding=ROUND_CEILING)
     steps = (int(minor) + step_minor - 1) // step_minor
-    return max(steps, 1) * step_minor
+    out = max(steps, 1) * step_minor
+    if 1 <= ending <= 9:
+        units = (out + 99) // 100  # whole currency units, up
+        units += (ending - units % 10) % 10
+        out = units * 100
+    return out
 
 
 def usd_from_minor(minor: int, per_usd: Decimal | None) -> Decimal | None:

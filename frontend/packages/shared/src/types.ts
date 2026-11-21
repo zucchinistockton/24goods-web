@@ -439,6 +439,8 @@ export interface PaymentChannel {
   label: string
   fee_rate: string
   permille: number
+  /** the shop rounds the fee up to whole currency units (owner 2026-11-21) */
+  fee_whole?: boolean
 }
 /** GET /pay/usdt/{no}: our own USDT pay page (display + polling; never trusted for fulfilment). */
 export interface UsdtPayView {

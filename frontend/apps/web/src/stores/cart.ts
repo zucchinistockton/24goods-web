@@ -103,14 +103,14 @@ export const useCartStore = defineStore('cart', () => {
   const payableCount = computed(() => payable.value.length)
   const currency = computed(() => quote.value?.currency ?? 'CNY')
   /** Display-only totals for the selected, available lines (the server recomputes at checkout). */
-  function totals(permille: number, discountMinor = 0): { subtotal: string; fee: string; total: string; discount: string } {
+  function totals(permille: number, discountMinor = 0, whole = false): { subtotal: string; fee: string; total: string; discount: string } {
     // per-line ceiling exactly like the server (issue 23 A); the server recomputes at checkout
     const subs: string[] = []
     for (const l of payable.value) {
       const q = quoteByProduct.value.get(l.key)
       if (q) subs.push(lineSubtotal(l, q))
     }
-    const b = feeBreakdownLines(subs, permille, discountMinor)
+    const b = feeBreakdownLines(subs, permille, discountMinor, undefined, whole)
     return { subtotal: b.subtotal, fee: b.fee, total: b.total, discount: b.discount }
   }
   function lineSubtotal(l: CartLine, q: CartQuoteLine): string {

@@ -84,14 +84,25 @@ class ChannelCfg:
     id: str
     enabled: bool
     permille: int
+    whole: bool = False  # the fee is rounded up to whole currency units
 
 
-def fee_minor(subtotal_minor: int, permille: int) -> int:
-    """``ceil(subtotal * permille / 1000)`` in integers: never lose a fen."""
-    return (subtotal_minor * permille + 999) // 1000
+def fee_minor(subtotal_minor: int, permille: int, whole: bool = False) -> int:
+    """``ceil(subtotal * permille / 1000)`` in integers: never lose a fen. ``whole`` (owner
+    2026-11-21, ``payments.fee_round_whole``): rounded UP to a whole currency unit, so a whole
+    price plus its fee is a whole total."""
+    fee = (subtotal_minor * permille + 999) // 1000
+    return (fee + 99) // 100 * 100 if whole else fee
 
 
-def split_amount(subtotal_minor: int, permille: int, discount_minor: int = 0) -> tuple[int, int]:
+def fee_whole(tenant_settings: dict[str, Any] | None) -> bool:
+    """The shop rounds channel fees up to whole currency units."""
+    return ((tenant_settings or {}).get("payments") or {}).get("fee_round_whole") is True
+
+
+def split_amount(
+    subtotal_minor: int, permille: int, discount_minor: int = 0, whole: bool = False
+) -> tuple[int, int]:
     """``(fee_minor, total_minor)`` for a subtotal.
 
     MONEY (review-v5 s6): the fee is charged on the DISCOUNTED subtotal, per order:
@@ -99,7 +110,7 @@ def split_amount(subtotal_minor: int, permille: int, discount_minor: int = 0) ->
     ``total = subtotal - discount + fee`` (== the DB CHECK ``ck_orders_amount_split``).
     """
     net = subtotal_minor - discount_minor
-    fee = fee_minor(net, permille)
+    fee = fee_minor(net, permille, whole)
     return fee, net + fee
 
 
@@ -123,6 +134,7 @@ def channel_cfg(
     permille = raw.get("surcharge_permille")
     return ChannelCfg(
         id=channel,
+        whole=fee_whole(tenant_settings),
         enabled=enabled if isinstance(enabled, bool) else default_on,
         permille=permille
         if _valid_permille(permille)
@@ -150,12 +162,14 @@ def channel_by_id(tenant_settings: dict[str, Any] | None, channel: str | None) -
     return entry_cfg(tenant_settings)
 
 
-def lines_totals(permille: int, lines: list[tuple[int, int]]) -> tuple[int, int]:
+def lines_totals(
+    permille: int, lines: list[tuple[int, int]], whole: bool = False
+) -> tuple[int, int]:
     """``(fee_minor, total_minor)`` for ``[(subtotal, discount)]`` order lines: the fee is
     ceiled PER LINE (== what create_checkout charges), never on the sum (issue 23 bug A)."""
     fee = total = 0
     for sub, disc in lines:
-        f, t = split_amount(sub, permille, disc)
+        f, t = split_amount(sub, permille, disc, whole)
         fee += f
         total += t
     return fee, total
@@ -169,7 +183,7 @@ def totals_by_channel(
     for c in all_channels(tenant_settings):
         if not c.enabled:
             continue
-        fee, total = lines_totals(c.permille, lines)
+        fee, total = lines_totals(c.permille, lines, c.whole)
         out[c.id] = {"fee_minor": fee, "amount_minor": total, "fee_rate": fee_rate(c.permille)}
     return out
 
@@ -185,6 +199,7 @@ def public_channels(tenant_settings: dict[str, Any] | None, lang: str) -> list[d
             "label": LABELS[c.id].get(lang) or LABELS[c.id]["en"],
             "fee_rate": fee_rate(c.permille),
             "permille": c.permille,
+            "fee_whole": c.whole,
         }
         for c in all_channels(tenant_settings)
         if c.enabled

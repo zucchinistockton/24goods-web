@@ -50,7 +50,7 @@ from app.modules.orders.service import (
     reserve_manual_stock,
     reserved_auto_stock,
 )
-from app.modules.payments.channels import split_amount
+from app.modules.payments.channels import fee_whole, split_amount
 from app.modules.payments.settle import apply_sold, lock_checkout, payment_for_order, sold_keys
 from app.modules.promo import service as promo_svc
 from app.procurement.engine import close_order_jobs
@@ -165,6 +165,9 @@ async def change_price(
         floor_total = floor_unit * order.qty
         if new_minor < floor_total:
             raise Validation("amount is below the floor price", code="reprice_below_floor")
+    # read BEFORE the order is touched: a query autoflushes, and a half-updated row breaks the
+    # amount CHECK (subtotal - discount + fee)
+    whole = fee_whole(await tenant_settings(db, order.tenant_id))
     before = snapshot(order)
     old_discount, old_markup = order.discount_minor, order.reseller_markup_minor
     if order.promo_code_id is not None or old_discount > 0:
@@ -180,7 +183,7 @@ async def change_price(
     )
     old_minor = order.amount_minor
     # staff set the new SUBTOTAL; the channel fee is recomputed at the rate the order carries
-    fee, total = split_amount(new_minor, order.fee_permille)  # discount is 0 after a reprice
+    fee, total = split_amount(new_minor, order.fee_permille, 0, whole)  # no discount after it
     order.subtotal_minor = new_minor
     order.fee_minor = fee
     order.amount_minor = total

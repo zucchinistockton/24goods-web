@@ -76,7 +76,15 @@ async def test_fee_is_ceiled_server_side_and_default_is_30_permille(env):
     )
     assert row == 30_000_060
     ch = (await buyer.get("/api/v1/site/payment-channels")).json()
-    assert ch == [{"id": "zpay_alipay", "label": "Alipay", "fee_rate": "3%", "permille": 30}]
+    assert ch == [
+        {
+            "id": "zpay_alipay",
+            "label": "Alipay",
+            "fee_rate": "3%",
+            "permille": 30,
+            "fee_whole": False,
+        }
+    ]
     zh = (await buyer.get("/api/v1/site/payment-channels?lang=zh-CN")).json()
     assert zh[0]["label"] == "支付宝"
 
@@ -839,3 +847,28 @@ async def test_description_markdown_is_sanitised_and_backfilled(env):
         "/api/v1/admin/content/images", files={"file": ("a.png", b"<script>", "image/png")}
     )
     assert bad.status_code == 422
+
+
+async def test_whole_yuan_fees_make_whole_totals(env):
+    """Owner 2026-11-21: with ``payments.fee_round_whole`` a whole price + its fee is a whole total
+    (729 @ 5 % = 36.45 -> 37 -> 766); orders, the channel list and a re-applied fee agree."""
+    await set_settings(
+        env,
+        {
+            "payments": {
+                "fee_round_whole": True,
+                "channels": {"zpay_alipay": {"surcharge_permille": 50}},
+            }
+        },
+    )
+    p = await env.product(mode="manual", price=72900, floor=100)
+    buyer, _ = await env.login("buyer")
+    o = await buy(buyer, p)
+    assert (o["subtotal"], o["fee"], o["amount"]) == ("729.00", "37.00", "766.00")
+    ch = (await buyer.get("/api/v1/site/payment-channels")).json()
+    assert ch[0]["fee_whole"] is True
+    r = await buyer.post(f"/api/v1/orders/{o['id']}/pay", json={"channel": "zpay_alipay"})
+    assert r.status_code == 200 and "money=766.00" in r.json()["pay_url"]
+    await set_settings(env, {"payments": {"channels": {"zpay_alipay": {"surcharge_permille": 50}}}})
+    o2 = await buy(buyer, p)  # switched off again: to the fen
+    assert (o2["fee"], o2["amount"]) == ("36.45", "765.45")
