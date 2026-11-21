@@ -6,7 +6,17 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 **Hand-off 2026-11-18 (after PR #49; the owner's order #29 → #30 → #31 is done on the demo). START HERE.**
 
-- **2026-11-21 ADR-050 built (`feat/crypto-networks`; owner: "Alipay, X Layer, and Polygon … add wallet addresses
+- **2026-11-21 14:3x UTC PRODUCTION DEPLOY of ADR-050 (#95; owner: "deploy it to the production environment").**
+  c4 runs `38975ac` (image revision verified), no migration (still `0039`). Pre-deploy dump
+  `/root/kesiv-backups/predeploy-20261121T143256Z/` (sha256 `18d14566…5b9f`, also on c4; 48 orders); rollback images
+  `goods24-{api,web}:rollback-b55c293` and `:rollback-0196c60` (removed `:rollback-53588c6`). `env/api.env` gained
+  `APP_BEPUSDT_ADMIN_USER/PASSWORD/ENTRY` (backup `api.env.bak-<ts>` next to it). BEpusdt wallet #4 `usdt.polygon` ->
+  Agentic Wallet `0x97f6…7b4b` (added through the new client, verified by its list), shop channel `usdt_polygon` ON
+  (audited). Checkout now offers Alipay, USDT (X Layer), USDT (Polygon PoS); TRC20 and Arbitrum off. Smoke all pass.
+  opsdev runs mywebtools `aa2d49f` (#15: Polygon refill route, automatic OKB / POL purchase). Owner's next step: one
+  real Polygon USDT test purchase confirms detection end to end.
+
+- **2026-11-21 ADR-050 built (#95, deployed, see above; owner: "Alipay, X Layer, and Polygon … add wallet addresses
   myself … as versatile as possible … deploy").** Catalogue of 19 USDT/USDC networks (BEpusdt v1.24.3 list), admin
   Crypto wallets panel over BEpusdt's admin API, dynamic network table in Settings → Payments, shared label helper.
   Console (mywebtools #15): Polygon refill route, automatic OKB / POL purchase for network fees (1 USDT swap when
