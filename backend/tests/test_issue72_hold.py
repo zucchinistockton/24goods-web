@@ -59,7 +59,12 @@ async def test_held_without_payment_can_be_closed_after_unpaid_requery(env, gw):
     assert (await release(agent, o["id"], "close")).status_code == 403  # admin only
     assert (await release(admin, o["id"], "accept")).status_code == 409  # nothing was paid
     r = await admin.get(f"{API}/admin/orders/{o['id']}")
-    assert r.json()["hold"] == {"reason": "requery_mismatch", "by": "gateway", "has_payment": False}
+    assert r.json()["hold"] == {
+        "reason": "requery_mismatch",
+        "by": "gateway",
+        "has_payment": False,
+        "job_id": None,  # no procurement job: released here, not in a supplier job
+    }
     # the gateway now says unpaid: the close goes through, stock comes back
     gw.paid.pop(o["order_no"])
     r = await release(admin, o["id"], "close")

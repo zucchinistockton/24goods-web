@@ -918,7 +918,7 @@ async def test_no_card_with_a_use_left_opens_one_and_sweeps_the_used_up_card(env
     await _drive(env, dup, order, buyer)
     job = await _job(dup, order)
     assert vendor.card_opens == 1
-    new_id = max(vendor.cards)
+    new_id = vendor.next_card  # the mock's last opened card
     assert job.state == "fulfilled" and vendor.direct_cards_sent == [new_id]
     keys = _posts(vendor, "/cards/open")
     assert len(keys) == 1 and keys[0].startswith("open:")

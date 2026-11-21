@@ -245,7 +245,8 @@ async def test_a_low_zovocard_wallet_alerts_staff_every_six_hours(env, up, monke
 
     await _sql(
         env,
-        "UPDATE suppliers SET adapter = 'zovocard', env = 'production', enabled = true, "
+        "UPDATE suppliers SET code = 'zovocard_low', adapter = 'zovocard', env = 'production', "
+        "enabled = true, "
         "last_balance = 75, last_balance_at = now() WHERE id = :s",
         s=sid,
     )
