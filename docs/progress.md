@@ -6,7 +6,27 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 **Hand-off 2026-11-18 (after PR #49; the owner's order #29 → #30 → #31 is done on the demo). START HERE.**
 
-- **2026-11-21 ADR-049 built (`feat/card-autopen`, NOT deployed; owner: "issue cards on demand … recover any
+- **2026-11-21 12:42 UTC PRODUCTION DEPLOY of ADR-049 + the session fix (#93, #92; owner: "Please help me complete
+  this and then redeploy to production").** c4 runs `b55c293` (api + procurement revision verified), migration
+  `0039_card_open_sweep` applied. Pre-deploy dump `/root/kesiv-backups/predeploy-20261121T124139Z/` (sha256
+  `c7b3051c…201f`, also on c4; 54 tables, 48 orders); rollback images `goods24-{api,web}:rollback-0196c60` and
+  `:rollback-53588c6` (removed `:rollback-a6c3b9c`; disk 92 %, 1.8 GB free); `prod.sh smoke` all pass, no errors.
+  The platform tenant's stored funding settings predate ADR-049, so the new keys use their defaults (open cards ON,
+  sweep ON, wallet alert 60).
+- **2026-11-21 12:44 UTC USDT receiving address switched (owner request).** BEpusdt on c4: Arbitrum One and X Layer ->
+  the OKX Agentic Wallet "Account 1" `0x97f64f884cec7272515849cdac6b37b874cf7b4b` (was the OKX app wallet
+  `0x5bde…0741`); TRON TRC20 unchanged `TTAWA…1N2` (the Agentic Wallet has no TRON). Zero waiting BEpusdt orders;
+  container stopped, data dir backed up to `/opt/kesiv/backups/bepusdt-preagentic-20261121T124357Z/`, rows updated,
+  restarted (v1.24.3 started OK). Late transfers to `0x5bde…0741` must be reconciled by hand.
+- **2026-11-21 opsdev: OKX -> ZovoCard refill live (mywebtools #14, `2025a30`).** Every 10 min: ZovoCard wallet below
+  `refill.low_usd` 60 -> USD₮0 on X Layer from the Agentic Wallet up to 100 (10–200 per transfer, 300 per UTC day, 2 h
+  between automatic sends), recipient and token pinned in the wallet agent; hash submitted to ZovoCard
+  (`/recharge/submit-tx`); unclear transfers pause automatic mode + Telegram. OKX policy: double confirmation turned OFF
+  by the owner, no limits. Agent unit `RuntimeMaxSec=120`. At deploy: ZovoCard 59.49 USD, OKX USD₮0 1.15 -> no transfer
+  (below the 10 USDT minimum), the owner gets a "fund the OKX wallet" Telegram note. No live transfer has run yet: the
+  first one confirms the CLI send flow and that ZovoCard credits USD₮0 on X Layer automatically.
+
+- **2026-11-21 ADR-049 built (#93, deployed 12:42 UTC, see above; owner: "issue cards on demand … recover any
   remaining balance … enable them by default … send an automatic Telegram notification … fix the Order button").**
   On-demand funding cards (`POST /cards/open` from the paid job's fresh check, BIN priority, first load = order need),
   leftover sweep after each direct order (`POST /cards/refund`, never a buyer's card / a busy card), Telegram alert when
