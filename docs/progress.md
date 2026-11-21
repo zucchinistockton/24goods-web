@@ -6,6 +6,13 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 **Hand-off 2026-11-18 (after PR #49; the owner's order #29 → #30 → #31 is done on the demo). START HERE.**
 
+- **2026-11-21 ADR-050 built (`feat/crypto-networks`; owner: "Alipay, X Layer, and Polygon … add wallet addresses
+  myself … as versatile as possible … deploy").** Catalogue of 19 USDT/USDC networks (BEpusdt v1.24.3 list), admin
+  Crypto wallets panel over BEpusdt's admin API, dynamic network table in Settings → Payments, shared label helper.
+  Console (mywebtools #15): Polygon refill route, automatic OKB / POL purchase for network fees (1 USDT swap when
+  low). Order G7MQTQK2OHKSB (`7cbb54e7`) was fulfilled by the owner at 11:01:51 UTC. TRC20 disabled in production
+  12:5x UTC (audited `settings.updated`).
+
 - **2026-11-21 12:42 UTC PRODUCTION DEPLOY of ADR-049 + the session fix (#93, #92; owner: "Please help me complete
   this and then redeploy to production").** c4 runs `b55c293` (api + procurement revision verified), migration
   `0039_card_open_sweep` applied. Pre-deploy dump `/root/kesiv-backups/predeploy-20261121T124139Z/` (sha256

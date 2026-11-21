@@ -3,7 +3,7 @@ import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { Search } from '@element-plus/icons-vue'
-import { formatDateTime, formatMoney, visibleEmail, type Order, type OrderStatus } from '@24goods/shared'
+import { CRYPTO_CHANNEL_IDS, cryptoChannelLabel, formatDateTime, formatMoney, isCryptoChannel, visibleEmail, type Order, type OrderStatus } from '@24goods/shared'
 import { apiV5 } from '../api'
 import type { AdminOrderV5 } from '../api-v5'
 import type { AdminReseller } from '../api-v5'
@@ -14,7 +14,7 @@ import { usePaged } from '../composables/usePaged'
 import { useRealtimeStore } from '../stores/realtime'
 
 const STATUSES: OrderStatus[] = ['pending_payment', 'paid', 'delivered', 'completed', 'manual_review', 'cancelled', 'expired', 'refunded']
-const { t, locale } = useI18n()
+const { t, te, locale } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const rt = useRealtimeStore()
@@ -26,10 +26,11 @@ type AdminOrder = AdminOrderV5
 const resellerId = ref(typeof route.query.reseller === 'string' ? route.query.reseller : '')
 const overdue = ref(route.query.overdue === '1')
 // display order = payment priority (#58): Alipay, then USDT X Layer -> Arbitrum One -> TRC20
-const CHANNELS = ['zpay_alipay', 'usdt_xlayer', 'usdt_arbitrum', 'usdt_trc20'] as const
+const CHANNELS = ['zpay_alipay', ...CRYPTO_CHANNEL_IDS] as const
 const channel = ref(typeof route.query.channel === 'string' ? route.query.channel : '')
 function channelLabel(c: string | null | undefined): string {
-  return c && (CHANNELS as readonly string[]).includes(c) ? t(`payChannel.${c}`) : c || '—'
+  if (!c) return '—'
+  return te(`payChannel.${c}`) ? t(`payChannel.${c}`) : cryptoChannelLabel(c, locale.value) ?? c
 }
 const resellers = ref<AdminReseller[]>([])
 const table = usePaged<AdminOrder>((page, page_size) =>
@@ -129,7 +130,7 @@ function open(row: AdminOrder) {
         </el-table-column>
         <el-table-column :label="t('payChannel.column')" width="150">
           <template #default="{ row }">
-            <el-tag v-if="row.channel" size="small" :type="String(row.channel).startsWith('usdt_') ? 'success' : 'primary'" effect="plain">{{ channelLabel(row.channel) }}</el-tag>
+            <el-tag v-if="row.channel" size="small" :type="isCryptoChannel(row.channel) ? 'success' : 'primary'" effect="plain">{{ channelLabel(row.channel) }}</el-tag>
             <span v-else class="muted">—</span>
           </template>
         </el-table-column>

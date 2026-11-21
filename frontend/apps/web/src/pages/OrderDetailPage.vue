@@ -22,6 +22,7 @@ import {
   type CheckoutView,
   type Order,
   isInstantMode,
+  cryptoChannelLabel,
 } from '@24goods/shared'
 import { api } from '../api'
 import AfterSalesSheet from '../components/AfterSalesSheet.vue'
@@ -187,7 +188,7 @@ const liveCheckoutAmount = computed(() => {
 const channelLabel = computed(() => {
   const c = order.value?.channel
   if (!c) return '—'
-  return te(`order.channels.${c}`) ? t(`order.channels.${c}`) : c
+  return te(`order.channels.${c}`) ? t(`order.channels.${c}`) : cryptoChannelLabel(c, locale.value) ?? c
 })
 
 /** v9 §1: the chosen method could not be reached; nothing was charged, the buyer picks another. */

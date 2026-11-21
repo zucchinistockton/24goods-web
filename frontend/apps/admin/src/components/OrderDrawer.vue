@@ -6,6 +6,8 @@ import type { UploadRequestOptions } from 'element-plus'
 import {
   compareAmount,
   compressImage,
+  cryptoChannelLabel,
+  isCryptoChannel,
   copyText,
   formatCountdown,
   formatDateTime,
@@ -38,10 +40,9 @@ import { client } from '../api'
 type AdminOrderDetail = AdminOrderDetailBase & Partial<OrderV5Fields>
 const props = defineProps<{ orderId: string | null }>()
 const emit = defineEmits<{ close: []; updated: [o: Order] }>()
-const { t, locale } = useI18n()
-const PAY_CHANNELS = ['zpay_alipay', 'usdt_xlayer', 'usdt_arbitrum', 'usdt_trc20']
+const { t, te, locale } = useI18n()
 function channelLabel(c: string): string {
-  return PAY_CHANNELS.includes(c) ? t(`payChannel.${c}`) : c
+  return te(`payChannel.${c}`) ? t(`payChannel.${c}`) : cryptoChannelLabel(c, locale.value) ?? c
 }
 
 const order = ref<AdminOrderDetail | null>(null)
@@ -492,7 +493,7 @@ defineExpose({ reload: () => props.orderId && load(props.orderId) })
           <el-descriptions-item :label="t('orders.info.qty')">{{ order.qty }}</el-descriptions-item>
           <el-descriptions-item :label="t('orders.col.mode')">{{ t(`deliveryMode.${order.delivery_mode}`) }}</el-descriptions-item>
           <el-descriptions-item :label="t('payChannel.column')">
-            <el-tag v-if="order.channel" size="small" :type="String(order.channel).startsWith('usdt_') ? 'success' : 'primary'" effect="plain">{{ channelLabel(order.channel) }}</el-tag>
+            <el-tag v-if="order.channel" size="small" :type="isCryptoChannel(order.channel) ? 'success' : 'primary'" effect="plain">{{ channelLabel(order.channel) }}</el-tag>
             <el-tag v-else size="small" type="info" effect="plain">{{ t('payChannel.none') }}</el-tag>
           </el-descriptions-item>
           <el-descriptions-item :label="t('orders.info.version')">v{{ order.version }}</el-descriptions-item>

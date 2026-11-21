@@ -148,7 +148,7 @@ export default {
   },
   payment: {
     usdtTitle: "USDT（自建 BEpusdt）",
-    usdtNote: "链上收款 USDT。收款地址在 BEpusdt 后台配置（见 docs/production.md），不在此页面设置。默认关闭。",
+    usdtNote: "通过 BEpusdt 链上收款 USDT / USDC。开启需要的网络，并在下方“加密货币钱包”中设置收款地址。所有网络默认关闭。",
     usdtOk: "服务器已配置 BEpusdt",
     usdtMissing: "服务器尚未配置 BEpusdt（APP_BEPUSDT_URL / APP_BEPUSDT_API_TOKEN）",
     usdtEnabled: "启用 {name}",

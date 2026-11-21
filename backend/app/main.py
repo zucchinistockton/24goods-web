@@ -29,6 +29,7 @@ from app.core.resources import Resources, build_resources
 from app.modules import emails, jobs
 from app.modules.admin.blocking import router as admin_blocking_router
 from app.modules.admin.categories import router as admin_categories_router
+from app.modules.admin.crypto_wallets import router as admin_crypto_wallets_router
 from app.modules.admin.importer import router as admin_import_router
 from app.modules.admin.ordering import router as admin_ordering_router
 from app.modules.admin.payment_gateways import router as payment_gateways_router
@@ -220,6 +221,7 @@ def api_router() -> APIRouter:
         admin_procurement_cost_router,
         admin_procurement_cards_router,
         admin_procurement_funding_router,
+        admin_crypto_wallets_router,
         admin_procurement_redeem_router,
         admin_procurement_pricing_router,
         admin_procurement_options_router,

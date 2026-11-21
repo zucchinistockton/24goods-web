@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 from app.core.pow import PowIn
+from app.modules.payments.channels import PayChannel
 
 _SOURCE = re.compile(r"^[a-z0-9_-]{1,32}$")
 
@@ -50,7 +51,7 @@ class PayIn(BaseModel):
     pow: PowIn | None = None
     turnstile_token: str | None = Field(None, max_length=2048)
     idempotency_key: str | None = Field(None, max_length=64)
-    channel: Literal["zpay_alipay", "usdt_arbitrum", "usdt_xlayer", "usdt_trc20"]
+    channel: PayChannel
 
 
 class PriceIn(BaseModel):
@@ -97,13 +98,13 @@ class CartItemIn(BaseModel):
 
 
 class CartQuoteIn(BaseModel):
-    channel: Literal["zpay_alipay", "usdt_arbitrum", "usdt_xlayer", "usdt_trc20"] | None = None
+    channel: PayChannel | None = None
     items: list[CartItemIn] = Field(min_length=1, max_length=20)
     promo_code: str | None = Field(None, max_length=40)
 
 
 class CheckoutIn(BaseModel):
-    channel: Literal["zpay_alipay", "usdt_arbitrum", "usdt_xlayer", "usdt_trc20"] | None = None
+    channel: PayChannel | None = None
     items: list[CartItemIn] = Field(min_length=1, max_length=20)
     source: str | None = Field(None, max_length=200)
     promo_code: str | None = Field(None, max_length=40)

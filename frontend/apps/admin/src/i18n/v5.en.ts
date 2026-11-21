@@ -148,7 +148,7 @@ export default {
   },
   payment: {
     usdtTitle: "USDT (self-hosted BEpusdt)",
-    usdtNote: "Receive USDT on-chain. Wallet addresses are set in the BEpusdt console (see docs/production.md), never here. Disabled by default.",
+    usdtNote: "Receive USDT / USDC on-chain through BEpusdt. Switch on the networks you want; set their receiving addresses in Crypto wallets below. Every network is off by default.",
     usdtOk: "BEpusdt is configured on the server",
     usdtMissing: "BEpusdt is not configured on the server (APP_BEPUSDT_URL / APP_BEPUSDT_API_TOKEN)",
     usdtEnabled: "Enable {name}",
