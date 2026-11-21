@@ -7,7 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 from app.core.pow import PowIn
-from app.modules.payments.channels import PayChannel
+from app.modules.payments.channel_field import PayChannel
 
 _SOURCE = re.compile(r"^[a-z0-9_-]{1,32}$")
 

@@ -14,9 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Annotated, Any
-
-from pydantic import AfterValidator
+from typing import Any
 
 DEFAULT_CHANNEL = "zpay_alipay"
 DEFAULT_SURCHARGE_PERMILLE = 30
@@ -70,16 +68,6 @@ def address_family(trade_type: str) -> str | None:
     if coin not in _TRADE_TYPES or net not in _TRADE_TYPES[coin]:
         return None
     return NETWORKS[net][2]
-
-
-def _known(v: str) -> str:
-    if v not in LABELS:
-        raise ValueError("unknown payment channel")
-    return v
-
-
-# a request field naming a payment channel: any channel of the catalogue (enabled is checked later)
-PayChannel = Annotated[str, AfterValidator(_known)]
 
 
 def is_usdt(channel: str | None) -> bool:

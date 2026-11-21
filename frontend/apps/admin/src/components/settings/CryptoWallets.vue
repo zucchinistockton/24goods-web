@@ -118,13 +118,13 @@ async function remove(w: CryptoWallet) {
       <el-table-column :label="t('crypto.network')" min-width="150"><template #default="{ row }">{{ typeLabel(row.trade_type) }}</template></el-table-column>
       <el-table-column :label="t('crypto.address')" min-width="260"><template #default="{ row }"><span class="mono addr">{{ row.address }}</span></template></el-table-column>
       <el-table-column :label="t('crypto.on')" width="80">
-        <template #default="{ row }"><el-switch :model-value="row.enabled" :disabled="busy" :aria-label="t('crypto.on')" @change="(v: string | number | boolean) => toggle(row, !!v)" /></template>
+        <template #default="{ row }"><el-switch :model-value="row.enabled" :disabled="busy" :aria-label="t('crypto.on')" @change="(v: string | number | boolean) => toggle(row as CryptoWallet, !!v)" /></template>
       </el-table-column>
       <el-table-column :label="t('crypto.remark')" min-width="100"><template #default="{ row }">{{ row.remark }}</template></el-table-column>
       <el-table-column :label="t('crypto.actions')" width="150">
         <template #default="{ row }">
-          <el-button size="small" link :disabled="busy" @click="editAddress(row)">{{ t('crypto.edit') }}</el-button>
-          <el-button size="small" link type="danger" :disabled="busy" @click="remove(row)">{{ t('crypto.remove') }}</el-button>
+          <el-button size="small" link :disabled="busy" @click="editAddress(row as CryptoWallet)">{{ t('crypto.edit') }}</el-button>
+          <el-button size="small" link type="danger" :disabled="busy" @click="remove(row as CryptoWallet)">{{ t('crypto.remove') }}</el-button>
         </template>
       </el-table-column>
     </el-table>

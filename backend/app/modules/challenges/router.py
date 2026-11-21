@@ -17,7 +17,7 @@ from app.core.resources import Resources
 from app.models import User
 from app.modules.challenges import service
 from app.modules.content.site import tenant_settings
-from app.modules.payments.channels import PayChannel
+from app.modules.payments.channel_field import PayChannel
 
 router = APIRouter(prefix="/security", tags=["security-challenges"])
 
