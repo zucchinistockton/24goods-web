@@ -78,6 +78,11 @@ EXPECTED: dict[tuple[int | None, str | None], tuple[Outcome, bool]] = {
     (None, "SESSION_REQUIRED"): (Outcome.FATAL, False),
     (None, "GPT_SESSION_INVALID"): (Outcome.FATAL, False),
     (None, "CLAUDE_SESSION_INVALID"): (Outcome.FATAL, False),
+    (None, "GROK_SESSION_INVALID"): (Outcome.FATAL, False),
+    # undocumented, seen on production 2026-11-20 ("session expired ... not charged")
+    (None, "GPT_SESSION_EXPIRED"): (Outcome.FATAL, False),
+    (None, "CLAUDE_SESSION_EXPIRED"): (Outcome.FATAL, False),
+    (None, "GROK_SESSION_EXPIRED"): (Outcome.FATAL, False),
     (None, "GPT_CREDIT_REQUIRES_SUBSCRIPTION"): (Outcome.FATAL, False),
     (None, "GPT_CREDIT_DISABLED"): (Outcome.UNAVAILABLE, False),
     (None, "GPT_RENEW_TARGET_NOT_PRO"): (Outcome.FATAL, False),

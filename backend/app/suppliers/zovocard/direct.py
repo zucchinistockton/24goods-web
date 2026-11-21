@@ -209,6 +209,21 @@ class Preflight:
     promotions: tuple[str, ...] = ()
 
 
+# the vendor refused the buyer's session itself (nothing was charged): the buyer must paste a new
+# one. ``*_SESSION_EXPIRED`` is undocumented; first seen on production 2026-11-20 ("Session has
+# expired or has no access, get the full Session again; not charged").
+SESSION_REJECTED_CODES = frozenset(
+    {
+        "SESSION_REQUIRED",
+        "GPT_SESSION_INVALID",
+        "CLAUDE_SESSION_INVALID",
+        "GROK_SESSION_INVALID",
+        "GPT_SESSION_EXPIRED",
+        "CLAUDE_SESSION_EXPIRED",
+        "GROK_SESSION_EXPIRED",
+    }
+)
+
 # the vendor's preflight token is a compact JWE (five base64url parts) of ~9.8 KB, measured
 # 2026-11-20 on production; it was a short opaque string before. Kept in memory only.
 PREFLIGHT_TOKEN_MAX = 32768

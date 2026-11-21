@@ -56,6 +56,7 @@ from app.suppliers import direct_progress as dp
 from app.suppliers.registry import SupplierConfigError, load_secrets
 from app.suppliers.zovocard import PRODUCTION_BASE_URL, SANDBOX_BASE_URL
 from app.suppliers.zovocard.client import sanitize_error_code
+from app.suppliers.zovocard.direct import SESSION_REJECTED_CODES
 
 log = logging.getLogger("app.procurement.redeem")
 
@@ -106,8 +107,7 @@ _SESSION_EXPIRED = frozenset(
      "PREFLIGHT_EXPIRED", "REDEMPTION_TOKEN_EXPIRED"}
 )  # fmt: skip
 _CREDENTIAL_INVALID = frozenset(
-    {"CREDENTIAL_REQUIRED", "GPT_SESSION_INVALID", "CLAUDE_SESSION_INVALID",
-     "GROK_SESSION_INVALID", "PRECHECK_REJECTED"}
+    {"CREDENTIAL_REQUIRED", "PRECHECK_REJECTED", *SESSION_REJECTED_CODES}
 )  # fmt: skip
 _ACCOUNT_INELIGIBLE = frozenset(
     {"GPT_PLAN_ALREADY_ACTIVE", "GPT_RENEW_TARGET_NOT_PRO", "GPT_RENEW_SUBSCRIPTION_EXPIRED",

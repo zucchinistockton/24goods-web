@@ -6,7 +6,21 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 **Hand-off 2026-11-18 (after PR #49; the owner's order #29 → #30 → #31 is done on the demo). START HERE.**
 
-- **2026-11-20 fix: every direct order refused its account check (`fix/preflight-token-length`, NOT deployed yet).**
+- **2026-11-21 fix: an expired buyer session is "session invalid", not an outage (`fix/session-expired-code`, NOT deployed).**
+  The vendor now answers an expired session with the undocumented `400 GPT_SESSION_EXPIRED` ("not charged"). It was
+  not in our list, so the pre-payment check said 503 `preflight_unavailable`, the redeem relay said "unavailable" and,
+  at order time, an unknown 400 on a write is "maybe charged" (staff). One shared `dr.SESSION_REJECTED_CODES`
+  (`*_SESSION_INVALID`, `*_SESSION_EXPIRED`, `SESSION_REQUIRED`) now drives the account check, the half-price check,
+  `errors.TABLE` (FATAL) and redeem (`credential_invalid`).
+
+- **2026-11-21 04:47 UTC PRODUCTION DEPLOY of the preflight fix (#91, owner: "deploy the preflight fix to production").**
+  c4 runs `0196c60` (api + procurement image revision verified; `PREFLIGHT_TOKEN_MAX` 32768 live). Pre-deploy dump
+  `/root/kesiv-backups/predeploy-20261121T044600Z/` (sha256 `f4b3dc2a…f958`, also on c4; 54 tables, 45 orders); no
+  migration (still `0038`); rollback images `goods24-{api,web}:rollback-53588c6` and `:rollback-a6c3b9c` (removed
+  `:rollback-8704a64`; disk 92 %, 1.8 GB free); `prod.sh smoke` all pass, no errors in the logs. GHCR login with
+  `~/.secrets/ghcr_token` is DENIED now (token from 2026-11-06, likely the old account); the pull worked without it.
+
+- **2026-11-20 fix: every direct order refused its account check (#91, deployed 2026-11-21, see above).**
   Owner's Go PH orders at 18:45 and 18:48 UTC: `POST /orders` 503 `preflight_unavailable`; audit
   `order.direct_preflight_refused` `vendor_reason=malformed_preflight`. Cause: ZovoCard's preflight token is now a
   compact JWE of 9,832 characters (measured on production, read-only preflight); `parse_preflight` capped it at 512,
