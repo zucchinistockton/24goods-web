@@ -24,7 +24,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.suppliers.base import Outcome
-from app.suppliers.zovocard.direct import CARD_WAIT_CODES
+from app.suppliers.zovocard.direct import CARD_WAIT_CODES, SESSION_REJECTED_CODES
 
 
 @dataclass(frozen=True)
@@ -106,9 +106,7 @@ TABLE: dict[tuple[int | None, str | None], Rule] = {
     (None, "GPT_PRICE_UNCONFIRMED"): _RETRY,
     # vendor 6.18.9: "read the order or its events before deciding; never blindly create another"
     (None, "GPT_DIRECT_ORDER_REJECTED"): _AMBIG,
-    (None, "SESSION_REQUIRED"): _FATAL,
-    (None, "GPT_SESSION_INVALID"): _FATAL,
-    (None, "CLAUDE_SESSION_INVALID"): _FATAL,
+    **{(None, code): _FATAL for code in sorted(SESSION_REJECTED_CODES)},
     (None, "GPT_CREDIT_REQUIRES_SUBSCRIPTION"): _FATAL,
     (None, "GPT_CREDIT_DISABLED"): _UNAV,
     (None, "GPT_RENEW_TARGET_NOT_PRO"): _FATAL,

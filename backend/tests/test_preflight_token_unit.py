@@ -43,3 +43,15 @@ def test_redeem_passes_a_long_preflight_token_both_ways():
 def test_the_mock_issues_tokens_shaped_like_the_vendor():
     tok = _jwe_like_token()
     assert tok.count(".") == 4 and len(tok) > 9000
+
+
+def test_an_expired_session_is_the_buyers_to_fix_not_an_outage():
+    # vendor 2026-11-20: 400 GPT_SESSION_EXPIRED "Session expired ... not charged"
+    from app.suppliers.base import Outcome
+    from app.suppliers.zovocard.errors import classify
+
+    assert "GPT_SESSION_EXPIRED" in dr.SESSION_REJECTED_CODES
+    mapped = redeem.map_upstream_error("preflight", 400, "GPT_SESSION_EXPIRED")
+    assert mapped == "credential_invalid"
+    for write in (False, True):  # unknown 400 on a write would be "maybe charged"
+        assert classify(400, "GPT_SESSION_EXPIRED", write=write).outcome is Outcome.FATAL

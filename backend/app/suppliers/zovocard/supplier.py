@@ -1060,7 +1060,7 @@ class ZovoCardSupplier:
         pf = await self._preflight(spec, credential)
         if isinstance(pf, Result):
             code = pf.error_code or "preflight_failed"
-            if code in ("GPT_SESSION_INVALID", "CLAUDE_SESSION_INVALID", "SESSION_REQUIRED"):
+            if code in dr.SESSION_REJECTED_CODES:
                 return HalfCheck("session_invalid", "session_rejected")
             return HalfCheck("unavailable", clean_detail(code))
         ok, reason = dr.half_eligibility(
@@ -1098,7 +1098,7 @@ class ZovoCardSupplier:
         pf = await self._preflight(dr.DirectSpec(product, plan, 1, country, currency), credential)
         if isinstance(pf, Result):
             code = pf.error_code or "preflight_failed"
-            if code in ("GPT_SESSION_INVALID", "CLAUDE_SESSION_INVALID", "SESSION_REQUIRED"):
+            if code in dr.SESSION_REJECTED_CODES:
                 return AccountCheck("blocked", "session_invalid")
             return AccountCheck("unavailable", clean_detail(code))
         seen = {"account_mask": pf.account_mask, "current_plan": pf.current_plan}
