@@ -2729,24 +2729,23 @@ async def sweep_all(ctx: ProcurementContext) -> int:
     for ref in await enabled_suppliers(ctx):
         try:
             async with tenant_session(ctx.maker, ref.tenant_id) as db:
-                row = (
-                    await db.execute(
-                        select(SupplierOffer)
-                        .where(
-                            SupplierOffer.tenant_id == ref.tenant_id,
-                            SupplierOffer.supplier_id == ref.id,
-                            SupplierOffer.kind == "direct",
-                            SupplierOffer.enabled.is_(True),
-                            SupplierOffer.params["plan"].astext.not_like("pro_20x%"),
-                        )
-                        .order_by(SupplierOffer.priority)
-                        .limit(1)
+                # a plain column, read inside the session (an ORM row expires on rollback)
+                params = await db.scalar(
+                    select(SupplierOffer.params)
+                    .where(
+                        SupplierOffer.tenant_id == ref.tenant_id,
+                        SupplierOffer.supplier_id == ref.id,
+                        SupplierOffer.kind == "direct",
+                        SupplierOffer.enabled.is_(True),
+                        SupplierOffer.params["plan"].astext.not_like("pro_20x%"),
                     )
-                ).scalar_one_or_none()
+                    .order_by(SupplierOffer.priority)
+                    .limit(1)
+                )
                 await db.rollback()
-            if row is None:
+            if params is None:
                 continue
-            offer = OfferSpec(kind="direct", params=dict(row.params or {}))
+            offer = OfferSpec(kind="direct", params=dict(params))
             swept += await sweep_leftovers(ctx, ref.tenant_id, ref, offer)
         except Exception as exc:  # one supplier must not stop the others
             log.error("scheduled sweep failed supplier=%s error=%s", ref.id, type(exc).__name__)

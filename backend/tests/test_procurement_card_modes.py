@@ -977,3 +977,16 @@ async def test_paid_orders_not_sent_yet_reserve_their_money(env, dup):  # noqa: 
     await _drive(env, dup, order, _b)
     async with tenant_session(dup.ctx.maker, env.tenant_id) as db:
         assert await topups.reserved_usd(db, env.tenant_id, supplier_id) == 0  # sent: released
+
+
+async def test_the_scheduled_sweep_moves_a_used_up_cards_money_back(env, dup):  # noqa: F811
+    """Owner 2026-11-21: leftovers return every 30 minutes too, not only after an order."""
+    from app.procurement.engine import sweep_all
+
+    vendor = _vendor()  # card 4242 (USD 500)
+    vendor.usage_remaining[4242] = 0
+    await _funding(env, auto_recharge=True)
+    await _zovo(dup, vendor, AUTO)
+    assert await sweep_all(dup.ctx) == 1
+    assert vendor.card_refunds == [(4242, 499.0)]
+    assert await sweep_all(dup.ctx) == 0  # USD 1 stays: nothing left to sweep
