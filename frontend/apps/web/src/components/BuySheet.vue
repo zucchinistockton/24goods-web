@@ -113,7 +113,7 @@ const isDirect = computed(() => p.value?.delivery_mode === 'upstream_direct')
 const maxQty = computed(() => (p.value && !isDirect.value && !needsHalf.value ? maxOrderQty(p.value) : 1))
 const subtotal = computed(() => (p.value ? (multiplyAmount(p.value.price, qty.value) ?? p.value.price) : '0.00'))
 const discountMinor = computed(() => (promo.value && !promo.value.stale ? promo.value.discount_minor : 0))
-const bd = computed(() => feeBreakdown(subtotal.value, discountMinor.value, site.permille))
+const bd = computed(() => feeBreakdown(subtotal.value, discountMinor.value, site.permille, site.feeWhole))
 const promoItems = computed(() =>
   p.value ? [{ product_id: p.value.id, qty: qty.value, ...(variant.value ? { variant_id: variant.value.id } : {}) }] : [],
 )

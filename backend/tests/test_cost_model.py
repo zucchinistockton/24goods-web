@@ -1056,3 +1056,23 @@ def test_markup_goes_on_the_official_price_by_default_never_below_cost():
     assert cm.recommend_usd(s, cheap, D("0"), D("0.30")) == cm.fixed_cost(s, cheap)
     with pytest.raises(cm.CostSettingsError):
         cm.validate_patch({"markup_on_price": 2})
+
+
+def test_per_unit_markups_and_charm_endings():
+    """Owner 2026-11-21: per product / variant markups override the 12 % default; suggested prices
+    round UP to a whole price ending in the chosen digit (never down, never a round hundred)."""
+    from decimal import Decimal as D
+
+    st = cm.normalize({"target_markup": "0.12", "markups": {"p1": "0.079", "p1:v2": "0.0604"}})
+    assert cm.target_markup(st, "p1") == D("0.079")
+    assert cm.target_markup(st, "p1", "v2") == D("0.0604")
+    assert cm.target_markup(st, "p1", "v9") == D("0.079")  # the product's own override
+    assert cm.target_markup(st, "p3") == D("0.12")
+    fx = D("6.680778")
+    usd = D(100) * D("1.079")  # Pro 5x US at 7.9 %: 720.86 CNY
+    assert cm.recommend_minor(usd, fx, 100) == 72100
+    assert cm.recommend_minor(usd, fx, 100, 9) == 72900
+    assert cm.recommend_minor(usd, fx, 100, 8) == 72800
+    assert cm.recommend_minor(D("1.4889"), D(1), 100, 9) == 900  # 1.49 -> 2 -> 9
+    assert cm.recommend_minor(D("1099.5"), D(1), 100, 9) == 110900  # 1100 is skipped
+    assert cm.recommend_minor(D("699"), D(1), 100, 9) == 69900  # already ...9: unchanged

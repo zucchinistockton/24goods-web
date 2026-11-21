@@ -6,6 +6,12 @@ import { fromMinor, toMinor } from './format'
 import type { MarkupKind, SiteInfo } from './types'
 
 // ---------- promo + fee lines (§6) ----------
+/** ceil(base × permille / 1000) minor units; `whole` (shop setting `fee_round_whole`, owner
+ * 2026-11-21): then UP to whole currency units, exactly like the server's `fee_minor`. */
+export function lineFee(base: bigint, pm: bigint, whole = false): bigint {
+  const fee = (base * pm + 999n) / 1000n
+  return whole ? ((fee + 99n) / 100n) * 100n : fee
+}
 
 export interface FeeBreakdown {
   subtotal: string
@@ -18,13 +24,13 @@ export interface FeeBreakdown {
  * Display-only: fee = ceil((subtotal - discount) * permille / 1000); total = subtotal - discount + fee.
  * The discount is clamped to `< subtotal` like the server (amount stays > 0). The server owns the numbers.
  */
-export function feeBreakdown(subtotal: string, discountMinor: number | null | undefined, permille: number): FeeBreakdown {
+export function feeBreakdown(subtotal: string, discountMinor: number | null | undefined, permille: number, whole = false): FeeBreakdown {
   const s = toMinor(subtotal) ?? 0n
   let d = BigInt(Math.max(0, Math.floor(discountMinor ?? 0)))
   if (d >= s) d = s > 0n ? s - 1n : 0n
   const base = s - d
   const pm = Number.isInteger(permille) && permille > 0 ? BigInt(permille) : 0n
-  const fee = (base * pm + 999n) / 1000n
+  const fee = lineFee(base, pm, whole)
   return { subtotal: fromMinor(s), discount: fromMinor(d), fee: fromMinor(fee), total: fromMinor(base + fee) }
 }
 
@@ -78,6 +84,7 @@ export function feeBreakdownLines(
   permille: number,
   discountMinor = 0,
   lineDiscounts?: readonly number[],
+  whole = false,
 ): FeeBreakdown {
   const subs = lineSubtotals.map((x) => toMinor(x) ?? 0n)
   const total = BigInt(Math.max(0, Math.floor(discountMinor)))
@@ -94,7 +101,7 @@ export function feeBreakdownLines(
     if (d >= s) d = s > 0n ? s - 1n : 0n
     sub += s
     disc += d
-    fee += ((s - d) * pm + 999n) / 1000n
+    fee += lineFee(s - d, pm, whole)
   })
   return { subtotal: fromMinor(sub), discount: fromMinor(disc), fee: fromMinor(fee), total: fromMinor(sub - disc + fee) }
 }

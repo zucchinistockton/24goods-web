@@ -603,3 +603,25 @@ admin (BEpusdt would refuse the order).
 **ADR-049 addendum (2026-11-21).** Paid direct orders not sent yet reserve their USD cost × 1.08 from the wallet in
 the sold-out check (never two big orders against the same money); the leftover sweep also runs every 30 minutes;
 offers are re-checked right after each direct job.
+
+### ADR-051: Per-product markups, charm price endings, whole-yuan payment fees (owner 2026-11-21)
+
+**Context.** One shop-wide 12 % markup on the official price was "too uniform". The owner set Pro 5x at about
+7.90 %, Pro 20x 7.93 %, Pro 50x 6.04 % (Go and Plus unchanged), wants prices ending in 9 / 8 / 99 rather than round
+hundreds, rounded in the seller's favour, and a whole-yuan amount both for the listed price and for what the buyer pays
+after the Alipay surcharge.
+
+**Decision.**
+- Cost model: `markups` (same keys as `targets`: product or product:variant) override `target_markup` per unit;
+  `PUT /admin/procurement/pricing/target` with a `markup` field sets / clears one (audited
+  `pricing.markup_updated`). The pricing panel edits markups when the shop is in markup mode.
+- `price_ending` (0 = off, 1–9): a recommended price rounds UP to the next whole price ending in that digit (9 in
+  production), so it never drops below the markup and never lands on a round hundred.
+- `payments.fee_round_whole` (Settings → Payments, audited with `site.updated`): every channel fee is rounded UP to a
+  whole currency unit (`fee_minor(…, whole=True)`), server side in every fee path (order, pay-time re-apply,
+  checkout, reprice) and mirrored in the buyer previews (`lineFee`), so a whole price gives a whole total
+  (729 + 37 = 766). The DB invariant `amount = subtotal − discount + fee` is unchanged.
+- Prices still change only through the audited "Apply" of the pricing panel (server recomputes the recommendation).
+
+**Consequences.** Recommendations sit slightly above the target markup (up to 9 yuan for the ending, e.g. Pro 5x
+US 7.9 % → 721 → 729, 9.1 %). Buyers pay up to 0.99 yuan more in fees per order with whole-yuan fees on.

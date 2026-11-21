@@ -135,3 +135,12 @@ describe('manual note', () => {
     expect(manualNote('Ships in {hours} h, {hours}!', 24)).toBe('Ships in 24 h, 24!')
   })
 })
+
+describe('whole-yuan fees (owner 2026-11-21, fee_round_whole)', () => {
+  it('rounds the fee up to a whole unit so a whole price gives a whole total', () => {
+    expect(feeBreakdown('729.00', 0, 50, true)).toMatchObject({ fee: '37.00', total: '766.00' })
+    expect(feeBreakdown('729.00', 0, 50)).toMatchObject({ fee: '36.45', total: '765.45' })
+    expect(feeBreakdownLines(['729.00', '116.00'], 50, 0, undefined, true)).toMatchObject({ fee: '43.00', total: '888.00' })
+    expect(feeBreakdown('100.00', 0, 0, true)).toMatchObject({ fee: '0.00', total: '100.00' })
+  })
+})

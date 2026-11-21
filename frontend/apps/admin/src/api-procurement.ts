@@ -282,6 +282,8 @@ export interface PricingSettings {
   round_step_minor: number
   /** 1: the markup goes on the official (supplier) price only, never below the full cost; 0: on the full cost */
   markup_on_price: number
+  /** 0 = plain rounding; 1-9 = suggested prices round UP to a whole price ending in this digit */
+  price_ending: number
   service_fee_direct: Record<'gpt' | 'grok' | 'claude', string>
   uses_per_card: Record<'standard' | 'pro20x', number>
   fx: Record<string, { per_usd: string; updated_at: string; updated_by: string }>
@@ -293,6 +295,7 @@ export interface PricingSettingsView {
   settings: PricingSettings
   informational: string[]
   targets: Record<string, string>
+  markups?: Record<string, string>
   channel: { id: string; fee_rate: string }
   currency: 'USD'
 }
@@ -318,6 +321,8 @@ export interface UnitRow {
   gross_margin_pct: string | null
   net_margin_pct: string | null
   target_margin_pct: string
+  /** the markup on the official price this unit uses (own / product override, else the default) */
+  target_markup_pct?: string | null
   recommended: { amount: string; minor: number; currency: string; usd: string; diff_minor: number; diff: string } | null
   incomplete: string[]
   cost_incomplete: boolean
@@ -350,6 +355,8 @@ export function createPricingApi(c: ApiClient) {
     saveSettings: (b: PricingSettingsPatch) => c.put<PricingSettingsView>(`${base}/settings`, b),
     setTarget: (product_id: string, variant_id: string | null, margin: string | null) =>
       c.put<{ key: string; margin: string | null }>(`${base}/target`, { product_id, variant_id, margin }),
+    setMarkup: (product_id: string, variant_id: string | null, markup: string | null) =>
+      c.put<{ key: string; markup: string | null }>(`${base}/target`, { product_id, variant_id, markup }),
     units: (q: { page?: number; page_size?: number }) => c.get<UnitList>(`${base}/units`, clean(q)),
     apply: (r: UnitRow, confirmLargeDrop = false) =>
       c.post<{ applied: boolean; noop?: boolean }>(`${base}/apply`, {

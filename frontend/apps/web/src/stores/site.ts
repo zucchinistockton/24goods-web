@@ -65,6 +65,7 @@ export const useSiteStore = defineStore('site', () => {
       null,
   )
   const permille = computed(() => channel.value?.permille ?? 0)
+  const feeWhole = computed(() => channel.value?.fee_whole === true)
   /** Feature toggles: everything defaults to on (older backends / not loaded yet), resellers to off. */
   const features = computed<SiteFeatures>(() => ({
     registration: true,
@@ -104,6 +105,7 @@ export const useSiteStore = defineStore('site', () => {
     selectedId,
     select,
     permille,
+    feeWhole,
     load,
     loadChannels,
     features,

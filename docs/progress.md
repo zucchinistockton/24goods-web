@@ -6,6 +6,12 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 **Hand-off 2026-11-18 (after PR #49; the owner's order #29 → #30 → #31 is done on the demo). START HERE.**
 
+- **2026-11-21 ADR-051 built (`feat/pricing-charm-fee`; owner: Pro 5x ≈ 7.90 %, Pro 20x ≈ 7.93 %, Pro 50x ≈ 6.04 %,
+  Go / Plus unchanged, endings 9 / 8, whole-yuan totals after the Alipay fee, deploy).** Per-unit `markups`,
+  `price_ending`, `payments.fee_round_whole` (server + buyer previews). After deploy: settings applied in production
+  (markups on the three Pro products, `price_ending` 9, fee rounding on); the owner applies the 15 Pro prices with
+  "Apply" in Procurement → Pricing (an audited price edit; the API needs the owner's session).
+
 - **2026-11-21 PRODUCTION DEPLOYS of #97 (15:57 UTC, `bb0a4bd`) and hotfix #98 (16:18 UTC, `8aa24a3`).** Owner's
   go-ahead in the same message as the request. Dumps `/root/kesiv-backups/predeploy-20261121T155706Z/` (sha256
   `5b12fe44…9739`) and `predeploy-20261121T161745Z/` (`74ec2b20…f7b3`), both also on c4; no migration (`0039`).

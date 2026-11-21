@@ -727,3 +727,11 @@ wallet, not counted).
 `GET /api/v1/admin/orders/{id}`: `hold` gains `job_id` (the newest procurement job of a held supplier order, else
 `null`). The console then links to that job instead of offering "Accept payment" (which answers `409
 use_procurement_actions` for such an order).
+
+
+### ADR-051 additions (2026-11-21)
+
+- `GET /api/v1/site/payment-channels`: each channel has `fee_whole` (bool): the fee is rounded up to whole currency units.
+- Admin site settings: `payments.fee_round_whole` (bool, read and write).
+- `PUT /api/v1/admin/procurement/pricing/target` accepts `markup` (fraction 0–<1 or null to clear) instead of `margin`;
+  `GET …/units` rows carry `target_markup_pct`; settings carry `price_ending` (0–9) and `markups`.

@@ -25,7 +25,7 @@ function fail(e: unknown) {
 // ------------------------------------------------------------------ fee schedule
 const MONEY_KEYS = ['card_open_fee', 'topup_fee_fixed', 'failed_fee', 'chargeback_tier1_surcharge', 'chargeback_tier2_deposit'] as const
 const RATE_KEYS = ['topup_fee_rate', 'auth_reversal_rate', 'chargeback_tier1_rate', 'chargeback_tier2_rate', 'expected_failure_rate', 'target_margin', 'target_markup'] as const
-const INT_KEYS = ['failed_free_count', 'max_auto_switches', 'chargeback_tier1_min_tx', 'round_step_minor', 'markup_on_price'] as const
+const INT_KEYS = ['failed_free_count', 'max_auto_switches', 'chargeback_tier1_min_tx', 'round_step_minor', 'markup_on_price', 'price_ending'] as const
 const INFO = new Set(['failed_free_count', 'auth_reversal_rate', 'chargeback_tier1_rate', 'chargeback_tier1_min_tx', 'chargeback_tier1_surcharge', 'chargeback_tier2_rate', 'chargeback_tier2_deposit'])
 const DIRECT = ['gpt', 'grok', 'claude'] as const
 const TIERS = ['standard', 'pro20x'] as const
@@ -63,7 +63,7 @@ async function saveSettings() {
   for (const k of [...MONEY_KEYS, ...RATE_KEYS]) if (!DEC.test(form[k] ?? '')) errs[k] = t('procurement.pricing.err.decimal')
   for (const k of RATE_KEYS) if (!errs[k] && Number(form[k]) >= 1 && k !== 'target_margin') errs[k] = t('procurement.pricing.err.rate')
   if (!errs.target_margin && Number(form.target_margin) >= 1) errs.target_margin = t('procurement.pricing.err.rate')
-  for (const k of INT_KEYS) if (!/^[0-9]{1,7}$/.test(form[k] ?? '') || (k === 'round_step_minor' && Number(form[k]) < 1) || (k === 'markup_on_price' && Number(form[k]) > 1)) errs[k] = t('procurement.pricing.err.int')
+  for (const k of INT_KEYS) if (!/^[0-9]{1,7}$/.test(form[k] ?? '') || (k === 'round_step_minor' && Number(form[k]) < 1) || (k === 'markup_on_price' && Number(form[k]) > 1) || (k === 'price_ending' && Number(form[k]) > 9)) errs[k] = t('procurement.pricing.err.int')
   // the vendor's own default is 2: the cost estimate may not assume fewer switches (server floor)
   if (!errs.max_auto_switches && (Number(form.max_auto_switches) < 2 || Number(form.max_auto_switches) > 10)) errs.max_auto_switches = t('procurement.pricing.err.switches')
   for (const k of DIRECT) if (!DEC.test(direct[k] ?? '')) errs[`direct_${k}`] = t('procurement.pricing.err.decimal')
@@ -134,10 +134,13 @@ async function apply(r: UnitRow) {
     applying.value = ''
   }
 }
+// markup mode (target_markup above 0, owner 2026-11-18/21): the per-unit target is the markup on
+// the official price; otherwise the net margin
+const markupMode = computed(() => Number(loaded.value?.target_markup ?? 0) > 0)
 const targetDlg = reactive({ open: false, row: null as UnitRow | null, value: '' })
 function openTarget(r: UnitRow) {
   targetDlg.row = r
-  targetDlg.value = r.target_margin_pct
+  targetDlg.value = markupMode.value ? r.target_markup_pct ?? '' : r.target_margin_pct
   targetDlg.open = true
 }
 async function saveTarget(clear: boolean) {
@@ -146,7 +149,9 @@ async function saveTarget(clear: boolean) {
   const v = Number(targetDlg.value)
   if (!clear && !(v >= 0 && v < 100)) return void ElMessage.error(t('procurement.pricing.err.rate'))
   try {
-    await api.setTarget(r.product_id, r.variant_id, clear ? null : (v / 100).toFixed(4).replace(/0+$/, '').replace(/\.$/, '') || '0')
+    const frac = clear ? null : (v / 100).toFixed(5).replace(/0+$/, '').replace(/\.$/, '') || '0'
+    if (markupMode.value) await api.setMarkup(r.product_id, r.variant_id, frac)
+    else await api.setTarget(r.product_id, r.variant_id, frac)
     targetDlg.open = false
     void units.load()
   } catch (e) {
@@ -240,8 +245,8 @@ onMounted(() => {
         </el-table-column>
         <el-table-column :label="t('procurement.pricing.col.gross')" width="120"><template #default="{ row }"><span class="num">{{ usd(row.gross_usd) }}</span><div class="muted small num">{{ pctText(row.gross_margin_pct) }}</div></template></el-table-column>
         <el-table-column :label="t('procurement.pricing.col.net')" width="120"><template #default="{ row }"><span class="num strong">{{ usd(row.net_usd) }}</span><div class="muted small num">{{ pctText(row.net_margin_pct) }}</div></template></el-table-column>
-        <el-table-column :label="t('procurement.pricing.col.target')" width="100">
-          <template #default="{ row }"><el-link type="primary" :underline="false" @click="openTarget(row as UnitRow)">{{ pctText(row.target_margin_pct) }}</el-link></template>
+        <el-table-column :label="markupMode ? t('procurement.pricing.col.markup') : t('procurement.pricing.col.target')" width="100">
+          <template #default="{ row }"><el-link type="primary" :underline="false" @click="openTarget(row as UnitRow)">{{ pctText(markupMode ? row.target_markup_pct : row.target_margin_pct) }}</el-link></template>
         </el-table-column>
         <el-table-column :label="t('procurement.pricing.col.recommended')" width="160">
           <template #default="{ row }">
@@ -298,9 +303,9 @@ onMounted(() => {
       </div>
     </div>
 
-    <el-dialog v-model="targetDlg.open" :title="t('procurement.pricing.targetTitle')" width="min(420px, 96vw)">
+    <el-dialog v-model="targetDlg.open" :title="markupMode ? t('procurement.pricing.markupTitle') : t('procurement.pricing.targetTitle')" width="min(420px, 96vw)">
       <p class="muted small">{{ targetDlg.row ? rowName(targetDlg.row) : '' }}</p>
-      <el-input v-model="targetDlg.value" inputmode="decimal" maxlength="6"><template #append>%</template></el-input>
+      <el-input v-model="targetDlg.value" inputmode="decimal" maxlength="7"><template #append>%</template></el-input>
       <template #footer>
         <el-button @click="saveTarget(true)">{{ t('procurement.pricing.targetReset') }}</el-button>
         <el-button type="primary" @click="saveTarget(false)">{{ t('common.save') }}</el-button>

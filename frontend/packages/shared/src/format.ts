@@ -241,10 +241,11 @@ export function addAmounts(a: string, b: string): string | null {
  * v4 §1 display-only fee preview: ceil(subtotal × permille / 1000) in minor units.
  * The server computes (and stores) the real fee; this is shown, never sent or trusted.
  */
-export function computeFee(subtotal: string, permille: number): string | null {
+export function computeFee(subtotal: string, permille: number, whole = false): string | null {
   const s = toMinor(subtotal)
   if (s === null || !Number.isInteger(permille) || permille < 0) return null
-  return fromMinor((s * BigInt(permille) + 999n) / 1000n)
+  const fee = (s * BigInt(permille) + 999n) / 1000n
+  return fromMinor(whole ? ((fee + 99n) / 100n) * 100n : fee)
 }
 
 /** "3%" → 30, "1.5%" → 15 (null when unparseable). */

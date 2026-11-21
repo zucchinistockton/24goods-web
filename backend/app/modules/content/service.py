@@ -32,7 +32,7 @@ from app.modules.common.sitedefaults import (
 from app.modules.common.views import iso
 from app.modules.content.schemas import ArticleIn, ArticlePatch, SiteIn
 from app.modules.content.site import tenant_settings
-from app.modules.payments.channels import admin_channels
+from app.modules.payments.channels import admin_channels, fee_whole
 
 LOCALES = ("en", "zh-CN")
 log = logging.getLogger("app.content")
@@ -239,7 +239,7 @@ async def admin_site(
             "auto_card": auto_confirm_hours(ts, "auto_card"),
         },
         "support_hours": _support_hours(ts.get("support_hours")),
-        "payments": {"channels": admin_channels(ts)},
+        "payments": {"channels": admin_channels(ts), "fee_round_whole": fee_whole(ts)},
         "support": _support_cfg(ts),
         "rate_limit": globallimit.normalize(ts.get("rate_limit")),
         # v5 "user defaults" section + the pre-v5 factory defaults (kept for old clients)
@@ -320,6 +320,8 @@ async def update_site(
                 else cur_c["surcharge_permille"],
             }
         pay["channels"] = chans
+        if body.payments.fee_round_whole is not None:
+            pay["fee_round_whole"] = body.payments.fee_round_whole
         new["payments"] = pay
     if body.support is not None:
         old_s = _support_cfg(cur)
@@ -389,11 +391,13 @@ async def update_site(
         before={
             "announcement_version": before["announcement"]["version"],
             "channels": before["payments"]["channels"],
+            "fee_round_whole": before["payments"]["fee_round_whole"],
             "rate_limit": before["rate_limit"],
         },
         after={
             "announcement_version": after["announcement"]["version"],
             "channels": after["payments"]["channels"],
+            "fee_round_whole": after["payments"]["fee_round_whole"],
             "rate_limit": after["rate_limit"],
         },
         ip=ip,

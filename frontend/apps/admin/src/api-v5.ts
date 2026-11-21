@@ -187,7 +187,7 @@ export type SiteSectionPatch = Partial<{ [K in keyof SiteSections]: Partial<Site
     after_sales_default: { unit: 'month' | 'hour'; value: number }
     auto_confirm_hours: { manual: number; auto_card: number }
     support_hours: I18nText
-    payments: { channels: Record<string, ChannelCfg> }
+    payments: { channels: Record<string, ChannelCfg>; fee_round_whole?: boolean }
     support: { welcome_i18n: I18nText; quick_questions_i18n: QuickQuestions }
     rate_limit: RateLimitCfg
   }>

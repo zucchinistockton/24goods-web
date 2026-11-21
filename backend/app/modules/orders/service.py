@@ -69,7 +69,13 @@ from app.modules.orders import direct as direct_svc
 from app.modules.orders import halfcheck
 from app.modules.orders.events import add_event, snapshot
 from app.modules.payments import usdt as usdt_svc
-from app.modules.payments.channels import channel_cfg, entry_cfg, is_usdt, split_amount
+from app.modules.payments.channels import (
+    channel_cfg,
+    entry_cfg,
+    fee_whole,
+    is_usdt,
+    split_amount,
+)
 from app.modules.promo import service as promo_svc
 from app.modules.promo.service import PromoError, PromoLine
 from app.modules.realtime.publish import publish_order
@@ -391,13 +397,14 @@ async def create_order(
         await require_auto_stock(
             db, buyer.tenant_id, product_id, qty, variant.id if variant else None
         )
+    shop = await tenant_settings(db, buyer.tenant_id)
     if fee_permille is None:
-        cfg = entry_cfg(await tenant_settings(db, buyer.tenant_id))
+        cfg = entry_cfg(shop)
         if not cfg.enabled:
             raise Unavailable("Payment channel is not available")
         fee_permille = cfg.permille
     # MONEY: amount (gateway charge) = subtotal - discount + fee == DB CHECK ck_orders_amount_split
-    fee, total = split_amount(amount_minor, fee_permille, discount_minor)
+    fee, total = split_amount(amount_minor, fee_permille, discount_minor, fee_whole(shop))
     if expires_at is None:
         expires_at = utcnow() + timedelta(
             minutes=(await tenant_order_limits(db, settings, buyer.tenant_id))[1]
@@ -744,7 +751,8 @@ async def pay_url(
         # order.amount_minor -> manual review (settle amount-mismatch path), never auto-fulfilled.
         before = snapshot(order)
         old_minor = order.amount_minor
-        fee, total = split_amount(order.subtotal_minor, permille, order.discount_minor)
+        whole = fee_whole(await tenant_settings(db, order.tenant_id))
+        fee, total = split_amount(order.subtotal_minor, permille, order.discount_minor, whole)
         order.fee_minor, order.fee_permille, order.amount_minor = fee, permille, total
         order.version += 1
         await audit(
