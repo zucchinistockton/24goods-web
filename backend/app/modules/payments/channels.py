@@ -19,19 +19,55 @@ from typing import Any
 DEFAULT_CHANNEL = "zpay_alipay"
 DEFAULT_SURCHARGE_PERMILLE = 30
 MAX_SURCHARGE_PERMILLE = 200
-# Display priority (owner, #58): X Layer -> Arbitrum One -> TRC20 (highest network fees last).
-# Dict order is the order buyers and staff see; ids and trade types are unchanged.
-USDT_CHANNELS: dict[str, str] = {  # channel id -> BEpusdt trade_type
-    "usdt_xlayer": "usdt.xlayer",
-    "usdt_arbitrum": "usdt.arbitrum",
-    "usdt_trc20": "usdt.trc20",
+# Crypto channels = every stablecoin network BEpusdt v1.24 supports (owner 2026-11-21: "as
+# versatile as possible"; staff switch each one on in Settings and add its receiving address in
+# Settings -> Payments -> Crypto wallets). Display priority (owner, #58 + 2026-11-21): cheap
+# networks first (X Layer, Polygon), TRC20 / ERC20 (highest fees) last; USDT before USDC.
+# Channel id = BEpusdt trade type with "." -> "_"; every crypto channel is OFF until enabled.
+NETWORKS: dict[str, tuple[str, str, str]] = {  # network -> (en name, zh name, address family)
+    "xlayer": ("X Layer", "X Layer", "evm"),
+    "polygon": ("Polygon PoS", "Polygon PoS", "evm"),
+    "arbitrum": ("Arbitrum One", "Arbitrum One", "evm"),
+    "base": ("Base", "Base", "evm"),
+    "bep20": ("BNB Chain BEP20", "币安链 BEP20", "evm"),
+    "solana": ("Solana", "Solana", "solana"),
+    "ton": ("TON", "TON", "ton"),
+    "aptos": ("Aptos", "Aptos", "aptos"),
+    "plasma": ("Plasma", "Plasma", "evm"),
+    "erc20": ("Ethereum ERC20", "以太坊 ERC20", "evm"),
+    "trc20": ("TRON TRC20", "波场 TRC20", "tron"),
 }
+_TRADE_TYPES = {  # what BEpusdt v1.24.3 offers per coin (its /api/auth/login "types", 2026-11-21)
+    "usdt": tuple("xlayer polygon arbitrum bep20 solana ton aptos plasma erc20 trc20".split()),
+    "usdc": tuple("xlayer polygon arbitrum base bep20 solana aptos erc20 trc20".split()),
+}
+USDT_CHANNELS: dict[str, str] = {  # channel id -> BEpusdt trade_type (all crypto, USDC included)
+    f"{coin}_{net}": f"{coin}.{net}" for coin, nets in _TRADE_TYPES.items() for net in nets
+}
+CRYPTO_CHANNELS = USDT_CHANNELS
 LABELS: dict[str, dict[str, str]] = {
     DEFAULT_CHANNEL: {"en": "Alipay", "zh-CN": "支付宝"},
-    "usdt_xlayer": {"en": "USDT (X Layer)", "zh-CN": "USDT（X Layer）"},
-    "usdt_arbitrum": {"en": "USDT (Arbitrum One)", "zh-CN": "USDT（Arbitrum One）"},
-    "usdt_trc20": {"en": "USDT (TRON TRC20)", "zh-CN": "USDT（波场 TRC20）"},
+    **{
+        cid: {
+            "en": f"{cid[:4].upper()} ({NETWORKS[cid[5:]][0]})",
+            "zh-CN": f"{cid[:4].upper()}（{NETWORKS[cid[5:]][1]}）",
+        }
+        for cid in USDT_CHANNELS
+    },
 }
+
+
+def network_of(channel: str) -> str | None:
+    """``usdt_polygon`` -> ``polygon`` (``None`` for a non-crypto channel)."""
+    return channel[5:] if channel in USDT_CHANNELS else None
+
+
+def address_family(trade_type: str) -> str | None:
+    """``usdt.polygon`` -> ``evm``: which address format the network takes."""
+    coin, _, net = trade_type.partition(".")
+    if coin not in _TRADE_TYPES or net not in _TRADE_TYPES[coin]:
+        return None
+    return NETWORKS[net][2]
 
 
 def is_usdt(channel: str | None) -> bool:

@@ -578,3 +578,24 @@ first load 18). Each card costs USD 1.50 per 3 orders. Money no longer piles up 
 retry of the pre-check (`card_open_failed`); a successful opening whose ledger write failed is still visible in the
 vendor's card list. The wallet itself is still topped up by hand (USDT to the vendor's EVM deposit address); an
 automatic refill from the OKX Agentic Wallet is a separate, later step.
+
+### ADR-050: Every BEpusdt stablecoin network as a payment channel; receiving wallets managed from the admin (owner 2026-11-21)
+
+**Context.** The owner wants Polygon PoS USDT next to X Layer and Alipay, and to "add other USDT addresses myself,
+as versatile as possible". Channels were a fixed list of three in about ten places, and receiving addresses could
+only be changed inside BEpusdt's own admin.
+
+**Decision.** `payments/channels.py` builds the catalogue from what BEpusdt v1.24.3 supports: USDT on X Layer,
+Polygon, Arbitrum, BEP20, Solana, TON, Aptos, Plasma, ERC20, TRC20 and USDC on X Layer, Polygon, Arbitrum, Base,
+BEP20, Solana, Aptos, ERC20, TRC20 (channel id = trade type with `.` → `_`; cheap networks first; every crypto
+channel off until switched on). Request schemas validate against the catalogue (`PayChannel`) instead of a fixed
+`Literal`. The admin "Crypto wallets" panel (`/admin/payments/crypto`, platform admin session, no 2FA by owner
+decision) lists, adds, switches, re-addresses and removes BEpusdt wallets through BEpusdt's admin API (entry page →
+session cookie, login token in `Authorization`), checks each address against its network family (EVM, TRON, Solana,
+TON, Aptos) and audits every change (`payments.crypto_wallet_*`). The frontend names any channel through the
+shared `cryptoChannelLabel`.
+
+**Consequences.** A new network is a switch and an address in the admin, no code. BEpusdt keeps the payment logic
+unchanged (it converts the CNY amount; notifies are verified as before). The API needs the BEpusdt admin login
+(`APP_BEPUSDT_ADMIN_USER/PASSWORD/ENTRY`). A switched-on network without an enabled wallet is flagged red in the
+admin (BEpusdt would refuse the order).

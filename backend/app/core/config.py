@@ -163,6 +163,10 @@ class Settings(BaseSettings):
     # --- payments (self-hosted BEpusdt, USDT) -- INTERNAL docker network only ---
     bepusdt_url: str = ""  # e.g. http://bepusdt:8080 (empty = USDT channels unavailable)
     bepusdt_api_token: str = ""  # secret: signs create-transaction + verifies notifies
+    # BEpusdt admin API (crypto wallets page, 2026-11-21): login + secret admin entry path; api only
+    bepusdt_admin_user: str = ""
+    bepusdt_admin_password: str = ""  # secret
+    bepusdt_admin_entry: str = ""  # secret path segment of the BEpusdt admin UI
     bepusdt_notify_url: str = "http://api:8000/api/v1/pay/notify/bepusdt"
     bepusdt_timeout_s: int = 1200  # order validity requested from BEpusdt (>= 120)
     # demo/dev only: browser path of the BEpusdt simulator's pay page (e.g. /mockusdt/pay);

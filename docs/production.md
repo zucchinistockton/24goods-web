@@ -120,6 +120,12 @@ Wallet addresses and the API token live in its console/volume, never in git.
    Only `api` gets the token. The notify URL sent to BEpusdt is `http://api:8000/api/v1/pay/notify/bepusdt`
    (`APP_BEPUSDT_NOTIFY_URL` to override).
 5. Admin -> Settings -> Payments: enable the USDT channels you want and set the surcharge (default 0).
+6. (2026-11-21) Crypto wallets page: also put the BEpusdt admin login in `env/api.env` as
+   `APP_BEPUSDT_ADMIN_USER=…`, `APP_BEPUSDT_ADMIN_PASSWORD=…`, `APP_BEPUSDT_ADMIN_ENTRY=…` (the secret admin
+   path, `admin_secure` in BEpusdt); then Admin -> Settings -> Payments -> Crypto wallets lists, adds, switches
+   and removes receiving addresses for every network BEpusdt supports (USDT / USDC on X Layer, Polygon,
+   Arbitrum, Base, BEP20, Solana, TON, Aptos, Plasma, ERC20, TRC20). A network shows to buyers only when its
+   switch is on and it has an enabled wallet.
    A channel stays invisible to buyers until enabled.
 6. Test with a small real transfer on each network before announcing it (M1 exit gate: independent review
    before real money, AGENTS.md §1.11).

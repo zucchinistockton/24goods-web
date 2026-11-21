@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import GatewaySettings from './GatewaySettings.vue'
+import CryptoWallets from './CryptoWallets.vue'
+import { CRYPTO_CHANNEL_IDS, cryptoChannelLabel } from '@24goods/shared'
+import type { CryptoView } from '../../api-crypto'
 import { computed, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { apiV5 } from '../../api'
@@ -10,11 +13,20 @@ import { useSave } from '../../composables/useSave'
 
 const props = defineProps<{ site: AdminSiteV5 }>()
 const emit = defineEmits<{ saved: [s: AdminSiteV5] }>()
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const { saving, run } = useSave()
 const errors = ref<Record<string, string>>({})
 const other = ref<Record<string, ChannelCfg>>({})
-const USDT = ['usdt_xlayer', 'usdt_arbitrum', 'usdt_trc20'] as const
+// every crypto network of the catalogue (owner 2026-11-21); a row shows when it is on, has a wallet
+// or "show all" is ticked
+const USDT = CRYPTO_CHANNEL_IDS
+const wallets = ref<Set<string>>(new Set())
+const showAll = ref(false)
+function onCrypto(v: CryptoView) {
+  wallets.value = new Set(v.channels.filter((c) => c.has_wallet).map((c) => c.id))
+}
+const rows = computed(() => USDT.filter((id) => showAll.value || usdt[id]?.on || wallets.value.has(id)))
+const chLabel = (id: string) => cryptoChannelLabel(id, locale.value) ?? id
 const usdt = reactive<Record<string, { on: boolean; pct: number }>>(
   Object.fromEntries(USDT.map((id) => [id, { on: false, pct: 0 }])),
 )
@@ -90,14 +102,22 @@ async function save() {
       <p class="muted small">{{ t('v5.payment.usdtNote') }}</p>
       <el-alert v-if="site.bepusdt" :type="site.bepusdt.configured ? 'success' : 'warning'" :closable="false" class="zp" show-icon
         :title="site.bepusdt.configured ? t('v5.payment.usdtOk') : t('v5.payment.usdtMissing')" />
-      <template v-for="id in USDT" :key="id">
-        <el-form-item :label="t('v5.payment.usdtEnabled', { name: t(`v5.payment.ch${id[0].toUpperCase()}${id.slice(1)}`) })"><el-switch v-model="usdt[id].on" /></el-form-item>
-        <el-form-item :label="t('v5.payment.usdtFee', { name: t(`v5.payment.ch${id[0].toUpperCase()}${id.slice(1)}`) })" :error="errors[id]">
-          <el-input-number v-model="usdt[id].pct" :min="0" :max="MAX_SURCHARGE_PERMILLE / 10" :step="0.1" :precision="1" />
-          <span class="unit muted">% ({{ percentToPermille(usdt[id].pct) }}‰)</span>
+      <div class="crow head muted small" aria-hidden="true">
+        <span>{{ t('crypto.network') }}</span><span>{{ t('crypto.on') }}</span><span>{{ t('crypto.fee') }}</span><span>{{ t('crypto.wallet') }}</span>
+      </div>
+      <div v-for="id in rows" :key="id" class="crow">
+        <span class="name">{{ chLabel(id) }}</span>
+        <el-switch v-model="usdt[id].on" :aria-label="t('v5.payment.usdtEnabled', { name: chLabel(id) })" />
+        <el-form-item class="fee" :error="errors[id]">
+          <el-input-number v-model="usdt[id].pct" size="small" :min="0" :max="MAX_SURCHARGE_PERMILLE / 10" :step="0.1" :precision="1" :aria-label="t('v5.payment.usdtFee', { name: chLabel(id) })" />
+          <span class="unit muted">%</span>
         </el-form-item>
-      </template>
+        <el-tag v-if="wallets.has(id)" size="small" type="success" effect="plain">{{ t('crypto.hasWallet') }}</el-tag>
+        <el-tag v-else size="small" :type="usdt[id].on ? 'danger' : 'info'" effect="plain">{{ t('crypto.noWallet') }}</el-tag>
+      </div>
+      <el-checkbox v-model="showAll" class="all">{{ t('crypto.showAll', { n: USDT.length }) }}</el-checkbox>
     </section>
+    <CryptoWallets @loaded="onCrypto" />
     <section class="panel block">
       <h2 class="h2">{{ t('site.defaults') }}</h2>
       <el-form-item :label="t('site.afterSalesHours')" :error="errors.as">
@@ -127,5 +147,20 @@ async function save() {
 <style scoped>
 .zp {
   margin-bottom: 12px;
+}
+.crow {
+  display: grid;
+  grid-template-columns: minmax(150px, 1.4fr) 56px minmax(150px, 1fr) minmax(90px, auto);
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+.crow.head { border-bottom-width: 2px; }
+.crow .fee { margin: 0; }
+.all { margin-top: 8px; }
+@media (max-width: 560px) {
+  .crow { grid-template-columns: 1fr 56px; }
+  .crow .fee, .crow .el-tag { grid-column: span 1; }
 }
 </style>

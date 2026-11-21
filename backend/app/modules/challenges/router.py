@@ -17,6 +17,7 @@ from app.core.resources import Resources
 from app.models import User
 from app.modules.challenges import service
 from app.modules.content.site import tenant_settings
+from app.modules.payments.channel_field import PayChannel
 
 router = APIRouter(prefix="/security", tags=["security-challenges"])
 
@@ -25,7 +26,7 @@ class ChallengeIn(BaseModel):
     action: Literal["payment_initiation", "site_visit"]
     target: Literal["order", "checkout"] | None = None
     ref: str | None = Field(None, max_length=64)
-    channel: Literal["zpay_alipay", "usdt_arbitrum", "usdt_xlayer", "usdt_trc20"] | None = None
+    channel: PayChannel | None = None
 
 
 class ProofIn(BaseModel):
