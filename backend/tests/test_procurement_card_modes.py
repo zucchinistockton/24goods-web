@@ -960,6 +960,10 @@ async def test_paid_orders_not_sent_yet_reserve_their_money(env, dup):  # noqa: 
     await _funding(env, auto_recharge=True)
     await _zovo(dup, vendor, AUTO)
     _b, order = await dup.paid_direct(claude_session(new_marker()))
+    from app.procurement.engine import process_outbox_one
+
+    while await process_outbox_one(dup.ctx):  # create the job, but do not work it yet
+        pass
     job = await _job(dup, order)
     assert job is not None and job.state == "queued" and job.first_sent_at is None
     supplier_id = job.supplier_id
