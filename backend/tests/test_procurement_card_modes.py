@@ -945,3 +945,35 @@ async def test_without_the_switch_a_used_up_pool_still_goes_to_staff(env, dup): 
     job = await _job(dup, order)
     assert vendor.card_opens == 0 and vendor.card_refunds == []
     assert job.state in ("needs_manual", "queued") and _posts(vendor, ORDERS) == []
+
+
+# ------------------------------------------------------------------ pending orders reserve money
+async def test_paid_orders_not_sent_yet_reserve_their_money(env, dup):  # noqa: F811
+    """Owner 2026-11-21: the sold-out check counts only the wallet money that paid, not-yet-sent
+    direct orders leave; a job's own check does not count itself."""
+    from datetime import datetime, timezone
+
+    from app.core.db import tenant_session
+    from app.procurement import topups
+
+    vendor = _vendor()
+    await _funding(env, auto_recharge=True)
+    await _zovo(dup, vendor, AUTO)
+    _b, order = await dup.paid_direct(claude_session(new_marker()))
+    from app.procurement.engine import process_outbox_one
+
+    while await process_outbox_one(dup.ctx):  # create the job, but do not work it yet
+        pass
+    job = await _job(dup, order)
+    assert job is not None and job.state == "queued" and job.first_sent_at is None
+    supplier_id = job.supplier_id
+    assert supplier_id is not None
+    async with tenant_session(dup.ctx.maker, env.tenant_id) as db:
+        held = await topups.reserved_usd(db, env.tenant_id, supplier_id)
+        own = await topups.reserved_usd(db, env.tenant_id, supplier_id, exclude_job=job.id)
+        pol = await topups.policy(db, env.tenant_id, supplier_id, datetime.now(timezone.utc))
+    assert held == Decimal("27.00")  # USD 25 offer x 1.08
+    assert own == 0 and pol.reserved == held
+    await _drive(env, dup, order, _b)
+    async with tenant_session(dup.ctx.maker, env.tenant_id) as db:
+        assert await topups.reserved_usd(db, env.tenant_id, supplier_id) == 0  # sent: released

@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import funding as fs
 from app.core.audit import audit
-from app.models import ProcurementFunding, ProcurementJob, Tenant
+from app.models import ProcurementFunding, ProcurementJob, SupplierOffer, Tenant
 from app.suppliers.base import FundingPolicy, job_idempotency_key
 
 COUNTED = ("planned", "sent", "done")
@@ -83,8 +83,45 @@ async def preferred_cards(
     return tuple(out[:PREFERRED_MAX])
 
 
+# what one not-yet-sent direct order may still need from the wallet: its USD cost plus the FX margin
+# (3 %) and the vendor's balance buffer (5 %); deliberately on the high side
+RESERVE_FACTOR = Decimal("1.08")
+
+
+async def reserved_usd(
+    db: AsyncSession,
+    tenant_id: uuid.UUID,
+    supplier_id: uuid.UUID,
+    exclude_job: uuid.UUID | None = None,
+) -> Decimal:
+    """USD the wallet must keep for this supplier's paid direct orders that have not reached it yet
+    (``queued``, never sent, no top-up done): the storefront and other jobs' checks count only what
+    is left, so two big orders are never sold against the same money (owner 2026-11-21)."""
+    q = (
+        select(func.coalesce(func.sum(SupplierOffer.cost_estimate), 0))
+        .select_from(ProcurementJob)
+        .join(SupplierOffer, SupplierOffer.id == ProcurementJob.offer_id)
+        .where(
+            ProcurementJob.tenant_id == tenant_id,
+            ProcurementJob.supplier_id == supplier_id,
+            ProcurementJob.kind == "direct",
+            ProcurementJob.state == "queued",
+            ProcurementJob.first_sent_at.is_(None),
+            SupplierOffer.currency == "USD",
+        )
+    )
+    if exclude_job is not None:
+        q = q.where(ProcurementJob.id != exclude_job)
+    total = Decimal(await db.scalar(q) or 0)
+    return (total * RESERVE_FACTOR).quantize(Decimal("0.01"))
+
+
 async def policy(
-    db: AsyncSession, tenant_id: uuid.UUID, supplier_id: uuid.UUID, now: datetime
+    db: AsyncSession,
+    tenant_id: uuid.UUID,
+    supplier_id: uuid.UUID,
+    now: datetime,
+    exclude_job: uuid.UUID | None = None,
 ) -> FundingPolicy:
     st = await settings_of(db, tenant_id)
     spent = await spent_today(db, tenant_id, now) if st["auto_recharge"] else 0
@@ -94,6 +131,11 @@ async def policy(
         bin_priority=tuple(str(b) for b in st["bin_priority"]),  # type: ignore[attr-defined]
         preferred=await preferred_cards(db, tenant_id, supplier_id),
         auto_open=st["auto_recharge"] is True and st["auto_open_cards"] is True,
+        reserved=(
+            await reserved_usd(db, tenant_id, supplier_id, exclude_job)
+            if st["auto_recharge"]
+            else Decimal(0)
+        ),
     )
 
 

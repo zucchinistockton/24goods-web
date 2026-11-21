@@ -242,6 +242,9 @@ class FundingPolicy:
     preferred: tuple[str, ...] = ()  # card ids, the one that paid last first
     # ADR-049: open a new card when no card can pay (a FRESH check for a paid job only)
     auto_open: bool = False
+    # USD the wallet must keep for paid direct orders not sent yet (their top-up / new card has not
+    # happened): the sold-out check counts only what is left (owner 2026-11-21)
+    reserved: Decimal = Decimal(0)
 
 
 @dataclass(frozen=True)
