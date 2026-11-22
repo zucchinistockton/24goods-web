@@ -6,7 +6,12 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 **Hand-off 2026-11-18 (after PR #49; the owner's order #29 → #30 → #31 is done on the demo). START HERE.**
 
-- **2026-11-22 ADR-052 built (`feat/upgrades-chat-read`; owner: "(a) charge the difference plus the markup … continue
+- **2026-11-22 16:33 UTC PRODUCTION DEPLOY of ADR-052 (#102, owner: "deploy the upgrade change").** c4 runs `1ef7d20`
+  (revision verified), migration `0040_procurement_order_terms` applied (app_procurement may read `orders.terms`).
+  Dump `/root/kesiv-backups/predeploy-20261122T163147Z/` (sha256 `ffa6460b…8533`, also on c4; 51 orders); rollback images
+  `goods24-{api,web}:rollback-e9207be` and `:rollback-8aa24a3` (removed `:rollback-bb0a4bd`). Smoke all pass, no errors.
+
+- **2026-11-22 ADR-052 built (#102, deployed, see above; owner: "(a) charge the difference plus the markup … continue
   the analysis … proceed with development").** Plan upgrades via `upgrade-quotes` (difference + markup, credit shown),
   free-account rule fixed, clearer refusals, chat read state (server read marker, awaiting-reply tag/filter, read
   receipts, realtime `read`). Migration `0040`. Findings: Pro 5x refusals 13:45/13:49 UTC and Plus refusals 15:14 UTC
