@@ -45,7 +45,7 @@ Legend: [D] stated in Xiaodou's package, [I] our inference.
   payment method) [D]. App frozen by risk control: `403 OPEN_API_RISK_FROZEN` (new orders refused, existing ones
   unaffected) [D].
 
-## If 24goods moves to the open API (see the GitHub issue)
+## If 24goods moves to the open API (GitHub issue #106)
 
 - `buyerId`: a stable, non-reversible per-buyer value, e.g. HMAC-SHA256(shop secret, user id) [I]. Never the
   email or any raw identifier; 24goods does not collect phone numbers, so `buyerPhone` stays unset [I].
