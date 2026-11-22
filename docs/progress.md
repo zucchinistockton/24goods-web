@@ -6,6 +6,11 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 **Hand-off 2026-11-18 (after PR #49; the owner's order #29 → #30 → #31 is done on the demo). START HERE.**
 
+- **2026-11-22 whole-yuan fee rounding switched OFF in production (owner: "restore the previous settings … decimals are
+  fine").** `payments.fee_round_whole` = false (audited `site.updated`): rounding the 5 % fee UP to a whole yuan made a
+  ¥1 item pay a ¥1 fee and a ¥34 item ¥2. Fees are to the fen again (¥34 → 1.70, total 35.70); prices stay whole yuan
+  (charm endings). The switch remains in Settings → Payments.
+
 - **2026-11-22 16:33 UTC PRODUCTION DEPLOY of ADR-052 (#102, owner: "deploy the upgrade change").** c4 runs `1ef7d20`
   (revision verified), migration `0040_procurement_order_terms` applied (app_procurement may read `orders.terms`).
   Dump `/root/kesiv-backups/predeploy-20261122T163147Z/` (sha256 `ffa6460b…8533`, also on c4; 51 orders); rollback images
