@@ -198,7 +198,7 @@ async def test_procurement_opens_only_a_blob_sealed_for_a_pre_check(env, dup):
     good = sealer.seal(session, tenant_id=str(tid), order_id=f"preflight:{nonce}")
     out = await call(good)
     assert out["status"] == "passed" and out["current_plan"] == "free"
-    assert set(out) == {"status", "reason", "account", "current_plan"}
+    assert set(out) == {"status", "reason", "account", "current_plan", "can_purchase_at", "upgrade"}
     assert vendor.preflights == 1
     # without the internal token: refused before anything is opened
     r = await env.res.procurement.post("/internal/direct-preflight", json={})
