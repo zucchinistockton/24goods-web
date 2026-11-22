@@ -831,7 +831,11 @@ def _direct_spec(params=CLAUDE):
     ("over", "code"),
     [
         ({"blocking_reason": "account_locked"}, "preflight_blocked"),
-        ({"can_purchase_at": "2999-01-01T00:00:00Z"}, "purchase_not_yet"),
+        # the date blocks only an account that holds a plan (owner 2026-11-22)
+        (
+            {"can_purchase_at": "2999-01-01T00:00:00Z", "subscription_has_active": True},
+            "purchase_not_yet",
+        ),
         ({"subscription_recovery_required": True}, "subscription_recovery_required"),
         ({"subscription_has_active": True}, "subscription_active"),
     ],
@@ -1095,3 +1099,11 @@ async def test_the_console_order_read_survives_the_rollback(env, dup, monkeypatc
     out = await engine.direct_order_state(dup.ctx, dup.product.tenant_id, job.id)
     want = "unknown" if failure == "timeout" else "pending"
     assert out == {"state": want, "upstream_ref": job.upstream_ref}
+
+
+async def test_a_free_account_with_a_future_purchase_date_is_served():
+    """Owner 2026-11-22: a free account the old rule refused was served by the vendor at once."""
+    vendor = _vendor()
+    vendor.preflight_over = {"can_purchase_at": "2999-01-01T00:00:00Z"}
+    res = await _adapter_env(vendor).submit(_direct_spec())
+    assert res.outcome.value == "accepted_pending" and vendor.direct_executions == 1
