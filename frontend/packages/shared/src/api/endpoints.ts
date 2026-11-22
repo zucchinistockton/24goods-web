@@ -436,6 +436,9 @@ export function createAdminApi(c: ApiClient) {
         c.get<Message[]>(`/admin/conversations/${seg(id)}/messages`, { ...q }),
       send: (id: string, b: SendMessageBody) =>
         c.post<Message>(`/admin/conversations/${seg(id)}/messages`, b),
+      /** staff read marker (owner 2026-11-22): opening a chat clears its unread dot for good */
+      read: (id: string, message_id: number) =>
+        c.post<void>(`/admin/conversations/${seg(id)}/read`, { message_id }),
       pins: (id: string) => c.get<Message[]>(`/admin/conversations/${seg(id)}/pins`),
       typing: (id: string) => c.post<void>(`/admin/conversations/${seg(id)}/typing`),
       assign: (id: string, agent_id: string | null) =>

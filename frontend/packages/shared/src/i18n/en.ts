@@ -93,6 +93,7 @@ export default {
     preflight_session_invalid: 'This session is signed out or no longer works. Sign in again, copy the whole page and paste it once more. You have not been charged.',
     preflight_plan_active: 'This account already has an active plan, so it cannot take this one now. You have not been charged.',
     preflight_purchase_not_yet: 'This account cannot take a new plan yet. Please try again later. You have not been charged.',
+    preflight_upgrade_unavailable: 'An upgrade of this account to the chosen plan is not available right now. You have not been charged.',
     preflight_account_blocked: 'This account cannot be upgraded right now. Please contact support. You have not been charged.',
     preflight_unavailable: 'We could not check your account right now. Please try again in a minute. You have not been charged.',
     preflight_required: 'Your account must be checked before payment. Please try again.',

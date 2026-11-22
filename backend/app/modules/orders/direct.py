@@ -13,9 +13,11 @@ from __future__ import annotations
 
 import base64
 import logging
+import re
 import uuid
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from typing import Any
 
 import httpx
@@ -47,6 +49,9 @@ class DirectSeal:
     preflight: str | None = None
     # the buyer agreed that support may see the session if the top-up fails (review-v12 §26)
     share: bool = False
+    # the pre-check found an UPGRADE of the account's running plan (owner 2026-11-22): the
+    # vendor's quote {usd, amount, currency, from_plan}; the order is priced from it
+    upgrade: dict[str, str] | None = None
 
 
 STALL_MARGIN = timedelta(minutes=30)  # past the 6 h ceiling before checkout is paused
@@ -108,8 +113,29 @@ PREFLIGHT_LIMIT = (12, 600)  # account pre-checks per buyer per 10 minutes (each
 # in procurement). The buyer pasted this account's session a moment ago, so its own plan state is
 # no secret to them; the per-buyer budget bounds its use as an oracle on other sessions.
 PREFLIGHT_BLOCKS = frozenset(
-    {"session_invalid", "plan_active", "purchase_not_yet", "account_blocked"}
+    {"session_invalid", "plan_active", "purchase_not_yet", "account_blocked", "upgrade_unavailable"}
 )
+_ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T[0-9:.+Z-]{4,32}$")
+_MONEY_RE = re.compile(r"^\d{1,7}(\.\d{1,4})?$")
+
+
+def _upgrade_of(out: dict[str, Any] | None) -> dict[str, str] | None:
+    """The procurement answer's upgrade quote, strictly shaped (amounts as decimal strings)."""
+    up = (out or {}).get("upgrade")
+    if not isinstance(up, dict):
+        return None
+    usd, amount, cur = str(up.get("usd") or ""), str(up.get("amount") or ""), up.get("currency")
+    if not (_MONEY_RE.fullmatch(usd) and _MONEY_RE.fullmatch(amount)):
+        return None
+    if not (isinstance(cur, str) and re.fullmatch(r"[A-Z]{3}", cur)) or Decimal(usd) <= 0:
+        return None
+    cp = up.get("current_plan")
+    return {
+        "usd": usd,
+        "amount": amount,
+        "currency": cur,
+        "from_plan": cp[:40] if isinstance(cp, str) else "",
+    }
 
 
 async def preflight(
@@ -161,7 +187,7 @@ async def preflight(
     status = str((out or {}).get("status") or "unavailable")
     reason = str((out or {}).get("reason") or "")
     if status == "passed":
-        return replace(seal, preflight="passed")
+        return replace(seal, preflight="passed", upgrade=_upgrade_of(out))
     if status == "blocked":
         reason = reason if reason in PREFLIGHT_BLOCKS else "account_blocked"
     else:
@@ -182,7 +208,21 @@ async def preflight(
     )
     await db.commit()
     plan = (out or {}).get("current_plan")
-    extra = {"current_plan": str(plan)[:40]} if status == "blocked" and plan else None
+    extra: dict[str, Any] | None = None
+    if status == "blocked":
+        # owner 2026-11-22: tell the buyer WHICH account was checked, what it holds and from when
+        # it can buy again (a wrong session pasted shows at once); the buyer pasted it a moment ago
+        buy_from = str((out or {}).get("can_purchase_at") or "")
+        acct = (out or {}).get("account")
+        extra = {
+            k: v
+            for k, v in {
+                "current_plan": str(plan)[:40] if plan else None,
+                "can_purchase_at": buy_from if _ISO_RE.fullmatch(buy_from) else None,
+                "account": str(acct)[:80] if isinstance(acct, str) and "***" in acct else None,
+            }.items()
+            if v
+        } or None
     if reason == "unavailable":
         raise Unavailable(
             "The account check is not available right now", code="preflight_unavailable"

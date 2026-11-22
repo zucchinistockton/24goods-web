@@ -302,6 +302,9 @@ class JobSpec:
     # direct: the job may already have reached the supplier before THIS call (a same-key resend
     # after a reconcile): the pre-order funding gate is skipped (payment audit M3)
     prior_send: bool = False
+    # direct: the buyer paid an UPGRADE price (owner 2026-11-22): the upgrade difference may cost
+    # at most this (USD, before tolerance), and the full plan is never bought for such an order
+    upgrade_max_usd: Decimal | None = None
 
     def __post_init__(self) -> None:
         if not IDEMPOTENCY_KEY_RE.fullmatch(self.idempotency_key):

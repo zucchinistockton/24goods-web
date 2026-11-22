@@ -307,6 +307,8 @@ def order_view(
         "delivery_eta_hours": eta,
         "delivery_deadline": deadline,
         "preorder": preorder_svc.order_view(o),
+        # owner 2026-11-22: an upgrade of the buyer's running plan: what was credited
+        "upgrade": _upgrade_view(o),
         # v8 A.4: from this moment a paid, undelivered goods order may be escalated by the buyer
         "not_received_from": iso(
             o.paid_at + timedelta(hours=eta if o.delivery_mode == "manual" else 1)
@@ -397,4 +399,15 @@ def message_view(
         "attachment": attachment_view(attachment),
         "payload": payload,
         "created_at": iso(m.created_at),
+    }
+
+
+def _upgrade_view(o: Any) -> dict[str, Any] | None:
+    up = (o.terms or {}).get("upgrade") if isinstance(o.terms, dict) else None
+    if not isinstance(up, dict) or not isinstance(up.get("credit_minor"), int):
+        return None
+    return {
+        "from_plan": str(up.get("from_plan") or "")[:40],
+        "credit": fmt(up["credit_minor"]),
+        "list_price": fmt(int(up.get("list_minor") or 0)),
     }

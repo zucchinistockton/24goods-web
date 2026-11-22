@@ -4,7 +4,9 @@ import base64
 import logging
 import secrets
 import uuid
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
 
@@ -220,6 +222,40 @@ async def release_manual_stock(db: AsyncSession, tenant_id: uuid.UUID, orders: l
             )
             .values(manual_stock=ProductVariant.manual_stock + back_v[vid])
         )
+
+
+def _with_upgrade(
+    terms: dict[str, Any] | None, upgrade: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """An upgrade order keeps what the buyer paid for (owner 2026-11-22): the vendor quote and
+    the credit against the list price; procurement reads it as the cost ceiling."""
+    if not upgrade or "credit_minor" not in upgrade:
+        return terms
+    return {**(terms or {}), "upgrade": upgrade}
+
+
+async def upgrade_price(
+    db: AsyncSession,
+    tenant_id: uuid.UUID,
+    product: Product,
+    variant: ProductVariant | None,
+    list_minor: int,
+    upgrade: dict[str, Any],
+) -> tuple[int, int]:
+    """``(unit_minor, credit_minor)`` of an upgrade order: the vendor's USD difference x the
+    shop's rate x (1 + the unit's markup), rounded like every recommended price (whole units,
+    the shop's price ending), capped at the list price. No rate -> the list price (no credit)."""
+    from app.core import costmodel as cm
+
+    st = cm.from_tenant(await tenant_settings(db, tenant_id))
+    per = cm.rate_for(st, product.currency)
+    if per is None:
+        return list_minor, 0
+    markup = cm.target_markup(st, product.id, variant.id if variant else None)
+    usd = Decimal(str(upgrade["usd"])) * (Decimal(1) + markup)
+    unit = cm.recommend_minor(usd, per, st["round_step_minor"], st["price_ending"])
+    unit = min(unit, list_minor)
+    return unit, list_minor - unit
 
 
 async def purchase_terms(
@@ -439,7 +475,10 @@ async def create_order(
         reseller_id=reseller_id,
         reseller_markup_minor=reseller_markup_minor,
         stock_reserved=stock_reserved,
-        terms=_with_preorder(await purchase_terms(db, product_id, variant), pre),
+        terms=_with_upgrade(
+            _with_preorder(await purchase_terms(db, product_id, variant), pre),
+            direct.upgrade if direct is not None else None,
+        ),
         variant_id=variant.id if variant else None,
         variant_name=pick(variant.name_i18n, buyer.locale)[:120] if variant else None,
     )
@@ -562,6 +601,17 @@ async def buy_now(
             ip=ip,
         )
     del session
+    if direct is not None and direct.upgrade:
+        # owner 2026-11-22: an upgrade of the buyer's running plan costs the vendor only the
+        # difference; the buyer pays that difference + this unit's markup (server-side, from the
+        # vendor's live quote), never more than the list price; the credit is shown and kept
+        unit, credit = await upgrade_price(
+            db, buyer.tenant_id, product, variant, base, direct.upgrade
+        )
+        subtotal = unit * qty
+        direct = replace(
+            direct, upgrade={**direct.upgrade, "list_minor": base, "credit_minor": credit}
+        )
     if (
         product.delivery_mode == "auto_card"
         and await available_stock(db, product.id, variant.id if variant else None) < qty

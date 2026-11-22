@@ -91,6 +91,7 @@ const zhCN: MessageSchema = {
     preflight_session_invalid: '该会话已退出登录或已失效。请重新登录，复制整个页面后再粘贴一次。您尚未被扣款。',
     preflight_plan_active: '该账号已有生效中的套餐，暂时无法开通此套餐。您尚未被扣款。',
     preflight_purchase_not_yet: '该账号暂时还不能开通新套餐，请稍后再试。您尚未被扣款。',
+    preflight_upgrade_unavailable: '该账号暂时无法升级到所选套餐。您尚未被扣款。',
     preflight_account_blocked: '该账号目前无法开通，请联系客服。您尚未被扣款。',
     preflight_unavailable: '暂时无法检测您的账号，请稍后再试。您尚未被扣款。',
     preflight_required: '付款前需要先检测您的账号，请重试。',

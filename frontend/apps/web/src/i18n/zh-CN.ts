@@ -106,6 +106,8 @@ const zhCN: WebMessages = {
     related: '你可能还喜欢',
   },
   chat: {
+    read: '已读',
+    delivered: '已送达',
     title: '在线客服',
     placeholder: '输入消息…',
     send: '发送',
@@ -298,6 +300,9 @@ const zhCN: WebMessages = {
       title: '账号检测',
       checking: '正在检测您的账号…',
       planActive: '该账号已有生效中的 {plan} 套餐，暂时无法开通此套餐。您尚未被扣款。',
+      buyFrom: '{account} 的 {plan} 套餐有效期至 {date}，到期后才能再次购买同类套餐。这不是账号问题，您也没有被扣款。现在可以购买更高的套餐（Pro），系统会按升级处理。',
+      upgradeCredit: '升级抵扣（当前 {plan} 套餐）',
+      thisAccount: '该账号',
     },
     problem: {
       incomplete: '这不是完整的会话。请重新打开该页面，全选后再复制一次。',

@@ -32,6 +32,15 @@ const rt = useRealtimeStore()
 const filter = ref<ConversationFilter>('all')
 const cstatus = ref<'open' | 'closed'>('open')
 const list = ref<Conversation[]>([])
+// owner 2026-11-22: only the conversations whose buyer wrote last (an answer is still owed)
+const awaitingOnly = ref(false)
+const shown = computed(() => (awaitingOnly.value ? list.value.filter((c) => c.awaiting_reply) : list.value))
+// read receipt of the active chat: has the buyer read staff's last message?
+const lastMine = computed(() => [...chat.messages.value].reverse().find((m) => m.sender.role === 'agent') ?? null)
+const buyerRead = computed(() => {
+  const c = list.value.find((x) => x.id === activeId.value)
+  return !!(lastMine.value && c && (c.peer_read_id ?? 0) >= lastMine.value.id)
+})
 const listLoading = ref(false)
 const page = ref(1)
 const total = ref(0)
@@ -116,7 +125,9 @@ const chat = useConversation({
     list: (id, q) => api.conversations.messages(id, q),
     send: (id, b) => api.conversations.send(id, b),
     upload: (file, o) => api.upload(file, o),
-    // no staff read-receipt endpoint in the contract; unread is reset locally
+    // owner 2026-11-22: opening a conversation saves the staff read marker on the server, so the
+    // unread dot stays cleared after a refresh (no reply needed) and the buyer sees "Read"
+    markRead: (id, mid) => api.conversations.read(id, mid),
   },
   onError: (e) => toastError(e),
 })
@@ -188,6 +199,7 @@ watch(
     active.value = list.value.find((c) => c.id === id) ?? active.value
     if (active.value && active.value.id === id && active.value.unread) upsert({ ...active.value, unread: 0 })
     await chat.open(id)
+    void chat.markRead()
     void refreshPins()
     await msgList.value?.scrollToBottom()
   },
@@ -206,6 +218,13 @@ const countsAsUnread = (m: { sender: { role: string }; type: string }) => m.send
 const offs = [
   rt.on('conversation', (c) => upsert(c)),
   rt.on('typing', (e) => typing.onEvent(e)),
+  rt.on('read', (e) => {
+    const c = list.value.find((x) => x.id === e.conversation_id)
+    if (!c) return
+    // staff read it (any agent): the dot clears everywhere; the buyer read it: receipt
+    if (e.role === 'staff') upsert({ ...c, unread: 0 })
+    else upsert({ ...c, peer_read_id: Math.max(c.peer_read_id ?? 0, e.upto) })
+  }),
   rt.on('message', (e) => {
     const isActive = e.conversation_id === activeId.value
     if (isActive) {
@@ -214,6 +233,7 @@ const offs = [
       const p = (e.message.payload ?? {}) as MessageMeta & { event?: string }
       if (p.pinned !== undefined || p.event === 'message_pinned' || p.event === 'message_unpinned' || p.recalled || pins.value.some((x) => x.id === e.message.id)) void refreshPins()
       void afterIncoming(e.message.sender.role === 'agent' && e.message.sender.id === me.value)
+      if (!document.hidden) void chat.markRead()
     }
     const c = list.value.find((x) => x.id === e.conversation_id)
     if (c) {
@@ -222,6 +242,7 @@ const offs = [
         last_message: e.message,
         updated_at: e.message.created_at,
         unread: isActive || !countsAsUnread(e.message) ? c.unread : c.unread + 1,
+        awaiting_reply: e.message.sender.role === 'buyer' ? true : e.message.sender.role === 'agent' ? false : c.awaiting_reply,
       })
     } else if (countsAsUnread(e.message)) {
       refreshSoon()
@@ -331,15 +352,16 @@ function openProduct(id: string) {
           <el-radio-button value="mine">{{ t('inbox.filter.mine') }}</el-radio-button>
           <el-radio-button value="unassigned">{{ t('inbox.filter.unassigned') }}</el-radio-button>
         </el-radio-group>
+        <el-checkbox v-model="awaitingOnly" size="small">{{ t('inbox.awaitingOnly') }}</el-checkbox>
         <el-select v-model="cstatus" size="small" style="width: 100px">
           <el-option value="open" :label="t('inbox.open')" />
           <el-option value="closed" :label="t('inbox.closed')" />
         </el-select>
       </div>
       <div v-loading="listLoading && !list.length" class="list-body">
-        <el-empty v-if="!list.length && !listLoading" :description="t('inbox.empty')" :image-size="80" />
+        <el-empty v-if="!shown.length && !listLoading" :description="t('inbox.empty')" :image-size="80" />
         <button
-          v-for="c in list"
+          v-for="c in shown"
           :key="c.id"
           type="button"
           class="conv"
@@ -356,6 +378,7 @@ function openProduct(id: string) {
             </span>
             <span class="conv-preview muted">{{ messagePreview(c.last_message, t) || '—' }}</span>
             <span class="conv-meta">
+              <el-tag v-if="c.awaiting_reply" size="small" type="warning" effect="light">{{ t('inbox.awaiting') }}</el-tag>
               <el-tag v-if="c.assigned_agent" size="small" :type="c.assigned_agent.id === me ? 'primary' : 'info'" effect="plain">
                 {{ c.assigned_agent.id === me ? t('inbox.you') : c.assigned_agent.display_name }}
               </el-tag>
@@ -378,6 +401,7 @@ function openProduct(id: string) {
           <div class="chat-title">
             <div class="name">{{ active?.buyer.display_name ?? '…' }}</div>
             <div class="muted small">
+              <span v-if="lastMine" class="receipt muted small">{{ buyerRead ? t('inbox.read') : t('inbox.unreadByBuyer') }}</span>
               <span class="typing" role="status">{{ typing.name.value === null ? '' : typing.name.value ? t('chatActions.typing', { name: typing.name.value }) : t('chatActions.typingGeneric') }}</span>
               <template v-if="typing.name.value === null">{{ active?.assigned_agent ? t('inbox.assignedTo', { name: active.assigned_agent.display_name }) : t('inbox.unassigned') }}</template>
             </div>
@@ -481,6 +505,9 @@ function openProduct(id: string) {
 </template>
 
 <style scoped>
+.receipt {
+  margin-right: 8px;
+}
 .inbox {
   display: grid;
   grid-template-columns: 300px minmax(0, 1fr) 330px;

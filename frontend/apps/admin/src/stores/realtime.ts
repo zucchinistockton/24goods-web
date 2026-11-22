@@ -10,6 +10,7 @@ import {
   type RealtimeState,
   type StreamMessageEvent,
   type TypingEvent,
+  type ReadEvent,
 } from '@24goods/shared'
 import { api } from '../api'
 import type { AfterSalesTicket } from '../api-v3'
@@ -20,6 +21,7 @@ type Events = {
   order: Order
   agent_status: AgentStatus
   typing: TypingEvent
+  read: ReadEvent
   after_sales: AfterSalesTicket
   /** a direct order's step changed (coarse keys only): open views refetch what they show */
   order_progress: OrderProgressEvent
@@ -42,6 +44,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
         order: (o) => bus.emit('order', o),
         agent_status: (s) => bus.emit('agent_status', s),
         typing: (e) => bus.emit('typing', e),
+        read: (e) => bus.emit('read', e),
         after_sales: (t) => bus.emit('after_sales', t as unknown as AfterSalesTicket),
         order_progress: (e) => bus.emit('order_progress', e),
         poll: () => bus.emit('sync', undefined),

@@ -138,9 +138,10 @@ async def mark_read(
     body: ReadIn,
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
+    res: Resources = Depends(get_res),
 ) -> Response:
     conv = await service.buyer_conversation(db, conv_id, user)
-    await service.mark_read(db, conv, body.message_id, "buyer")
+    await service.mark_read(db, conv, body.message_id, "buyer", res.redis)
     return Response(status_code=204)
 
 

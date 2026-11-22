@@ -106,6 +106,8 @@ export default {
     related: 'You may also like',
   },
   chat: {
+    read: 'Read',
+    delivered: 'Sent',
     title: 'Customer service',
     placeholder: 'Type a message…',
     send: 'Send',
@@ -298,6 +300,9 @@ export default {
       title: 'Account check',
       checking: 'Checking your account…',
       planActive: 'This account already has an active {plan} plan, so it cannot take this one now. You have not been charged.',
+      buyFrom: '{account} still has {plan} until {date}. The same plan can be bought again from that date: nothing is wrong with the account and you have not been charged. A higher plan (Pro) can be bought now as an upgrade.',
+      upgradeCredit: 'Upgrade credit (your {plan} plan)',
+      thisAccount: 'This account',
     },
     problem: {
       incomplete: 'This is not the complete session. Open the page again, select everything and copy it once more.',
