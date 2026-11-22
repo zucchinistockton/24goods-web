@@ -132,10 +132,14 @@ def parse_query_response(data: Any) -> QueryResult:
     )
 
 
-QUERY_TIMEOUT_S = 3.0
+QUERY_TIMEOUT_S = 6.0
 # creating a payment may try the direct path and then a configured relay (app/payments/egress.py);
 # connecting gets CREATE_CONNECT_S of it so the outer timeout never cuts a connect (which would
-# turn "provably not sent" into "unknown"). Queries: 1.8 s of their 3 s; probe: 3.5 s of 5 s.
+# turn "provably not sent" into "unknown"). Queries: QUERY_CONNECT_S of their 6 s; probe: 3.5 of 5.
+# 2026-11-22: with the direct route to Xiaodou blocked, a query's old 1.8 s left the relay 0.4 s
+# for TLS, but the relay's handshake (it dials Guangzhou first) takes about 0.5 s: every status
+# query failed ("relay path not reachable") although creating payments through the relay worked.
+QUERY_CONNECT_S = 4.0
 CREATE_TIMEOUT_S = 7.0
 CREATE_CONNECT_S = 4.5
 # Xiaodou answers an unknown out_trade_no with HTTP 404 + {"code":-1,"msg":"订单不存在"}
@@ -328,7 +332,9 @@ class ZPayClient:
         query = {"act": "order", "pid": c.pid, "key": c.key, "out_trade_no": order_no}
         try:
             # ZPay waits 5 s for our reply: cap the whole re-query at ~3 s.
-            data = await asyncio.wait_for(self._json("/api.php", query), timeout=QUERY_TIMEOUT_S)
+            data = await asyncio.wait_for(
+                self._json("/api.php", query, connect_s=QUERY_CONNECT_S), timeout=QUERY_TIMEOUT_S
+            )
         except (httpx.HTTPError, ValueError, asyncio.TimeoutError) as exc:
             name = type(exc).__name__
             log.warning("zpay re-query failed order=%s error=%s", order_no, name)

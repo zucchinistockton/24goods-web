@@ -6,6 +6,16 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 **Hand-off 2026-11-18 (after PR #49; the owner's order #29 → #30 → #31 is done on the demo). START HERE.**
 
+- **2026-11-22 Xiaodou payments broken: production cannot reach the gateway directly (`fix/zpay-relay-budget`).** From c4
+  (141.98.198.150) TCP to `pay.xiaodouap.cn` (159.75.195.113, Tencent CLB Guangzhou) times out on 80 and 443; the dev
+  box and the relay path reach it. Creating payments works through the relay (connect budget 4.5 s), but every status
+  query failed: its 1.8 s budget left the relay 0.4 s per connect phase while the relay's TLS takes about 0.5 s
+  ("relay path not reachable"). Fix: queries get `QUERY_CONNECT_S` 4.0 of a 6 s timeout. Notify handling re-queries the
+  gateway, so paid orders could not be confirmed until this is deployed. Owner's channel: back on the OLD channel
+  (2.80 %) since 2026-11-23 00:42 CST; the new merchant-direct channel (2.25 %) put the owner's Alipay under risk
+  control until next month. Xiaodou's `buyerId`/`buyerPhone` (HMAC-stored, for buyer frequency / blacklists) exist only
+  on their RSA2 open API for merchant orders, not on the EPay-compatible interface we use.
+
 - **2026-11-22 whole-yuan fee rounding switched OFF in production (owner: "restore the previous settings … decimals are
   fine").** `payments.fee_round_whole` = false (audited `site.updated`): rounding the 5 % fee UP to a whole yuan made a
   ¥1 item pay a ¥1 fee and a ¥34 item ¥2. Fees are to the fen again (¥34 → 1.70, total 35.70); prices stay whole yuan

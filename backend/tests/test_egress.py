@@ -176,3 +176,32 @@ async def test_remembered_address_expires(monkeypatch):
     clock[0] += egress.IP_TTL_S + 1
     await send(net)
     assert net.lookups == 2
+
+
+async def test_a_query_leaves_the_relay_enough_time_for_its_handshake():
+    """2026-11-22 production: direct to Xiaodou blocked, relay TLS about 0.5 s. With the old 1.8 s
+    query budget the relay got 0.4 s per phase and every status query failed; the query budget
+    (zpay.QUERY_CONNECT_S) must leave the relay at least one second per connect phase."""
+    from app.payments import zpay
+
+    net = Net(up={RELAY})
+
+    async def slow_relay(url, connect):
+        net.calls.append((url, connect))
+        if url == RELAY and connect is not None and connect >= 0.6:  # handshake needs ~0.5 s
+            return {"ok": url}
+        raise httpx.ConnectTimeout("too little time" if url == RELAY else "no route")
+
+    got = await egress.send(
+        scheme="https",
+        host="pay.example.cn",
+        port=443,
+        path="/api.php",
+        fresh_ip=net.fresh_ip,
+        exchange=slow_relay,
+        never_dispatched=never_dispatched,
+        connect_deadline_s=zpay.QUERY_CONNECT_S,
+    )
+    assert got == {"ok": RELAY}
+    assert net.calls[-1][1] >= 1.0
+    assert zpay.QUERY_CONNECT_S < zpay.QUERY_TIMEOUT_S  # the outer timeout never cuts a connect
