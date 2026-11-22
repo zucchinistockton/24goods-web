@@ -632,9 +632,10 @@ async def mark_read(
     body: ReadIn,
     _: User = Depends(require_staff),
     db: AsyncSession = Depends(get_db),
+    res: Resources = Depends(get_res),
 ) -> Response:
     conv = await chat.staff_conversation(db, conv_id)
-    await chat.mark_read(db, conv, body.message_id, "staff")
+    await chat.mark_read(db, conv, body.message_id, "staff", res.redis)
     return Response(status_code=204)
 
 

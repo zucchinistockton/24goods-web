@@ -170,6 +170,7 @@ def order_body(
     request_id: str,
     pricing_version: int | None,
     allow_switch: bool = True,
+    payment_currency: str | None = None,
 ) -> dict[str, Any]:
     body: dict[str, Any] = {
         "product": spec.product,
@@ -185,6 +186,8 @@ def order_body(
     if spec.country:
         body["payment_country"] = spec.country
         body["payment_currency"] = spec.currency
+    if payment_currency:  # an upgrade pays in the account's own bill currency (vendor)
+        body["payment_currency"] = payment_currency
     if preflight_token:
         body["preflight_token"] = preflight_token
     if pricing_version is not None:
@@ -207,6 +210,81 @@ class Preflight:
     recovery_required: bool = False
     # vendor ``promotions`` (informational: names only, never decisive on their own) [I]
     promotions: tuple[str, ...] = ()
+
+
+# ---- upgrades of an existing subscription (owner 2026-11-22; vendor "upgrade-quotes")
+# plan order for "is the target higher than what the account holds"
+PLAN_RANK: dict[str, int] = {"free": 0, "go": 1, "plus": 2, "pro_5x": 3, "pro_20x": 4, "pro_50x": 5}
+UPGRADE_TARGETS = frozenset({"pro_5x", "pro_20x", "pro_50x"})
+UPGRADE_FUNDING_BUFFER = Decimal("1.10")  # vendor: funding_usd_minor = difference x rate + 10 %
+
+
+@dataclass(frozen=True)
+class UpgradeQuote:
+    """One ``available`` entry of ``POST /gpt-direct/upgrade-quotes``: what THIS account pays to
+    move to ``plan`` (its own bill currency), valid about 5 minutes, bound to its token."""
+
+    plan: str
+    current_plan: str | None
+    currency: str
+    amount_minor: int
+    exponent: int
+    funding_usd: Decimal  # the vendor's card funding estimate (difference + 10 %)
+    token: str = field(repr=False)
+
+    @property
+    def usd(self) -> Decimal:
+        """The difference in USD (the vendor's estimate without its 10 % margin)."""
+        return (self.funding_usd / UPGRADE_FUNDING_BUFFER).quantize(Decimal("0.01"))
+
+    def view(self) -> dict[str, Any]:
+        return {
+            "plan": self.plan,
+            "current_plan": self.current_plan,
+            "currency": self.currency,
+            "amount": str(Decimal(self.amount_minor).scaleb(-self.exponent)),
+            "usd": str(self.usd),
+        }
+
+
+def upgradable(pf: Preflight, plan: str) -> bool:
+    """The account holds a paid plan below ``plan`` and ``plan`` is an upgrade target."""
+    cur = pf.current_plan or "free"
+    return (
+        plan in UPGRADE_TARGETS
+        and PLAN_RANK.get(cur, 0) >= 1
+        and PLAN_RANK.get(plan, 0) > PLAN_RANK.get(cur, 0)
+    )
+
+
+def parse_upgrade_quote(data: Any, plan: str) -> UpgradeQuote | None:
+    """The ``available`` quote for ``plan`` in an ``upgrade-quotes`` answer, else ``None``."""
+    rows = data.get("quotes") if isinstance(data, Mapping) else None
+    for q in rows if isinstance(rows, list) else []:
+        if not isinstance(q, Mapping) or q.get("plan") != plan or q.get("available") is not True:
+            continue
+        minor, fund = q.get("amount_minor"), q.get("funding_usd_minor")
+        exp = q.get("minor_unit_exponent", 2)
+        cur, tok = q.get("currency"), q.get("preflight_token")
+        if not all(isinstance(x, int) and not isinstance(x, bool) for x in (minor, exp, fund)):
+            continue
+        if not isinstance(cur, str) or not isinstance(tok, str):
+            continue
+        if not 8 <= len(tok) <= PREFLIGHT_TOKEN_MAX:
+            continue
+        if minor <= 0 or fund <= 0 or not 0 <= exp <= 4:
+            continue
+        cp = q.get("current_plan")
+        return UpgradeQuote(
+            plan=plan,
+            current_plan=cp.strip().lower()[:40] if isinstance(cp, str) else None,
+            currency=cur.upper()[:3],
+            amount_minor=minor,
+            exponent=exp,
+            funding_usd=Decimal(fund) / 100,
+            token=tok,
+        )
+    return None
 
 
 # the vendor refused the buyer's session itself (nothing was charged): the buyer must paste a new

@@ -6,6 +6,14 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 **Hand-off 2026-11-18 (after PR #49; the owner's order #29 → #30 → #31 is done on the demo). START HERE.**
 
+- **2026-11-22 ADR-052 built (`feat/upgrades-chat-read`; owner: "(a) charge the difference plus the markup … continue
+  the analysis … proceed with development").** Plan upgrades via `upgrade-quotes` (difference + markup, credit shown),
+  free-account rule fixed, clearer refusals, chat read state (server read marker, awaiting-reply tag/filter, read
+  receipts, realtime `read`). Migration `0040`. Findings: Pro 5x refusals 13:45/13:49 UTC and Plus refusals 15:14 UTC
+  were `purchase_not_yet`; dashboard orders #1047748 / #1048807 are invisible to the API (404). Alipay ¥661 order
+  GHVTL3PZP6JY4 (14:05 UTC): EPay returned a valid Alipay QR, 30 status checks unpaid, buyer cancelled 14:11 — the
+  failure was inside Alipay / the upstream merchant (largest earlier success on that provider ¥121.80).
+
 - **2026-11-21 16:58 UTC PRODUCTION DEPLOY of ADR-051 (#100, owner: "deploy the pricing change").** c4 runs
   `e9207be` (revision verified), no migration (`0039`). Dump `/root/kesiv-backups/predeploy-20261121T165721Z/` (sha256
   `8f7b3de9…9580`, also on c4; 48 orders); rollback images `goods24-{api,web}:rollback-8aa24a3` and `:rollback-bb0a4bd`.

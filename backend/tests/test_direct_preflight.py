@@ -74,10 +74,17 @@ async def test_a_usable_account_passes_and_the_order_is_created(env, dup):
             "preflight_account_blocked",
         ),
         (
-            {"preflight_over": {"can_purchase_at": "2999-01-01T00:00:00Z"}},
+            # owner 2026-11-22: the date blocks only an account that HOLDS a plan
+            {
+                "preflight_over": {
+                    "can_purchase_at": "2999-01-01T00:00:00Z",
+                    "subscription_has_active": True,
+                }
+            },
             "preflight_purchase_not_yet",
         ),
         ({"reject_sessions": True}, "preflight_session_invalid"),
+        # a FREE account with a future date is NOT blocked (owner 2026-11-22: the vendor served one)
     ],
 )
 async def test_an_account_that_cannot_take_the_plan_never_reaches_payment(env, dup, setup, code):
@@ -185,11 +192,13 @@ async def test_procurement_opens_only_a_blob_sealed_for_a_pre_check(env, dup):
         "reason": "unreadable_session",
         "account": None,
         "current_plan": None,
+        "can_purchase_at": None,
+        "upgrade": None,
     }
     good = sealer.seal(session, tenant_id=str(tid), order_id=f"preflight:{nonce}")
     out = await call(good)
     assert out["status"] == "passed" and out["current_plan"] == "free"
-    assert set(out) == {"status", "reason", "account", "current_plan"}
+    assert set(out) == {"status", "reason", "account", "current_plan", "can_purchase_at", "upgrade"}
     assert vendor.preflights == 1
     # without the internal token: refused before anything is opened
     r = await env.res.procurement.post("/internal/direct-preflight", json={})

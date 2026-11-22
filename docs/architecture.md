@@ -625,3 +625,27 @@ after the Alipay surcharge.
 
 **Consequences.** Recommendations sit slightly above the target markup (up to 9 yuan for the ending, e.g. Pro 5x
 US 7.9 % → 721 → 729, 9.1 %). Buyers pay up to 0.99 yuan more in fees per order with whole-yuan fees on.
+
+### ADR-052: Upgrades of a running ChatGPT plan priced from the vendor quote; chat read state (owner 2026-11-22)
+
+**Context.** A buyer holding Plus could not buy Pro 5x: the pre-payment check refused every account whose vendor
+`can_purchase_at` lay in the future (`purchase_not_yet`), while ZovoCard's own direct top-up upgraded the same account
+for the difference (`POST /gpt-direct/upgrade-quotes`). The same rule refused a FREE account that the vendor then served
+at once, so the date is not a block on its own. Support staff also had to reply to clear the unread dot (the inbox never
+called the existing staff read endpoint).
+
+**Decision.**
+- Upgrades: when the account holds Go / Plus / 5x and the target is a higher Pro plan, the account check asks the vendor
+  for the upgrade quote; available = passed (with the quote), none = `upgrade_unavailable`. The order is priced on the
+  server from it: `USD difference × shop rate × (1 + the unit's markup)`, rounded like recommendations (whole units,
+  price ending), never above the list price; the credit is stored in `orders.terms.upgrade` and shown as "Upgrade credit
+  −¥X" before payment (buyer order page, admin drawer). Execution orders with the upgrade's own token and currency; an
+  order paid at the upgrade price whose account is no longer upgradable stops (`upgrade_unavailable`, staff) and never
+  buys the full plan; the upgrade cost is bounded by what the buyer paid for (`JobSpec.upgrade_max_usd`, migration
+  `0040` lets procurement read `orders.terms`).
+- `purchase_not_yet` now applies only to an account that holds a plan (`has_active` or a paid `currentPlan`).
+- Refusals tell the buyer which account was checked, its plan and from when it can buy again (and that nothing is
+  wrong / nothing was charged); procurement logs the plan state of every pre-check.
+- Chat: the inbox calls `POST /admin/conversations/{id}/read` when a chat is opened / a message arrives while it is open;
+  conversation rows carry `awaiting_reply` (buyer wrote last) and `peer_read_id`; a realtime `read` event clears the
+  dot for every agent and updates the read receipts ("Read" / "Sent" for the buyer, "Read by the buyer" for staff).

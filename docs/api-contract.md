@@ -735,3 +735,13 @@ use_procurement_actions` for such an order).
 - Admin site settings: `payments.fee_round_whole` (bool, read and write).
 - `PUT /api/v1/admin/procurement/pricing/target` accepts `markup` (fraction 0–<1 or null to clear) instead of `margin`;
   `GET …/units` rows carry `target_markup_pct`; settings carry `price_ending` (0–9) and `markups`.
+
+
+### ADR-052 additions (2026-11-22)
+
+- `POST /api/v1/orders` (direct): an account check may pass as an UPGRADE; the order is then priced from the vendor's
+  upgrade quote. Order views carry `upgrade: {from_plan, credit, list_price} | null`.
+- Refusal `422 preflight_purchase_not_yet` / `preflight_plan_active` details: `current_plan`, `can_purchase_at` (ISO),
+  `account` (masked); new code `preflight_upgrade_unavailable`.
+- Conversations: `awaiting_reply` (bool), `peer_read_id` (int). Realtime event `read {conversation_id, role, upto}`.
+  `POST /api/v1/admin/conversations/{id}/read {message_id}` is now used by the console.

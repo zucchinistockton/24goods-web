@@ -50,6 +50,9 @@ const buySheet = ref(false)
 const showCreds = ref(false)
 
 const conv = ref<Conversation | null>(null)
+// read receipt: has support read the buyer's latest message?
+const lastMine = computed(() => [...chat.messages.value].reverse().find((m) => m.sender.role === 'buyer') ?? null)
+const staffRead = computed(() => !!(lastMine.value && conv.value && (conv.value.peer_read_id ?? 0) >= lastMine.value.id))
 const busyQuoteId = ref<string | null>(null)
 const list = ref<InstanceType<typeof ChatMessageList> | null>(null)
 const opening = ref(true)
@@ -241,6 +244,11 @@ const offs = [
     void afterIncoming(e.message.sender.role === 'buyer')
   }),
   rt.on('typing', (e) => typing.onEvent(e)),
+  rt.on('read', (e) => {
+    // support opened the chat: "Read" under the buyer's last message (owner 2026-11-22)
+    if (e.role === 'staff' && conv.value && e.conversation_id === conv.value.id)
+      conv.value = { ...conv.value, peer_read_id: Math.max(conv.value.peer_read_id ?? 0, e.upto) }
+  }),
   rt.on('conversation', (c) => {
     if (c.id === chat.conversationId.value) conv.value = c
   }),
@@ -389,6 +397,7 @@ function deliveredOrderId(it: { kind: string; message?: { type: string; payload:
         <div class="head-status">
           <span class="typing" role="status">{{ typing.name.value === null ? '' : typing.name.value ? t('chatActions.typing', { name: typing.name.value }) : t('chatActions.typingGeneric') }}</span>
           <template v-if="typing.name.value === null">
+            <span v-if="lastMine" class="receipt">{{ staffRead ? t('chat.read') : t('chat.delivered') }} ·</span>
             <AgentStatusDot :status="status" />
             <span>{{ t(`agentStatus.${status}`) }}</span>
             <span v-if="statusHint" class="head-msg">· {{ statusHint }}</span>
@@ -539,6 +548,9 @@ function deliveredOrderId(it: { kind: string; message?: { type: string; payload:
   font-size: 12px;
   color: var(--c-text-2);
   min-width: 0;
+}
+.receipt {
+  margin-right: 4px;
 }
 .typing {
   color: var(--c-accent-ink, var(--c-text-2));

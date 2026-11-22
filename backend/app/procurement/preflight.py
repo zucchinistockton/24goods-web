@@ -30,7 +30,9 @@ from app.suppliers.registry import SupplierConfigError
 log = logging.getLogger("app.procurement.preflight")
 
 AAD_PREFIX = "preflight:"
-BLOCK_REASONS = frozenset({"session_invalid", "plan_active", "purchase_not_yet", "account_blocked"})
+BLOCK_REASONS = frozenset(
+    {"session_invalid", "plan_active", "purchase_not_yet", "account_blocked", "upgrade_unavailable"}
+)
 
 
 @dataclass(frozen=True)
@@ -39,6 +41,8 @@ class Outcome:
     reason: str = ""
     account_mask: str | None = None
     current_plan: str | None = None
+    can_purchase_at: str | None = None
+    upgrade: dict[str, Any] | None = None
 
     def view(self) -> dict[str, Any]:
         return {
@@ -46,6 +50,8 @@ class Outcome:
             "reason": self.reason,
             "account": self.account_mask,
             "current_plan": self.current_plan,
+            "can_purchase_at": self.can_purchase_at,
+            "upgrade": self.upgrade,
         }
 
 
@@ -123,7 +129,14 @@ async def _ask_vendor(
     if res.status == "blocked" and not reason:
         reason = "account_blocked"  # an unknown block is a block, never a pass
     status = res.status if res.status in ("passed", "blocked") else "unavailable"
-    return Outcome(status, reason[:48], res.account_mask, res.current_plan)
+    return Outcome(
+        status,
+        reason[:48],
+        res.account_mask,
+        res.current_plan,
+        getattr(res, "can_purchase_at", None),
+        getattr(res, "upgrade", None) if status == "passed" else None,
+    )
 
 
 async def run(
@@ -160,11 +173,14 @@ async def run(
         out = Outcome("unavailable", "check_failed")
     finally:
         credential = None
-    log.info(
-        "preflight tenant=%s product=%s outcome=%s reason=%s",
+    log.info(  # plan state only (no account): enough to explain a refusal later
+        "preflight tenant=%s product=%s outcome=%s reason=%s plan=%s buy_from=%s upgrade=%s",
         tenant_id,
         product_id,
         out.status,
         out.reason,
+        out.current_plan,
+        out.can_purchase_at,
+        bool(out.upgrade),
     )
     return out

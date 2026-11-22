@@ -7,6 +7,7 @@ import type {
   OrderProgressEvent,
   StreamMessageEvent,
   TypingEvent,
+  ReadEvent,
 } from '../types'
 
 /** Minimal surface of EventSource we rely on (lets tests inject a fake). */
@@ -29,6 +30,7 @@ export interface RealtimeHandlers {
   after_sales?: (t: AfterSales) => void
   /** v11 W2: the other side is typing (ephemeral). */
   typing?: (e: TypingEvent) => void
+  read?: (e: ReadEvent) => void
   /** v12 M3: a 3DS one-time code for one of the buyer's own cards (ephemeral, never stored). */
   card_otp?: (e: CardOtpEvent) => void
   /** issue #30: a direct order's progress step changed (coarse; refetch the direct info). */
@@ -55,7 +57,7 @@ export interface RealtimeOptions {
   random?: () => number
 }
 
-const EVENTS = ['message', 'conversation', 'order', 'agent_status', 'after_sales', 'typing', 'card_otp', 'order_progress'] as const
+const EVENTS = ['message', 'conversation', 'order', 'agent_status', 'after_sales', 'typing', 'card_otp', 'order_progress', 'read'] as const
 
 function defaultFactory(): EventSourceFactory | null {
   const ES = (globalThis as { EventSource?: typeof EventSource }).EventSource
@@ -198,6 +200,9 @@ export class RealtimeClient {
         break
       case 'order_progress':
         h.order_progress?.(data as OrderProgressEvent)
+        break
+      case 'read':
+        h.read?.(data as ReadEvent)
         break
     }
   }

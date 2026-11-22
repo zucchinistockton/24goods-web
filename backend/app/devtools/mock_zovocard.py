@@ -332,6 +332,8 @@ class MockZovo:
     usage_remaining: dict[int, int] = field(default_factory=dict)  # funding card -> remaining uses
     list_cap: int = 100  # rows per page the order list really returns (paging tests)
     direct_current_plan: str = "free"  # what the preflight reports as the account's plan
+    upgrade_from: str | None = None  # the account's running plan for /gpt-direct/upgrade-quotes
+    upgrade_off: bool = False  # the vendor offers no upgrade quote
     reject_sessions: bool = False  # every session is refused (it stopped working after checkout)
     direct_quote_error: str = ""  # a non-empty quote_error on the preflight
     direct_half_eligible: bool = True  # False: the preflight quotes no ``*_half`` plan
@@ -817,6 +819,32 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
                 o["status"] = mock.direct_end
         return JSONResponse(_env(0, {"order": _order_view(o), "events": list(mock.direct_events)}))
 
+    def _upgrade_quotes(body: dict[str, Any]) -> JSONResponse:
+        """owner 2026-11-22: an account holding Go / Plus / 5x gets the difference for higher
+        plans (PHP; the credit is a flat 13 % of the full price in the mock)."""
+        tok = body.get("preflight_token")
+        if not isinstance(tok, str) or len(tok) < 8:
+            return JSONResponse({"code": 400, "error_code": "INVALID_REQUEST"}, 400)
+        full = {"pro_5x": 579464, "pro_20x": 891966, "pro_50x": 2900893}
+        cur = mock.upgrade_from or ""
+        rank = {"go": 1, "plus": 2, "pro_5x": 3, "pro_20x": 4, "pro_50x": 5}
+        quotes: list[dict[str, Any]] = []
+        for plan, amount in full.items():
+            higher = rank.get(cur, 0) >= 1 and rank[plan] > rank.get(cur, 0)
+            if not higher or mock.upgrade_off:
+                off = {"plan": plan, "available": False, "error_code": "upgrade_quote_unavailable"}
+                quotes.append(off)
+                continue
+            due = amount * 87 // 100
+            quotes.append(
+                {"plan": plan, "current_plan": cur, "available": True, "currency": "PHP",
+                 "amount_minor": due, "minor_unit_exponent": 2,
+                 "funding_usd_minor": int(due / 58.2 * 1.10),
+                 "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
+                 "preflight_token": "up_" + secrets.token_hex(16)}
+            )  # fmt: skip
+        return JSONResponse(_env(0, {"quotes": quotes}))
+
     def _write(request: Request, path: str, body: dict[str, Any]) -> JSONResponse:
         if path == "/gpt-direct/orders":
             return _create_order(body)
@@ -897,6 +925,12 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
         blocked = _gate(request, path)
         if blocked is not None:
             return blocked
+        if request.method == "POST" and path == "/gpt-direct/upgrade-quotes":
+            try:  # read only: no Idempotency-Key, nothing cached
+                up = json.loads(await request.body() or b"{}")
+            except ValueError:
+                up = None
+            return _upgrade_quotes(up if isinstance(up, dict) else {})
         if request.method == "POST" and path == "/gpt-direct/preflight":
             try:  # read-only upstream: no Idempotency-Key, nothing cached
                 pre = json.loads(await request.body() or b"{}")

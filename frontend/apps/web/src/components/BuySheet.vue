@@ -193,9 +193,19 @@ async function placeOrder() {
 /** The account pre-check refused (review-v12 §24): no order exists and nothing was paid. Explain
  *  it in a dialog (not a toast that vanishes) and offer a fresh paste when the session is the problem. */
 async function preflightRefused(e: ApiError) {
-  const raw = (e.details as { current_plan?: unknown } | null)?.current_plan
+  const d = (e.details ?? {}) as { current_plan?: unknown; can_purchase_at?: unknown; account?: unknown }
+  const raw = d.current_plan
   const plan = typeof raw === 'string' && /^[a-z0-9_ -]{1,40}$/i.test(raw) ? raw : null
-  const msg = e.code === 'preflight_plan_active' && plan ? t('direct.preflight.planActive', { plan }) : errorText(e)
+  // owner 2026-11-22: name the checked account, its plan and the date it can buy again
+  const at = typeof d.can_purchase_at === 'string' ? new Date(d.can_purchase_at) : null
+  const date = at && !Number.isNaN(at.getTime()) ? at.toLocaleDateString(locale.value) : null
+  const account = typeof d.account === 'string' && /^[^\s<>]{3,80}$/.test(d.account) ? d.account : t('direct.preflight.thisAccount')
+  const msg =
+    (e.code === 'preflight_purchase_not_yet' || e.code === 'preflight_plan_active') && plan && date
+      ? t('direct.preflight.buyFrom', { account, plan, date })
+      : e.code === 'preflight_plan_active' && plan
+        ? t('direct.preflight.planActive', { plan })
+        : errorText(e)
   const repaste = e.code === 'preflight_session_invalid'
   const again = await ask(t('direct.preflight.title'), msg, repaste ? t('direct.pasteAgain') : t('common.ok'), repaste ? t('common.cancel') : undefined)
   if (again && repaste && isDirect.value) {

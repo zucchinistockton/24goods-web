@@ -35,7 +35,7 @@ import time
 import uuid
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
 
 from sqlalchemy import delete, func, insert, select, text, update
@@ -930,6 +930,7 @@ def _spec(
     mode: str,
     tolerance: float = 0.10,
     funding: FundingPolicy | None = None,
+    upgrade_usd: Decimal | None = None,
 ) -> JobSpec:
     voiding = mode in ("void", "dvoid")
     tol = Decimal(str(tolerance))
@@ -957,7 +958,21 @@ def _spec(
         cost_bound=bound,
         quote_tolerance=tol,
         attempt=job.card_attempt or 0,
+        upgrade_max_usd=upgrade_usd,
     )
+
+
+async def _upgrade_usd(db: AsyncSession, job: ProcurementJob) -> Decimal | None:
+    """The upgrade difference (USD) the buyer of this direct order paid for (owner 2026-11-22:
+    the order's ``terms.upgrade`` snapshot), else ``None`` (a full-price order)."""
+    terms = await db.scalar(
+        select(Order.terms).where(Order.id == job.order_id, Order.tenant_id == job.tenant_id)
+    )
+    up = terms.get("upgrade") if isinstance(terms, dict) else None
+    try:
+        return Decimal(str(up["usd"])) if isinstance(up, dict) and up.get("usd") else None
+    except (InvalidOperation, ValueError):
+        return None
 
 
 async def _offer(db: AsyncSession, job: ProcurementJob) -> OfferRow | None:
@@ -1395,7 +1410,14 @@ async def _lease(ctx: ProcurementContext, job_id: uuid.UUID, tenant_id: uuid.UUI
             if job.kind == "direct" and _auto_card(offer) and mode == "precheck"
             else None
         )
-        spec = _spec(job, offer, mode, ctx.settings.direct_quote_tolerance, policy)
+        spec = _spec(
+            job,
+            offer,
+            mode,
+            ctx.settings.direct_quote_tolerance,
+            policy,
+            await _upgrade_usd(db, job) if job.kind == "direct" else None,
+        )
         lease = Lease(
             job.id, job.tenant_id, mode, job.state, job.step, job.idempotency_key,
             replace(spec, prior_send=prior_send), offer.ref, job.order_id, prior_send,

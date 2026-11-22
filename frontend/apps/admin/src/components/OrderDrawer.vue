@@ -464,6 +464,9 @@ defineExpose({ reload: () => props.orderId && load(props.orderId) })
           <el-descriptions-item :label="t('orders.col.title')">{{ order.title }}</el-descriptions-item>
           <el-descriptions-item v-if="order.variant_name" :label="t('variants.title')">{{ order.variant_name }}</el-descriptions-item>
           <el-descriptions-item v-if="order.subtotal" :label="t('orders.info.subtotal')">{{ money(order.subtotal) }}</el-descriptions-item>
+          <el-descriptions-item v-if="order.upgrade" :label="t('orders.info.upgrade', { plan: order.upgrade.from_plan || '—' })">
+            −{{ money(order.upgrade.credit) }} <span class="muted small">({{ t('orders.info.listPrice') }} {{ money(order.upgrade.list_price) }})</span>
+          </el-descriptions-item>
           <el-descriptions-item v-if="order.fee && order.fee !== '0' && order.fee !== '0.00'" :label="t('orders.info.fee', { rate: order.fee_rate ?? '' })">{{ money(order.fee) }}</el-descriptions-item>
           <el-descriptions-item v-if="order.discount_minor" :label="t('v5.orders.discount')">
             −{{ money(yuanMinor(order.discount_minor)) }}<template v-if="order.promo_code"> · <span class="mono">{{ order.promo_code }}</span></template>

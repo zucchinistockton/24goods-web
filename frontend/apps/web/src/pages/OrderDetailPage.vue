@@ -23,6 +23,7 @@ import {
   type Order,
   isInstantMode,
   cryptoChannelLabel,
+  formatMoney,
 } from '@24goods/shared'
 import { api } from '../api'
 import AfterSalesSheet from '../components/AfterSalesSheet.vue'
@@ -437,6 +438,10 @@ function gotCode() {
           <span v-if="order.reseller" class="muted small">{{ t('order.viaStore', { name: order.reseller.store_name }) }}</span>
           <span v-if="order.quote_id" class="muted small">{{ t('order.fromQuote') }}</span>
         </div>
+        <p v-if="order.upgrade && Number(order.upgrade.credit) > 0" class="o-upgrade">
+          <span>{{ t('direct.preflight.upgradeCredit', { plan: order.upgrade.from_plan || '—' }) }}</span>
+          <span class="num">−{{ formatMoney(order.upgrade.credit, order.currency, locale) }}</span>
+        </p>
         <PayChannelPicker v-if="order.status === 'pending_payment'" />
         <p v-if="unreachable && order.status === 'pending_payment'" class="reach-note" role="alert">
           {{ t('errors.channel_unreachable') }}
@@ -611,6 +616,12 @@ function gotCode() {
 </template>
 
 <style scoped>
+.o-upgrade {
+  display: flex;
+  justify-content: space-between;
+  margin: 8px 0;
+  color: var(--van-success-color, #07c160);
+}
 .reach-note {
   margin: 8px 0 0;
   padding: 8px 12px;

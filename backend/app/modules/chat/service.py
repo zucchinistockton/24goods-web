@@ -24,7 +24,13 @@ from app.modules.common.views import (
     message_view,
     product_card_payload,
 )
-from app.modules.realtime.publish import publish_conversation, publish_message
+from app.modules.realtime.publish import publish as _publish
+from app.modules.realtime.publish import (
+    publish_conversation,
+    publish_message,
+    staff_channel,
+    user_channel,
+)
 from app.modules.realtime.publish import publish_typing as _pub_typing
 from app.modules.uploads.service import text_preview
 from app.modules.uploads.storage import FileStore
@@ -190,6 +196,18 @@ async def conversation_views(
         .group_by(Message.conversation_id)
     )
     unread = {cid: int(n) for cid, n in unread_rows.all()}
+    # owner 2026-11-22: "awaiting reply" = the buyer's last message is newer than staff's last one
+    # (an inbox tag + filter, separate from the unread dot, which opening the chat clears)
+    last_rows = await db.execute(
+        select(
+            Message.conversation_id,
+            func.max(Message.id).filter(Message.sender_role == "buyer"),
+            func.max(Message.id).filter(Message.sender_role.in_(("agent", "admin"))),
+        )
+        .where(Message.conversation_id.in_(ids))
+        .group_by(Message.conversation_id)
+    )
+    awaiting = {cid: bool(b) and (s_ or 0) < b for cid, b, s_ in last_rows.all()}
     out = []
     for c in convs:
         buyer = users.get(c.buyer_id)
@@ -218,6 +236,9 @@ async def conversation_views(
                 ),
                 "last_message": last_views.get(c.last_message_id) if c.last_message_id else None,
                 "unread": unread.get(c.id, 0),
+                "awaiting_reply": awaiting.get(c.id, False),
+                # read receipts: how far the OTHER side has read (message id)
+                "peer_read_id": c.staff_last_read_id if viewer == "buyer" else c.buyer_last_read_id,
                 "updated_at": iso(c.updated_at),
             }
         )
@@ -456,7 +477,11 @@ async def send_user_message(
     return msg, created
 
 
-async def mark_read(db: AsyncSession, conv: Conversation, message_id: int, viewer: str) -> None:
+async def mark_read(
+    db: AsyncSession, conv: Conversation, message_id: int, viewer: str, redis: Any = None
+) -> None:
+    """Advance the viewer's read marker; with ``redis`` the other side (and other staff) get a
+    ``read`` event (owner 2026-11-22: read receipts, and the staff unread dot clears for all)."""
     upto = min(message_id, conv.last_message_id or 0)
     column = (
         Conversation.buyer_last_read_id if viewer == "buyer" else Conversation.staff_last_read_id
@@ -467,6 +492,13 @@ async def mark_read(db: AsyncSession, conv: Conversation, message_id: int, viewe
         .values({column: func.greatest(column, upto)})
     )
     await db.commit()
+    if redis is not None and upto > 0:
+        data = {"conversation_id": str(conv.id), "role": viewer, "upto": upto}
+        if viewer == "buyer":
+            await _publish(redis, staff_channel(conv.tenant_id), "read", data)
+        else:
+            await _publish(redis, user_channel(conv.buyer_id), "read", data)
+            await _publish(redis, staff_channel(conv.tenant_id), "read", data)
 
 
 def resolve_title(product: Product | None, lang: str) -> str:

@@ -90,6 +90,10 @@ class AccountCheck:
     reason: str = ""
     account_mask: str | None = None
     current_plan: str | None = None
+    # ISO time from which the account can buy again (vendor ``can_purchase_at``), for the buyer
+    can_purchase_at: str | None = None
+    # an upgrade of the account's current plan: ``UpgradeQuote.view()`` (owner 2026-11-22)
+    upgrade: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -1229,10 +1233,21 @@ class ZovoCardSupplier:
             if code in dr.SESSION_REJECTED_CODES:
                 return AccountCheck("blocked", "session_invalid")
             return AccountCheck("unavailable", clean_detail(code))
-        seen = {"account_mask": pf.account_mask, "current_plan": pf.current_plan}
+        seen: dict[str, Any] = {
+            "account_mask": pf.account_mask,
+            "current_plan": pf.current_plan,
+            "can_purchase_at": pf.can_purchase_at.isoformat() if pf.can_purchase_at else None,
+        }
         base = plan[: -len("_half")] if dr.is_half_plan(plan) else plan
         if pf.current_plan is not None and pf.current_plan in (plan, base):
             return AccountCheck("blocked", "plan_active", **seen)
+        if dr.upgradable(pf, plan) and pf.token and not pf.blocking_reason:
+            # a higher plan over a running Go / Plus / 5x: the vendor's upgrade quote (the real
+            # difference from the account's own bill) decides, not "can buy again from"
+            q = await self._upgrade_quote(pf.token, plan)
+            if q is None:
+                return AccountCheck("blocked", "upgrade_unavailable", **seen)
+            return AccountCheck("passed", "", upgrade=q.view(), **seen)
         problem = _account_problem(pf)
         if problem == "subscription_active":
             return AccountCheck("blocked", "plan_active", **seen)
@@ -1243,6 +1258,22 @@ class ZovoCardSupplier:
         if pf.quote_error:  # the vendor: no order while quote_error is set (temporary)
             return AccountCheck("unavailable", "quote_error", **seen)
         return AccountCheck("passed", "", **seen)
+
+    async def _upgrade_quote(self, token: str, plan: str) -> dr.UpgradeQuote | None:
+        """``POST /gpt-direct/upgrade-quotes`` (read only: no order, no charge): the account's
+        upgrade to ``plan``, or ``None`` when the vendor offers none / cannot answer."""
+        try:
+            resp = await self.client.request(
+                "POST",
+                "/gpt-direct/upgrade-quotes",
+                json_body={"preflight_token": token},
+                read_only_post=True,
+                endpoint="direct.upgrade_quotes",
+            )
+        except SupplierError as exc:
+            log.warning("upgrade quote failed reason=%s", exc.reason)
+            return None
+        return dr.parse_upgrade_quote(resp.data, plan)
 
     async def _direct_run(self, job: JobSpec) -> Result:
         """:meth:`_direct_run_once`, with the top-up it made (if any) reported on EVERY answer, so
@@ -1333,12 +1364,30 @@ class ZovoCardSupplier:
                 return Result(Outcome.FATAL, error_code="session_other_account", **seen)
             if pf.current_plan == spec.plan:
                 return Result(Outcome.FATAL, error_code="plan_already_active", **seen)
-            blocked = _account_problem(pf)
-            if blocked is not None:  # support can explain these; nothing is sent
-                return Result(Outcome.FATAL, error_code=blocked, **seen)
-            over = await self._quote_problem(spec, pf, job)
-            if over is not None:
-                return Result(Outcome.FATAL, error_code=over, **seen)
+            token, pay_currency = pf.token, None
+            upgrade = (
+                await self._upgrade_quote(pf.token, spec.plan)
+                if dr.upgradable(pf, spec.plan) and pf.token and not pf.blocking_reason
+                else None
+            )
+            if upgrade is not None:
+                # the buyer paid for an upgrade (or the account simply holds a lower plan): order
+                # with the upgrade's own token and currency; the vendor charges the difference
+                bound = job.upgrade_max_usd or (job.cost_bound.amount if job.cost_bound else None)
+                if bound is not None and upgrade.usd > bound * (Decimal(1) + job.quote_tolerance):
+                    return Result(Outcome.FATAL, error_code="upgrade_over_bound", **seen)
+                token, pay_currency = upgrade.token, upgrade.currency
+            elif job.upgrade_max_usd is not None:
+                # the buyer paid the UPGRADE price but the account is no longer upgradable: never
+                # buy the full plan for it (staff refund or retry later)
+                return Result(Outcome.FATAL, error_code="upgrade_unavailable", **seen)
+            else:
+                blocked = _account_problem(pf)
+                if blocked is not None:  # support can explain these; nothing is sent
+                    return Result(Outcome.FATAL, error_code=blocked, **seen)
+                over = await self._quote_problem(spec, pf, job)
+                if over is not None:
+                    return Result(Outcome.FATAL, error_code=over, **seen)
             if not moved and not job.prior_send:
                 short = await self._fund_before_order(spec, job, moved)
                 if short is not None:
@@ -1352,10 +1401,11 @@ class ZovoCardSupplier:
                 credential=checked.canonical,
                 preflight_token=None
                 if dr.omit_preflight_token(self.client.config.base_url, self.env)
-                else pf.token,
+                else token,
                 request_id=rid,
                 pricing_version=version,
                 allow_switch=self.env != "production",
+                payment_currency=pay_currency,
             )
             try:
                 resp = await self.client.request(
@@ -1904,7 +1954,14 @@ def _account_problem(pf: dr.Preflight) -> str | None:
     """The preflight says this account cannot take the order now [V]: refused before any send."""
     if pf.blocking_reason:
         return "preflight_blocked"
-    if pf.can_purchase_at is not None and pf.can_purchase_at > datetime.now(timezone.utc):
+    holds_plan = pf.has_active or (pf.current_plan or "free") != "free"
+    if (
+        holds_plan
+        and pf.can_purchase_at is not None
+        and pf.can_purchase_at > datetime.now(timezone.utc)
+    ):
+        # owner 2026-11-22: a FREE account was refused on this date alone, yet the vendor's own
+        # direct top-up bought Plus for it at once; the date only blocks an account holding a plan
         return "purchase_not_yet"
     if pf.recovery_required:
         return "subscription_recovery_required"

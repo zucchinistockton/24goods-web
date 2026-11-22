@@ -270,6 +270,12 @@ export interface MessageMeta {
   recalled?: boolean
 }
 /** SSE `typing` event (never stored). */
+/** realtime `read`: `role` advanced its read marker of the conversation up to message `upto` */
+export interface ReadEvent {
+  conversation_id: string
+  role: 'buyer' | 'staff'
+  upto: number
+}
 export interface TypingEvent {
   conversation_id: string
   role: SenderRole
@@ -329,6 +335,10 @@ export interface Conversation {
   assigned_agent: { id: string; display_name: string; avatar_url?: string | null; avatar_preset?: string | null } | null
   last_message: Message | null
   unread: number
+  /** the buyer wrote last and staff have not answered yet (owner 2026-11-22) */
+  awaiting_reply?: boolean
+  /** read receipts: the last message id the OTHER side has read */
+  peer_read_id?: number
   updated_at: string
 }
 
@@ -396,6 +406,8 @@ export interface Order {
   delivery_deadline?: string | null
   /** U10: the pre-order window sold (snapshot); the dates once paid. */
   preorder?: OrderPreorder | null
+  /** owner 2026-11-22: an upgrade of the buyer's running plan; `credit` came off `list_price` */
+  upgrade?: { from_plan: string; credit: string; list_price: string } | null
   /** v8: ISO time from which a paid, undelivered order may be reported as not received. */
   not_received_from?: string | null
   /** v8: what staff entered when confirming the money was sent back (refunded orders). */
