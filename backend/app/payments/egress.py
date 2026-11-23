@@ -9,6 +9,9 @@ Safety: a path is abandoned only on a connect-level failure (the request provabl
 host), so falling back can never send the same create/query twice. Anything after the connection
 is established (read timeout, protocol error, HTTP status) is returned to the caller unchanged.
 
+``APP_ZPAY_RELAY_ONLY=true`` (owner, 2026-11-23: production's direct route to Xiaodou is blocked in
+both directions) makes a host with a relay use only the relay, with the whole connect budget.
+
 State (per process, per gateway host):
 * sticky route (owner, 2026-11-09): the path that worked last goes first; the other one is tried
   only when it fails. Direct is the default until a failure moves the preference to the relay,
@@ -70,6 +73,13 @@ def relays() -> dict[str, tuple[str, int]]:
     if raw != _RELAYS[0]:
         _RELAYS = (raw, parse_relays(raw))
     return _RELAYS[1]
+
+
+def relay_only() -> bool:
+    """Operator switch (``APP_ZPAY_RELAY_ONLY``): a host with a relay never tries direct."""
+    from app.core.config import get_settings
+
+    return bool(get_settings().zpay_relay_only)
 
 
 def _url(scheme: str, ip: str, port: int, path: str) -> str:
@@ -139,9 +149,11 @@ async def send(
             return False, None
 
     now = time.monotonic()
-    remembered = st.ip if st.ip and now - st.ip_at < IP_TTL_S else None
+    # relay only: the relay dials the gateway by name, so no lookup here and the full budget
+    only = relay is not None and relay_only()
+    remembered = st.ip if not only and st.ip and now - st.ip_at < IP_TTL_S else None
     ip = remembered
-    if ip is None:
+    if ip is None and not only:
         try:
             ip = await fresh_ip()
         except BaseException as exc:

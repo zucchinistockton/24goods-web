@@ -6,6 +6,18 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 **Hand-off 2026-11-18 (after PR #49; the owner's order #29 → #30 → #31 is done on the demo). START HERE.**
 
+- **2026-11-23 Xiaodou: relay only, 429 refusals, failure logging (`fix/xiaodou-relay-only`).** PR #105 deployed to
+  production 06:2x UTC (`a6371e4`, no migration; dump `/root/kesiv-backups/predeploy-20261123T061731Z/`, sha256
+  `20552ca2…bbc`; rollback images `goods24-{api,web}:rollback-1ef7d20` and `:rollback-8aa24a3`). Findings: the owner's
+  ¥1.05 test (02:31 UTC) WAS created at Xiaodou but the shop could not read the answer, left the attempt `unknown`, and
+  every further "Pay" got 503 "Temporarily unavailable" (an unknown attempt blocks a second create). Diagnostic creates
+  through the relay at about 02:40 UTC got HTTP 429 `{"code":-1,"msg":"请求过于频繁，请稍后再试"}`; at 06:2x UTC a create
+  sent straight from the dev box succeeded (`code 1`, `qr.alipay.com` QR + Xiaodou payurl). The dev box's DNS lookup of
+  the gateway takes 1–14 s, and the relay does one per connection. Changes: `APP_ZPAY_RELAY_ONLY` (no direct attempt,
+  no lookup on c4, whole connect budget for the relay); a 429 JSON refusal on CREATE is a clean `ZPayRefused` (buyer
+  may pick another method, order not blocked), never on queries; failures after sending log endpoint, exception class
+  and HTTP status (never the parameters). Owner disabled the Alipay channel meanwhile.
+
 - **2026-11-22 Xiaodou payments broken: production cannot reach the gateway directly (`fix/zpay-relay-budget`).** From c4
   (141.98.198.150) TCP to `pay.xiaodouap.cn` (159.75.195.113, Tencent CLB Guangzhou) times out on 80 and 443; the dev
   box and the relay path reach it. Creating payments works through the relay (connect budget 4.5 s), but every status
