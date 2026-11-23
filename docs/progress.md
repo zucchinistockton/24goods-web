@@ -6,6 +6,15 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 **Hand-off 2026-11-18 (after PR #49; the owner's order #29 → #30 → #31 is done on the demo). START HERE.**
 
+- **2026-11-23 06:50 UTC PRODUCTION DEPLOY of #108 (owner: "bypass 141 by default … deploy PR #105 … take the
+  necessary actions").** c4 runs `fcfa678` (revision verified, no migration). `deploy/env/api.env` gained
+  `APP_ZPAY_RELAY_ONLY=true` (old file in `/opt/kesiv/backups/predeploy-20261123T064918Z/api.env.bak`). Dump
+  `/root/kesiv-backups/predeploy-20261123T064918Z/` (sha256 `399503eb…afa0`, also on c4); rollback images
+  `goods24-{api,web}:rollback-a6371e4` and `:rollback-1ef7d20`. Verified: three gateway status queries through the shop
+  code took 1.1–1.8 s via the relay alone (paid 121.80 found as paid, the 1.05 / 661 tests as unpaid); smoke all pass;
+  no errors. Still open: pin `pay.xiaodouap.cn` in the dev box's `/etc/hosts` (relay DNS 1–14 s; needs the owner's
+  OK on the dev box); owner re-enables the Alipay channel and pays a new ¥1 test order.
+
 - **2026-11-23 Xiaodou: relay only, 429 refusals, failure logging (`fix/xiaodou-relay-only`).** PR #105 deployed to
   production 06:2x UTC (`a6371e4`, no migration; dump `/root/kesiv-backups/predeploy-20261123T061731Z/`, sha256
   `20552ca2…bbc`; rollback images `goods24-{api,web}:rollback-1ef7d20` and `:rollback-8aa24a3`). Findings: the owner's
