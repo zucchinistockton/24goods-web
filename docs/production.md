@@ -147,7 +147,12 @@ The ZPay client therefore has a fallback path (`backend/app/payments/egress.py`)
   relay and only a relay failure moves it back. The last working IP is remembered; when every path
   fails, the domain is resolved again and direct retried once (moved load balancer).
 - **Config (c4 `deploy/env/api.env`, not in git):** `APP_ZPAY_RELAYS=pay.xiaodouap.cn=107.173.10.79:20443`.
-  Empty = direct only.
+  Empty = direct only. `APP_ZPAY_RELAY_ONLY=true` (owner 2026-11-23; c4 <-> Xiaodou is blocked in both directions):
+  a host with a relay uses only the relay, with no DNS lookup on c4 and the whole connect budget (create 2.25 s per
+  phase, query 2.0 s); the sticky/direct logic above then does not apply.
+- **Relay DNS:** the relay resolves `pay.xiaodouap.cn` on every connection. From the dev box that lookup takes about
+  1 s and sometimes 14 s (Tencent DNS from the US, TTL 60 s, no local cache), which eats the handshake budget. Pin it
+  in the dev box's `/etc/hosts` (refreshed by a timer) or run a caching resolver there.
 - **Relay (dev box):** `kesiv-xiaodou-relay.service` (socat :20443, accepts c4's IPv4 only via
   `range=` + ufw) dials `pay.xiaodouap.cn:443` by name. TLS is end to end between the app and
   Xiaodou; the relay forwards ciphertext. The dev box IP is on Xiaodou's merchant whitelist.

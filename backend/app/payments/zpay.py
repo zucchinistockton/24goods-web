@@ -147,6 +147,10 @@ CREATE_CONNECT_S = 4.5
 # decide what they mean; nothing here can mark a payment paid) instead of treating them as
 # transport failures.
 _JSON_ERROR_STATUSES = frozenset({400, 404})
+# 2026-11-23: Xiaodou throttles order creation with HTTP 429 + {"code":-1,"msg":"请求过于频繁..."}.
+# For a CREATE that is a clean refusal (the buyer can pick another method) instead of an "unknown"
+# attempt that blocks the order. Never for queries: a throttled query must not read as "not found".
+_CREATE_ERROR_STATUSES = _JSON_ERROR_STATUSES | {429}
 
 
 def _error_status_guard(status: int, data: Any) -> Any:
@@ -192,7 +196,13 @@ class ZPayClient:
         return epay.verify_signature(params, self.config.key)
 
     async def _json(
-        self, endpoint: str, params: dict[str, str], *, post: bool = False, connect_s: float = 1.8
+        self,
+        endpoint: str,
+        params: dict[str, str],
+        *,
+        post: bool = False,
+        connect_s: float = 1.8,
+        body_statuses: frozenset[int] = _JSON_ERROR_STATUSES,
     ) -> Any:
         """Bounded transport. Database-configured gateways use DNS-pinned public HTTPS only."""
         from app.core import safefetch
@@ -226,7 +236,7 @@ class ZPayClient:
                             timeout=timeout,
                         ) as response:
                             raw = await response_bytes(
-                                response, 256 * 1024, body_statuses=_JSON_ERROR_STATUSES
+                                response, 256 * 1024, body_statuses=body_statuses
                             )
                             return _error_status_guard(
                                 response.status_code,
@@ -254,7 +264,7 @@ class ZPayClient:
                 headers={"Accept-Encoding": "identity"},
                 timeout=_TIMEOUT,
             ) as response:
-                raw = await response_bytes(response, 256 * 1024, body_statuses=_JSON_ERROR_STATUSES)
+                raw = await response_bytes(response, 256 * 1024, body_statuses=body_statuses)
                 return _error_status_guard(
                     response.status_code,
                     json.loads(raw, parse_float=bounded_decimal, parse_int=bounded_integer),
@@ -262,6 +272,11 @@ class ZPayClient:
         except (httpx.HTTPError, ValueError, safefetch.FetchError) as exc:
             if _never_dispatched(exc):
                 raise ZPayUnreachable("gateway unreachable") from exc
+            # what went wrong, never what was sent (params carry the key)
+            status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+            log.warning(
+                "zpay %s failed after sending: %s status=%s", endpoint, type(exc).__name__, status
+            )
             raise ZPayQueryError("gateway request failed") from None
 
     async def create_payment(
@@ -272,7 +287,14 @@ class ZPayClient:
         params["device"] = "pc"
         params["sign"] = epay.sign(params, self.config.key)
         data = await asyncio.wait_for(
-            self._json("/mapi.php", params, post=True, connect_s=CREATE_CONNECT_S), CREATE_TIMEOUT_S
+            self._json(
+                "/mapi.php",
+                params,
+                post=True,
+                connect_s=CREATE_CONNECT_S,
+                body_statuses=_CREATE_ERROR_STATUSES,
+            ),
+            CREATE_TIMEOUT_S,
         )
         if not isinstance(data, dict) or "code" not in data:
             raise ZPayQueryError("gateway refused payment")
@@ -283,6 +305,7 @@ class ZPayClient:
             msg = str(data.get("msg") or "")[:200]
             if self.config.key:
                 msg = msg.replace(self.config.key, "***")
+            log.warning("zpay create refused: code=%s msg=%s", code, msg[:120])
             raise ZPayRefused(msg)
         qr, redirect = str(data.get("qrcode") or ""), str(data.get("payurl") or "")
         value, kind = (qr, "qr") if qr else (redirect, "redirect")

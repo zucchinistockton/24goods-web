@@ -157,6 +157,9 @@ class Settings(BaseSettings):
     # fallback TCP relays for gateway API hosts, used only when the direct connection fails:
     # "pay.example.cn=203.0.113.5:20443[,host=ip:port]" (app/payments/egress.py)
     zpay_relays: str = ""
+    # owner 2026-11-23: production cannot reach Xiaodou directly (blocked both ways), so a host
+    # with a configured relay uses ONLY the relay: no direct attempt, no DNS lookup on this host
+    zpay_relay_only: bool = False
     zpay_fee_permille: int = 16  # 1.6 %
     notify_rate_per_min: int = 120  # per source IP on /pay/notify/*
 

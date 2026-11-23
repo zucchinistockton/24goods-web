@@ -205,3 +205,26 @@ async def test_a_query_leaves_the_relay_enough_time_for_its_handshake():
     assert got == {"ok": RELAY}
     assert net.calls[-1][1] >= 1.0
     assert zpay.QUERY_CONNECT_S < zpay.QUERY_TIMEOUT_S  # the outer timeout never cuts a connect
+
+
+async def test_relay_only_skips_dns_and_direct_and_gives_the_relay_the_whole_budget(monkeypatch):
+    """Owner 2026-11-23: production cannot reach Xiaodou directly; APP_ZPAY_RELAY_ONLY uses the
+    relay alone: no lookup on this host, no direct attempt, half the connect budget per phase."""
+    monkeypatch.setattr(egress, "relay_only", lambda: True)
+    net = Net(up={DIRECT, RELAY})
+    assert await send(net) == {"ok": RELAY}
+    assert await send(net) == {"ok": RELAY}
+    assert [u for u, _ in net.calls] == [RELAY, RELAY]
+    assert net.lookups == 0
+    assert net.calls[0][1] == pytest.approx(2.0, abs=0.05)  # default 4.0 s deadline / 2 phases
+    # the relay is down: nothing else is tried, a connect error (provably not sent) comes back
+    net2 = Net(up={DIRECT})
+    with pytest.raises(httpx.ConnectTimeout):
+        await send(net2)
+    assert [u for u, _ in net2.calls] == [RELAY] and net2.lookups == 0
+
+
+async def test_relay_only_does_nothing_for_a_host_without_a_relay(monkeypatch):
+    monkeypatch.setattr(egress, "relay_only", lambda: True)
+    net = Net(up={"https://203.0.113.1/api.php"})
+    assert await send(net, host="other.example.cn") == {"ok": "https://203.0.113.1/api.php"}

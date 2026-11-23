@@ -87,6 +87,23 @@ async def test_create_payment_refusal_is_explicit_and_key_is_redacted():
     assert key not in caught.value.gateway_message and "***" in caught.value.gateway_message
 
 
+async def test_a_throttled_create_429_is_a_clean_refusal_but_a_throttled_query_is_not():
+    """2026-11-23 production: Xiaodou answered creates with 429 {"code":-1,"msg":"请求过于频繁..."};
+    that left an "unknown" attempt that blocked the order. A 429 refusal on a CREATE is explicit;
+    a 429 with a success code, and any 429 on a QUERY, stay ambiguous."""
+    body = {"code": -1, "msg": "请求过于频繁，请稍后再试"}
+    c = _client(lambda _: httpx.Response(429, json=body))
+    with pytest.raises(ZPayRefused) as caught:
+        await c.create_payment("GX1", "i", Decimal("1.00"), "1.1.1.1")
+    assert "频繁" in caught.value.gateway_message
+    ok = _client(lambda _: httpx.Response(429, json={"code": 1, "payurl": "https://p.example/x"}))
+    with pytest.raises(ZPayQueryError) as caught2:
+        await ok.create_payment("GX1", "i", Decimal("1.00"), "1.1.1.1")
+    assert not isinstance(caught2.value, ZPayRefused)
+    with pytest.raises(ZPayQueryError):
+        await c.query_order("GX1")
+
+
 @pytest.mark.parametrize(
     "response",
     [
