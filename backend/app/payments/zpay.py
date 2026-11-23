@@ -305,7 +305,7 @@ class ZPayClient:
             msg = str(data.get("msg") or "")[:200]
             if self.config.key:
                 msg = msg.replace(self.config.key, "***")
-            log.warning("zpay create refused: code=%s msg=%s", code, msg[:120])
+            log.warning("zpay create refused: code=%s msg=%r", code, msg[:120])
             raise ZPayRefused(msg)
         qr, redirect = str(data.get("qrcode") or ""), str(data.get("payurl") or "")
         value, kind = (qr, "qr") if qr else (redirect, "redirect")
