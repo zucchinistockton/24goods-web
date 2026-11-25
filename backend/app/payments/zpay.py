@@ -134,7 +134,8 @@ def parse_query_response(data: Any) -> QueryResult:
     code = _as_int(data.get("code"))
     if code != 1:
         message = str(data.get("msg", "")).strip().lower().rstrip(".!！。")
-        if code == -1 and message in {"order not found", "not found", "订单不存在"}:
+        # 订单不存在 = Xiaodou; 订单号不存在 = snpay (seen on a read-only query 2026-11-25)
+        if code == -1 and message in {"order not found", "not found", "订单不存在", "订单号不存在"}:
             return QueryResult(False, False, None, "", str(data.get("out_trade_no") or ""))
         raise ZPayQueryError("query response did not confirm an order status")
     status = _as_int(_first_key(data, "status", "trade_status"))

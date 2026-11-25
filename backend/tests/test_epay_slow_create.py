@@ -222,3 +222,18 @@ async def test_gateway_test_without_relay_is_direct(env, monkeypatch):
     body = r.json()
     assert body["ok"] is True and body["route"] == "direct"
     assert connects == [("93.184.216.34", 443)]
+
+
+@pytest.mark.parametrize("msg", ["订单不存在", "订单号不存在", "order not found"])
+def test_not_found_wordings_of_xiaodou_and_snpay(msg: str) -> None:
+    from app.payments.zpay import parse_query_response
+
+    q = parse_query_response({"code": -1, "msg": msg})
+    assert q.found is False and q.paid is False
+
+
+def test_other_refusals_are_not_read_as_not_found() -> None:
+    from app.payments.zpay import ZPayQueryError, parse_query_response
+
+    with pytest.raises(ZPayQueryError):
+        parse_query_response({"code": -1, "msg": "签名错误"})
