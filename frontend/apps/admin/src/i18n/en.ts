@@ -1320,7 +1320,6 @@ export default {
       two_factor_invalid: 'Wrong code. Use the authenticator entry of THIS admin account (not the shop buyer account) and check that the time on the phone is set automatically.',
       two_factor_used: 'This code was already used (for example to sign in). Wait for the next code in your authenticator (up to 30 seconds), then try again.',
       two_factor_not_enabled: 'Turn on two-factor authentication for your account first',
-      bad_funding_settings: 'A value is not valid',
       nothing_to_change: 'Nothing to change',
     },
   },

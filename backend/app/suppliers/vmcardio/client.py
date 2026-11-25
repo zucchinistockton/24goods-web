@@ -121,7 +121,7 @@ class VmcardioClient:
                     headers={"Accept": "application/json", "User-Agent": "procurement-client/1"},
                 )
             except httpx.HTTPError as exc:
-                log.warning("vmcardio token transport_error=%s", type(exc).__name__)
+                log.warning("vmcardio auth transport_error=%s", type(exc).__name__)
                 raise SupplierError(
                     "supplier unreachable", outcome=Outcome.RETRYABLE, error_code="connect_error"
                 ) from None
@@ -132,7 +132,7 @@ class VmcardioClient:
                 assert isinstance(data, dict)
                 self._token = (tok, time.monotonic() + _ttl(data.get("expired_time")))
                 return tok
-            log.warning("vmcardio token status=%d code=%s", resp.status_code, parsed.code)
+            log.warning("vmcardio auth status=%d code=%s", resp.status_code, parsed.code)
             if parsed.code in _STOP_CODES:
                 raise SupplierError(
                     "supplier credentials refused",

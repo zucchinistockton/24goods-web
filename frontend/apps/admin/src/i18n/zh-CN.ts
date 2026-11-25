@@ -1319,7 +1319,6 @@ const zhCN: AdminMessages = {
       two_factor_invalid: '验证码错误。请使用本管理员账户（不是商城买家账户）在验证器中的条目，并确认手机时间设置为自动。',
       two_factor_used: '该验证码已被使用（例如刚才登录时）。请等待验证器显示下一个验证码（最多 30 秒）后再试。',
       two_factor_not_enabled: '请先为你的账户开启两步验证',
-      bad_funding_settings: '有数值无效',
       nothing_to_change: '没有需要修改的内容',
     },
   },
