@@ -26,7 +26,7 @@ IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9._:-]{1,80}$")
 # Supplier codes double as the prefix of their secrets in the procurement env file.
 SUPPLIER_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{1,31}$")
 # adapters whose credentials come from the procurement env file (``<CODE>_[SANDBOX_]APP_SECRET``)
-CREDENTIAL_ADAPTERS: tuple[str, ...] = ("zovocard", "zzshu")
+CREDENTIAL_ADAPTERS: tuple[str, ...] = ("zovocard", "zzshu", "vmcardio")
 
 
 _DETAIL_BAD = re.compile(r"[^A-Za-z0-9_.:-]")
@@ -257,6 +257,11 @@ class FundingPolicy:
     reserved: Decimal = Decimal(0)
     # ADR-054: the dedicated card of a zzshu order is loaded with cost x (1 + pct / 100)
     zzshu_margin_pct: Decimal = Decimal(20)
+    # ADR-055: who may open that card, in order (supplier codes; empty = the adapter's own order),
+    # and the vmcardio product choice (BIN priority, slots to leave for other uses)
+    card_issuers: tuple[str, ...] = ()
+    vmcardio_bins: tuple[str, ...] = ()
+    vmcardio_reserve_slots: int = 1
 
 
 @dataclass(frozen=True)

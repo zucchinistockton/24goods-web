@@ -8,6 +8,10 @@ card has a use left) and ``sweep_leftover`` (move a used-up card's money back to
 ON by default but only act while ``auto_recharge`` is on; ``wallet_alert_usd`` is the vendor
 wallet level below which staff get a Telegram alert. 2026-11-25: ``upgrade_pay_difference`` and
 ``cancel_renewal_before_upgrade`` (both OFF by default) steer plan upgrades.
+ADR-055 (owner 2026-11-25): ``zzshu_card_issuers`` (ordered supplier codes that may open the
+dedicated card of a zzshu order; ZovoCard first, vmcardio only when ZovoCard opened nothing),
+``vmcardio_bin_priority`` and ``vmcardio_reserve_slots`` (skip a vmcardio product whose open slots
+are at or below this).
 """
 
 from __future__ import annotations
@@ -20,6 +24,12 @@ from typing import Any
 # the owner's recommended card ranges (2026-11-19): success rate >= 90 %
 DEFAULT_BINS = ("532604", "537882", "428852", "446619", "474613", "537872")
 MAX_BINS = 20
+# ADR-055
+DEFAULT_ISSUERS = ("zovocard", "vmcardio")
+MAX_ISSUERS = 4
+_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{1,31}$")
+DEFAULT_VM_BINS = ("537872", "537882", "532604", "555659")
+VM_RESERVE = (1, 0, 100)  # default, minimum, maximum
 _BIN_RE = re.compile(r"^\d{6,9}$")
 # (default, minimum, maximum) in USD
 LIMITS: dict[str, tuple[Decimal, Decimal, Decimal]] = {
@@ -54,6 +64,9 @@ def defaults() -> dict[str, Any]:
         "zzshu_points_alert": POINTS_ALERT[0],
         **{key: str(lim[0]) for key, lim in LIMITS.items()},
         "bin_priority": list(DEFAULT_BINS),
+        "zzshu_card_issuers": list(DEFAULT_ISSUERS),
+        "vmcardio_bin_priority": list(DEFAULT_VM_BINS),
+        "vmcardio_reserve_slots": VM_RESERVE[0],
     }
 
 
@@ -86,14 +99,41 @@ def _points_alert(v: Any) -> int:
     return int(d)
 
 
-def _bins(v: Any) -> list[str]:
+def _issuers(v: Any) -> list[str]:
+    """Ordered, distinct supplier codes (at least one). Whether each one is a configured supplier
+    is checked by the console against the tenant's supplier rows."""
+    if not isinstance(v, list) or not 1 <= len(v) <= MAX_ISSUERS:
+        raise ValueError("zzshu_card_issuers")
+    out: list[str] = []
+    for c in v:
+        s = c.strip() if isinstance(c, str) else ""
+        if not _CODE_RE.fullmatch(s) or s.endswith("_sandbox"):
+            raise ValueError("zzshu_card_issuers")
+        if s not in out:
+            out.append(s)
+    return out
+
+
+def _reserve_slots(v: Any) -> int:
+    if isinstance(v, bool) or not isinstance(v, int | str):
+        raise ValueError("vmcardio_reserve_slots")
+    try:
+        n = int(str(v))
+    except ValueError:
+        raise ValueError("vmcardio_reserve_slots") from None
+    if not VM_RESERVE[1] <= n <= VM_RESERVE[2]:
+        raise ValueError("vmcardio_reserve_slots")
+    return n
+
+
+def _bins(v: Any, key: str = "bin_priority") -> list[str]:
     if not isinstance(v, list) or len(v) > MAX_BINS:
-        raise ValueError("bin_priority")
+        raise ValueError(key)
     out: list[str] = []
     for b in v:
         s = str(b).strip()
         if not _BIN_RE.fullmatch(s):
-            raise ValueError("bin_priority")
+            raise ValueError(key)
         if s not in out:
             out.append(s)
     return out
@@ -113,6 +153,12 @@ def validate(patch: Mapping[str, Any], current: Mapping[str, Any] | None = None)
             out[key] = _points_alert(v)
         elif key == "bin_priority":
             out[key] = _bins(v)
+        elif key == "vmcardio_bin_priority":
+            out[key] = _bins(v, key)
+        elif key == "zzshu_card_issuers":
+            out[key] = _issuers(v)
+        elif key == "vmcardio_reserve_slots":
+            out[key] = _reserve_slots(v)
         else:
             raise ValueError(key)
     return out
@@ -141,4 +187,14 @@ def normalize(raw: Mapping[str, Any] | None) -> dict[str, Any]:
             out["bin_priority"] = _bins(raw.get("bin_priority"))
     except ValueError:
         pass
+    for key, fn in (
+        ("zzshu_card_issuers", _issuers),
+        ("vmcardio_reserve_slots", _reserve_slots),
+        ("vmcardio_bin_priority", lambda v: _bins(v, "vmcardio_bin_priority")),
+    ):
+        try:
+            if key in raw:
+                out[key] = fn(raw[key])
+        except ValueError:
+            pass
     return out

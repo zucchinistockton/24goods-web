@@ -31,6 +31,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass, replace
@@ -969,6 +970,8 @@ def _offer_params(job: ProcurementJob, offer: OfferRow) -> dict[str, Any]:
     if _dedicated(offer):
         if job.card_id and job.card_id.isdigit():
             return {**offer.params, dr.PICKED_CARD_KEY: int(job.card_id)}
+        if job.card_id and _DEDICATED_ID_RE.fullmatch(job.card_id):  # ADR-055: ``vm:<id>``
+            return {**offer.params, dr.PICKED_CARD_KEY: job.card_id}
         return offer.params
     if _auto_card(offer) and job.card_id and job.card_id.isdigit():
         extra: dict[str, Any] = {dr.PICKED_CARD_KEY: int(job.card_id)}
@@ -2473,6 +2476,12 @@ async def _reported_card_problem(
     if not res.card_id:
         return None
     reported = res.card_id
+    if _DEDICATED_ID_RE.fullmatch(reported):
+        # ADR-055: the dedicated card of a zzshu order opened at vmcardio (``vm:<id>``): it is the
+        # card the job recorded (``used_card_id`` is too short for it and it is not a vendor report)
+        if lease.ref.adapter == "zzshu" and job.card_id in (None, reported):
+            return None
+        return "card_mismatch" if lease.mode != "watch" else None
     if not reported.isdigit() or len(reported) > 20:
         return "card_mismatch" if lease.mode != "watch" else None
     job.used_card_id = reported
@@ -2807,6 +2816,13 @@ async def _apply(ctx: ProcurementContext, lease: Lease, res: Result) -> None:
         await db.commit()
 
 
+_DEDICATED_ID_RE = re.compile(r"^vm:[A-Za-z0-9_-]{6,40}$")
+
+
+def _issuer_of(card_id: str | None) -> str:
+    return "vmcardio" if card_id and card_id.startswith("vm:") else "zovocard"
+
+
 async def _zzshu_card(
     db: AsyncSession, job: ProcurementJob, res: Result, mode: str, now: datetime
 ) -> None:
@@ -2814,24 +2830,32 @@ async def _zzshu_card(
     (never a number), what was loaded and what went back to the wallet, in the job record, the
     audit log and the job timeline. A card that is left with money after the order is over gets a
     warning row (the API alerts staff)."""
-    if res.card_id and res.card_id.isdigit() and len(res.card_id) <= 13 and not job.card_id:
+    if (
+        res.card_id
+        and (
+            (res.card_id.isdigit() and len(res.card_id) <= 13)
+            or _DEDICATED_ID_RE.fullmatch(res.card_id)
+        )
+        and not job.card_id
+    ):
         job.card_id = res.card_id
     if res.card_last4 and res.card_last4.isdigit() and len(res.card_last4) == 4:
         job.card_last4 = job.card_last4 or res.card_last4
     if res.card_opened is not None and mode == "submit":
         await topups.record_open(db, job, *res.card_opened)  # counts against the daily cap
-    cid = clean_detail(res.card_id or job.card_id or "", 20)
+    cid = clean_detail(res.card_id or job.card_id or "", 48)
+    issuer = _issuer_of(res.card_id or job.card_id)
     events: list[dict[str, str]] = []
     if res.card_loaded is not None:
         events.append(
             {"tid": f"zzcard-open-{cid}", "cat": "zzshu", "code": "card_opened",
-             "msg": f"Dedicated card {job.card_last4 or '-'} opened and loaded "
+             "msg": f"Dedicated card {job.card_last4 or '-'} ({issuer}, {cid}) opened, loaded "
              f"{res.card_loaded:.2f} USD"}
         )  # fmt: skip
     if res.card_swept:
         events.append(
             {"tid": f"zzcard-swept-{cid}", "cat": "zzshu", "code": "card_swept",
-             "msg": f"Dedicated card {job.card_last4 or '-'} returned "
+             "msg": f"Dedicated card {job.card_last4 or '-'} ({issuer}) returned "
              f"{(res.card_leftover or Decimal(0)):.2f} USD to the wallet and was deleted"}
         )  # fmt: skip
     if res.card_loaded is not None or res.card_swept:
@@ -2842,6 +2866,7 @@ async def _zzshu_card(
             target=f"procurement_job:{job.id}",
             detail={
                 "order_id": str(job.order_id),
+                "issuer": issuer,
                 "card_id": cid,
                 "last4": job.card_last4,
                 "loaded": str(res.card_loaded) if res.card_loaded is not None else None,
@@ -2858,7 +2883,7 @@ async def _zzshu_card(
         _record_progress(
             job,
             {"events": [{"tid": f"zzcard-unswept-{cid}", "cat": "zzshu", "code": "card_unswept",
-                         "msg": f"Dedicated card {job.card_last4 or '-'} still holds money"}]},
+                         "msg": f"Dedicated card {job.card_last4 or '-'} ({issuer}) holds money"}]},
             "engine",
             now,
         )  # fmt: skip
@@ -2867,7 +2892,12 @@ async def _zzshu_card(
             tenant_id=job.tenant_id,
             action="procurement.zzshu_card_unswept",
             target=f"procurement_job:{job.id}",
-            detail={"order_id": str(job.order_id), "card_id": cid, "last4": job.card_last4},
+            detail={
+                "order_id": str(job.order_id),
+                "issuer": issuer,
+                "card_id": cid,
+                "last4": job.card_last4,
+            },
             severity="warning",
         )
 

@@ -355,6 +355,7 @@ class ZovoCardSupplier:
     capabilities = frozenset(
         {Capability.CDK, Capability.VCC, Capability.DIRECT, Capability.VOID, Capability.WEBHOOK}
     )
+    adapter_name = "zovocard"
 
     def __init__(self, code: str, client: ZovoClient, *, webhook_secret: str = "") -> None:
         self.code = code

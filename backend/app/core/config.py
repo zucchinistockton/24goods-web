@@ -116,6 +116,15 @@ class Settings(BaseSettings):
             "APP_ZOVOCARD_SANDBOX_WEBHOOK_SECRET", "ZOVOCARD_SANDBOX_WEBHOOK_SECRET"
         ),
     )
+    # ADR-055: vmcardio's webhook verification PUBLIC key (PEM, on the vendor console). Empty =
+    # webhooks are accepted but stored as unverified (they are only hints either way).
+    vmcardio_webhook_public_key: str = Field(
+        default="",
+        repr=False,
+        validation_alias=AliasChoices(
+            "APP_VMCARDIO_WEBHOOK_PUBLIC_KEY", "VMCARDIO_WEBHOOK_PUBLIC_KEY"
+        ),
+    )
 
     # --- orders ---
     order_ttl_minutes: int = 30

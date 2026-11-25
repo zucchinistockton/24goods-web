@@ -25,7 +25,7 @@ from app.core.deps import client_ip, get_db, get_res
 from app.core.errors import Validation
 from app.core.ratelimit import enforce
 from app.core.resources import Resources
-from app.models import ProcurementFunding, Tenant, User
+from app.models import ProcurementFunding, SupplierAccount, Tenant, User
 from app.modules.admin.procurement_cards import platform_admin_session, platform_staff
 from app.modules.auth import twofactor
 
@@ -37,6 +37,19 @@ SPENDING = ("recharge", "open")  # a sweep brings money back (ADR-049)
 def _day_start() -> datetime:
     now = datetime.now(timezone.utc)
     return datetime.combine(now.date(), time(0), tzinfo=timezone.utc)
+
+
+async def _issuer_codes(db: AsyncSession, tid: Any) -> list[str]:
+    """ADR-055: the suppliers that can issue a zzshu dedicated card (ZovoCard / vmcardio rows)."""
+    rows = await db.scalars(
+        select(SupplierAccount.code)
+        .where(
+            SupplierAccount.tenant_id == tid,
+            SupplierAccount.adapter.in_(("zovocard", "vmcardio")),
+        )
+        .order_by(SupplierAccount.code)
+    )
+    return sorted(set(rows))
 
 
 async def _view(db: AsyncSession, tid: Any, limit: int = 50) -> dict[str, Any]:
@@ -60,6 +73,7 @@ async def _view(db: AsyncSession, tid: Any, limit: int = 50) -> dict[str, Any]:
     spent_d = Decimal(spent or 0).quantize(Decimal("0.01"))
     return {
         "settings": st,
+        "issuer_options": await _issuer_codes(db, tid),
         "today": {
             "spent_usd": str(spent_d),
             "left_usd": str(max(Decimal(0), Decimal(st["daily_cap_usd"]) - spent_d)),
@@ -104,6 +118,9 @@ class FundingIn(BaseModel):
     zzshu_points_alert: int | None = Field(default=None, ge=0, le=1000)
     per_topup_max_usd: Decimal | None = Field(default=None, ge=0, le=5000)
     bin_priority: list[str] | None = Field(default=None, max_length=fs.MAX_BINS)
+    zzshu_card_issuers: list[str] | None = Field(default=None, max_length=fs.MAX_ISSUERS)
+    vmcardio_bin_priority: list[str] | None = Field(default=None, max_length=fs.MAX_BINS)
+    vmcardio_reserve_slots: int | None = Field(default=None, ge=0, le=100)
     totp_code: str = Field(min_length=6, max_length=8, repr=False)
 
 
@@ -124,6 +141,13 @@ async def put_funding(
         fs.validate(clean)  # a bad value is refused before the code is spent
     except ValueError as exc:
         raise Validation(f"{exc}: not a valid value", code="bad_funding_settings") from None
+    issuers = clean.get("zzshu_card_issuers")
+    if issuers is not None and not set(fs.validate(clean)["zzshu_card_issuers"]) <= set(
+        await _issuer_codes(db, admin.tenant_id)
+    ):  # only configured suppliers (ADR-055)
+        raise Validation(
+            "zzshu_card_issuers: not a configured supplier", code="bad_funding_settings"
+        )
     # then the code (spent once): a wrong code changes nothing
     await twofactor.step_up(db, res.redis, res.settings, admin, body.totp_code, client_ip(request))
     tid, uid, role = admin.tenant_id, admin.id, admin.role
