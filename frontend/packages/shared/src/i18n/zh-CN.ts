@@ -130,6 +130,7 @@ const zhCN: MessageSchema = {
     ip_blocked: '访问被拒绝',
     fee_channel_mismatch: '手续费已变化，请重试',
     channel_unavailable: '该支付方式暂不可用，请选择其他方式',
+    payment_pending_check: '支付服务商响应较慢，请一分钟后重试。',
     channel_unreachable: '该支付方式当前暂不可用，请选择其他支付方式。',
     too_many_unpaid: '未支付订单过多，请先支付或取消一个，或等待其过期',
     buyer_input_too_long: '下单信息过长，请精简后重试',

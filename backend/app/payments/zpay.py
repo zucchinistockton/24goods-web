@@ -167,8 +167,13 @@ QUERY_TIMEOUT_S = 6.0
 # for TLS, but the relay's handshake (it dials Guangzhou first) takes about 0.5 s: every status
 # query failed ("relay path not reachable") although creating payments through the relay worked.
 QUERY_CONNECT_S = 4.0
-CREATE_TIMEOUT_S = 7.0
+# 2026-11-25: snpay answered /mapi.php after ~9 s; a 6 s read gave up, left an "unknown" attempt
+# and blocked the order. Creates get a longer READ budget (queries stay at 6 s). Callers: the
+# failover loop may try two gateways in a row (2 x 16 s) which stays under Caddy's 45 s
+# response_header_timeout; the buyer app sets no request timeout.
+CREATE_TIMEOUT_S = 16.0
 CREATE_CONNECT_S = 4.5
+CREATE_READ_S = 15.0
 # Xiaodou answers an unknown out_trade_no with HTTP 404 + {"code":-1,"msg":"订单不存在"}
 # and a bad signature with 400 + JSON. Parse those bodies (parse_query_response / create_payment
 # decide what they mean; nothing here can mark a payment paid) instead of treating them as
@@ -230,6 +235,7 @@ class ZPayClient:
         post: bool = False,
         connect_s: float = 1.8,
         body_statuses: frozenset[int] = _JSON_ERROR_STATUSES,
+        read_s: float = QUERY_TIMEOUT_S,
     ) -> Any:
         """Bounded transport. Database-configured gateways use DNS-pinned public HTTPS only."""
         from app.core import safefetch
@@ -249,9 +255,13 @@ class ZPayClient:
                     return (await safefetch.vet_url(url)).ip  # resolves + vets (public IP only)
 
                 async def exchange(pinned: str, connect: float | None) -> Any:
-                    timeout = _TIMEOUT
+                    timeout = (
+                        _TIMEOUT
+                        if read_s == QUERY_TIMEOUT_S
+                        else httpx.Timeout(read_s, connect=QUERY_TIMEOUT_S * 0.7)
+                    )
                     if connect is not None:
-                        timeout = httpx.Timeout(QUERY_TIMEOUT_S, connect=connect)
+                        timeout = httpx.Timeout(read_s, connect=connect)
                     async with httpx.AsyncClient(trust_env=False, follow_redirects=False) as client:
                         async with client.stream(
                             "POST" if post else "GET",
@@ -289,7 +299,9 @@ class ZPayClient:
                 data=params if post else None,
                 params=None if post else params,
                 headers={"Accept-Encoding": "identity"},
-                timeout=_TIMEOUT,
+                timeout=_TIMEOUT
+                if read_s == QUERY_TIMEOUT_S
+                else httpx.Timeout(read_s, connect=QUERY_TIMEOUT_S * 0.7),
             ) as response:
                 raw = await response_bytes(response, 256 * 1024, body_statuses=body_statuses)
                 return _error_status_guard(
@@ -320,6 +332,7 @@ class ZPayClient:
                 post=True,
                 connect_s=CREATE_CONNECT_S,
                 body_statuses=_CREATE_ERROR_STATUSES,
+                read_s=CREATE_READ_S,
             ),
             CREATE_TIMEOUT_S,
         )
