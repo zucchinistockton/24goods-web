@@ -439,3 +439,42 @@ async def _foreign_direct_job(env) -> uuid.UUID:
         )  # fmt: skip
         await db.commit()
     return jid
+
+
+@pytest.mark.parametrize(
+    ("code", "msg", "want"),
+    [
+        ("checkout_unusual_activity", "该账号被 OpenAI 风控拦截", "account_flagged"),
+        ("checkout_pricing_unavailable", ":401", "session"),
+        ("gpt_session_expired", "", "session"),
+        ("checkout_declined", "card declined", None),
+        (None, None, None),
+    ],
+)
+def test_vendor_failures_get_a_buyer_reason(code, msg, want):
+    """Owner 2026-11-25 (production orders GB3V... / GYLT...): a refused or 401 session may be
+    single-use; the buyer is told to supply a fresh one (or another account)."""
+    assert dp.vendor_problem(code, msg) == want
+
+
+def test_a_held_job_failed_by_risk_control_shows_the_account_flagged_reason():
+    from types import SimpleNamespace
+
+    doc = {
+        "v": {"stage": "failed_precharge", "status": "failed_precharge"},
+        "raw": {"status": "failed_precharge"},
+        "events": [
+            {"cat": "pending", "code": "order_created", "msg": "x"},
+            {"cat": "failed", "code": "checkout_unusual_activity", "msg": "风控"},
+        ],
+    }
+    job = SimpleNamespace(
+        state="needs_manual", error_code="order_failed_precharge", upstream_ref="1",
+        first_sent_at=None, upstream_status=None, progress=doc,
+    )  # fmt: skip
+    p = dp.from_job(job)
+    assert p.outcome in ("failed", "attention") and p.reason == "account_flagged"
+    doc["events"][-1] = {"cat": "failed", "code": "checkout_pricing_unavailable", "msg": ":401"}
+    assert dp.from_job(job).reason == "session"
+    doc["events"].pop()
+    assert dp.from_job(job).reason not in ("session", "account_flagged")

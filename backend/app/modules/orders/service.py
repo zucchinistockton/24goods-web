@@ -234,6 +234,14 @@ def _with_upgrade(
     return {**(terms or {}), "upgrade": upgrade}
 
 
+async def pays_difference(db: AsyncSession, tenant_id: uuid.UUID) -> bool:
+    """Funding switch ``upgrade_pay_difference`` (default OFF: upgrades sell at the list price)."""
+    from app.core import funding as fs
+
+    raw = await db.scalar(select(Tenant.funding_settings).where(Tenant.id == tenant_id))
+    return fs.normalize(raw)["upgrade_pay_difference"] is True
+
+
 async def upgrade_price(
     db: AsyncSession,
     tenant_id: uuid.UUID,
@@ -602,12 +610,17 @@ async def buy_now(
         )
     del session
     if direct is not None and direct.upgrade:
-        # owner 2026-11-22: an upgrade of the buyer's running plan costs the vendor only the
-        # difference; the buyer pays that difference + this unit's markup (server-side, from the
-        # vendor's live quote), never more than the list price; the credit is shown and kept
-        unit, credit = await upgrade_price(
-            db, buyer.tenant_id, product, variant, base, direct.upgrade
-        )
+        # an upgrade of the buyer's running plan costs the vendor only the difference. Owner
+        # 2026-11-25: by default the buyer pays the FULL list price (no credit); with the funding
+        # switch ``upgrade_pay_difference`` the buyer pays that difference + this unit's markup
+        # (server-side, from the vendor's live quote, never above the list price; ADR-052). The
+        # upgrade terms are kept either way: procurement uses the upgrade quote as its ceiling.
+        if await pays_difference(db, buyer.tenant_id):
+            unit, credit = await upgrade_price(
+                db, buyer.tenant_id, product, variant, base, direct.upgrade
+            )
+        else:
+            unit, credit = base, 0
         subtotal = unit * qty
         direct = replace(
             direct, upgrade={**direct.upgrade, "list_minor": base, "credit_minor": credit}

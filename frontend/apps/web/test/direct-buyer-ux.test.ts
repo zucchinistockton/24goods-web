@@ -58,7 +58,7 @@ describe('session paste summary', () => {
     expect(s.problem).toBeNull()
     expect(s.account).toBe('b***@example.com')
     expect(s.plan).toBe('free')
-    expect(s.validUntil).toBe(NOW + 864000 * 1000) // the earlier of token and session expiry
+    expect(s.validUntil).toBe(Date.parse('2027-02-01T00:00:00.000Z')) // the session's own expiry
     expect(s.bytes).toBeGreaterThan(100)
   })
   it('never exposes the full e-mail', () => {
@@ -73,7 +73,8 @@ describe('session paste summary', () => {
   it('flags only the access token, a missing token and an expired session', () => {
     expect(summariseSession(jwt(NOW / 1000 + 60), 'gpt', NOW).problem).toBe('access_token_only')
     expect(summariseSession(session({ sessionToken: undefined }), 'gpt', NOW).problem).toBe('missing_token')
-    expect(summariseSession(session({ accessToken: jwt(NOW / 1000 - 60) }), 'gpt', NOW).problem).toBe('expired')
+    // an expired access token is renewed by the supplier from the session token: not a problem
+    expect(summariseSession(session({ accessToken: jwt(NOW / 1000 - 60) }), 'gpt', NOW).problem).toBeNull()
     expect(summariseSession(session({ expires: '2026-11-01T00:00:00Z' }), 'gpt', NOW).problem).toBe('expired')
   })
   it('other products: size only, no format guess', () => {

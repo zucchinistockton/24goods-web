@@ -150,6 +150,33 @@ def failure_reason(status: Any) -> str:
     return "not_completed"
 
 
+def vendor_problem(code: Any, msg: Any = None) -> str | None:
+    """Coarse buyer-safe class of a vendor failure event (owner 2026-11-25): ``account_flagged``
+    = OpenAI's risk control refused the account (``checkout_unusual_activity``: use another
+    account or a fresh session); ``session`` = the session was refused, expired or answered 401
+    (it may be single-use after that: the buyer needs a fresh one). ``None`` otherwise."""
+    c = _low(code)
+    m = str(msg or "").strip().lower()
+    if "unusual" in c or "risk" in c:
+        return "account_flagged"
+    if any(k in c for k in ("session", "token", "login", "unauthor", "credential")) or (
+        m.endswith(":401") or m.endswith(" 401") or m == "401"
+    ):
+        return "session"
+    return None
+
+
+def _last_failure(doc: Mapping[str, Any]) -> tuple[Any, Any]:
+    """(code, msg) of the latest ``failed`` vendor event in a job's progress document."""
+    events = doc.get("events")
+    if not isinstance(events, list):
+        return None, None
+    for e in reversed(events):
+        if isinstance(e, Mapping) and e.get("cat") == "failed" and (e.get("code") or e.get("msg")):
+            return e.get("code"), e.get("msg")
+    return None, None
+
+
 def _attention_reason(error_code: str | None) -> str:
     c = (error_code or "").lower()
     return (
@@ -171,8 +198,11 @@ def map_progress(
     funding_state: Any = None,
     sent: bool = False,
     order_refunded: bool = False,
+    vendor_reason: str | None = None,
 ) -> Progress:
     """(our job state + vendor fields) -> the buyer's step. See the ADR in architecture.md.
+    ``vendor_reason`` (:func:`vendor_problem` of the latest failed vendor event) replaces the
+    generic reason of a failed / held job so the buyer is told what to do.
 
     ``job_state`` is the procurement job state (``queued | submitting | accepted_pending |
     needs_manual | fulfilled | failed | voided | void_pending``) or None while no job exists.
@@ -197,10 +227,12 @@ def map_progress(
             base,
             True,
             "failed",
-            failure_reason(status) if vs in _FAILED else "not_completed",
+            vendor_reason or (failure_reason(status) if vs in _FAILED else "not_completed"),
         )
     if js == "needs_manual":
-        return Progress("attention", base, False, "attention", _attention_reason(error_code))
+        return Progress(
+            "attention", base, False, "attention", vendor_reason or _attention_reason(error_code)
+        )
     if not js:  # paid, no job yet
         return Progress("paid", STEP_PERCENT["paid"], False, "active")
     if waiting_supplier or (js == "queued" and (error_code or "") == "waiting_for_card"):
@@ -408,6 +440,7 @@ def from_job(job: Any, *, half: bool = False, order_refunded: bool = False) -> P
         funding_state=v.get("funding_state"),
         sent=bool(job.upstream_ref or job.first_sent_at),
         order_refunded=order_refunded,
+        vendor_reason=vendor_problem(*_last_failure(doc)),
     )
 
 

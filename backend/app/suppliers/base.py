@@ -305,6 +305,9 @@ class JobSpec:
     # direct: the buyer paid an UPGRADE price (owner 2026-11-22): the upgrade difference may cost
     # at most this (USD, before tolerance), and the full plan is never bought for such an order
     upgrade_max_usd: Decimal | None = None
+    # direct: owner 2026-11-25 (funding switch ``cancel_renewal_before_upgrade``, default off):
+    # cancel the account's auto-renewal through the vendor right before an UPGRADE order
+    cancel_renewal: bool = False
 
     def __post_init__(self) -> None:
         if not IDEMPOTENCY_KEY_RE.fullmatch(self.idempotency_key):

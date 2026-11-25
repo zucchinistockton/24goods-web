@@ -345,6 +345,9 @@ class MockZovo:
     direct_current_plan: str = "free"  # what the preflight reports as the account's plan
     upgrade_from: str | None = None  # the account's running plan for /gpt-direct/upgrade-quotes
     upgrade_off: bool = False  # the vendor offers no upgrade quote
+    # POST /gpt-direct/cancel-renewal (docs 6.19): calls seen and the status answered
+    renewal_cancels: int = 0
+    renewal_status: str = "success"
     reject_sessions: bool = False  # every session is refused (it stopped working after checkout)
     direct_quote_error: str = ""  # a non-empty quote_error on the preflight
     direct_half_eligible: bool = True  # False: the preflight quotes no ``*_half`` plan
@@ -953,6 +956,20 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
         blocked = _gate(request, path)
         if blocked is not None:
             return blocked
+        if request.method == "POST" and path == "/gpt-direct/cancel-renewal":
+            try:
+                body = json.loads(await request.body() or b"{}")
+            except ValueError:
+                body = None
+            if not isinstance(body, dict) or not isinstance(body.get("session"), str):
+                return JSONResponse(
+                    {"code": 400, "error_code": "INVALID_REQUEST", "msg": "session required"},
+                    status_code=400,
+                )
+            mock.renewal_cancels += 1
+            return JSONResponse(
+                _env(0, {"renewal_status": mock.renewal_status, "will_renew": False})
+            )
         if request.method == "POST" and path == "/gpt-direct/upgrade-quotes":
             try:  # read only: no Idempotency-Key, nothing cached
                 up = json.loads(await request.body() or b"{}")
