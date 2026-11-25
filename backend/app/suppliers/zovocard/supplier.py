@@ -23,6 +23,7 @@ from app.suppliers.base import (
     Availability,
     Balance,
     Capability,
+    CardOpenState,
     FundingPolicy,
     JobSpec,
     LedgerRow,
@@ -1167,7 +1168,11 @@ class ZovoCardSupplier:
 
     # ---- ADR-054: a dedicated card per zzshu order (opened, read once, swept and deleted)
     async def open_dedicated_card(
-        self, need: Decimal, pol: FundingPolicy, key: str
+        self,
+        need: Decimal,
+        pol: FundingPolicy,
+        key: str,
+        state: CardOpenState | None = None,  # ADR-055: vmcardio only
     ) -> DedicatedCard:
         """Open ONE new card loaded with ``need`` (USD, whole dollars up, at least the product's
         minimum; the owner's BIN priority picks the product, ADR-049 code) under ``key`` (the

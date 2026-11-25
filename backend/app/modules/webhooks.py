@@ -35,6 +35,7 @@ router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 ZOVOCARD_PATH = "/api/v1/webhooks/zovocard"
 VMCARDIO_PATH = "/api/v1/webhooks/vmcardio"
 PER_IP_PER_MIN = 300
+GLOBAL_PER_MIN = 600  # vmcardio: every address together
 
 
 @router.post("/zovocard", response_model=None)
@@ -75,7 +76,7 @@ async def zovocard_webhook(
         if not items or len(items) > 50 or not all(isinstance(i, dict) for i in items):
             raise WebhookRejected("malformed")
         events = [normalise(i, secret) for i in items]
-    except (ValueError, UnicodeDecodeError, WebhookRejected):
+    except (ValueError, UnicodeDecodeError, RecursionError, WebhookRejected):
         return Response(status_code=400)
     tenant = await db.scalar(
         select(Tenant.id).where(Tenant.id == request.state.tenant_id, Tenant.kind == "platform")
@@ -143,22 +144,34 @@ async def vmcardio_webhook(
     """ADR-055: a vmcardio card transaction. Only a hint: stored (whitelisted, no card number, size
     limited) for the staff timeline / ops review, never read by the engine and never changing
     money or order state. ``X-VM-SIGN`` is verified when ``APP_VMCARDIO_WEBHOOK_PUBLIC_KEY`` is
-    set (bad signature: 401); without a key the event is accepted and stored as unverified."""
+    set (bad signature: 401). Without a key production refuses (401) until it is set; dev / test
+    store the event as unverified."""
     allowed, _ = await hit(
         res.redis, "webhook:vmcardio", client_ip(request) or "-", PER_IP_PER_MIN, 60
     )
+    if allowed:  # one global cap on top of the per-IP one (a forged flood from many addresses)
+        allowed, _ = await hit(res.redis, "webhook:vmcardio:all", "-", GLOBAL_PER_MIN, 60)
     if not allowed:
         return Response(status_code=429)
-    declared = request.headers.get("content-length", "0")
-    if not declared.isdigit() or int(declared) > vm_hook.MAX_BODY:
+    declared = request.headers.get("content-length")
+    if declared is not None and (not declared.isdigit() or int(declared) > vm_hook.MAX_BODY):
         return Response(status_code=413)
-    raw = await request.body()
-    if len(raw) > vm_hook.MAX_BODY:
-        return Response(status_code=413)
+    # a chunked body has no declared length: read with a hard limit of our own
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > vm_hook.MAX_BODY:
+            return Response(status_code=413)
+        chunks.append(chunk)
+    raw = b"".join(chunks)
     key = vm_hook.load_public_key(res.settings.vmcardio_webhook_public_key)
     if res.settings.vmcardio_webhook_public_key.strip() and key is None:
         log.error("vmcardio webhook: the configured public key is unreadable")
         return Response(status_code=503)  # never downgrade to "unverified" on a broken key
+    if key is None and res.settings.is_prod:
+        log.warning("vmcardio webhook refused: no public key configured")
+        return Response(status_code=401)
     verified = key is not None
     if key is not None and not vm_hook.verify_signature(raw, request.headers, key):
         log.warning("vmcardio webhook: bad signature")
@@ -166,7 +179,7 @@ async def vmcardio_webhook(
     try:
         data = json.loads(raw)
         dedup, payload = vm_hook.normalise(data, verified=verified)
-    except (ValueError, UnicodeDecodeError, WebhookRejected):
+    except (ValueError, UnicodeDecodeError, RecursionError, WebhookRejected):
         return Response(status_code=400)
     tenant = await db.scalar(
         select(Tenant.id).where(Tenant.id == request.state.tenant_id, Tenant.kind == "platform")
@@ -203,7 +216,7 @@ async def vmcardio_webhook(
         .on_conflict_do_nothing(index_elements=["supplier_id", "dedup_key"])
         .returning(SupplierWebhookEvent.id)
     )
-    if inserted is not None:
+    if inserted is not None and verified:  # an unverified (forgeable) event writes no audit row
         await audit(
             db,
             tenant_id=tenant,

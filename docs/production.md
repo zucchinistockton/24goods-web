@@ -215,13 +215,16 @@ the owner's go-ahead):
 4. Webhook: vmcardio console -> Personal center -> Developer -> webhook URL
    `https://shop.kesiv.com/api/v1/webhooks/vmcardio`. Public key: copy the VM public key shown on that page (PEM with the
    `BEGIN PUBLIC KEY` / `END PUBLIC KEY` lines) into the API env as `APP_VMCARDIO_WEBHOOK_PUBLIC_KEY` (in an env file
-   write the newlines as the two characters backslash n), restart `api`. Until then events are accepted and stored as
-   `verified: false`; with the key a bad signature gets 401. Either way the webhook only records the transaction
+   write the newlines as the two characters backslash n), restart `api`. Until the key is set production answers 401
+   to every call (nothing is stored; the owner is asking vmcardio support for the key); dev / test store the event as
+   `verified: false`. With the key a bad signature gets 401. Either way the webhook only records the transaction
    (table `supplier_events`, kind `vmcardio_card_transaction`) and changes no order or money.
 5. Watch: the job timeline and audit `procurement.zzshu_card` name the issuer (`vmcardio`), the card id (`vm:<id>`), last
    four, loaded and leftover; `procurement.zzshu_card_unswept` = the card could not be deleted, look at it in the vmcardio
-   console (cards are labelled `zz-<job uuid hex>`); a job in `needs_manual` after an unresolved create: find the card
-   with that label before anything else.
+   console (cards are labelled `zz-<job uuid hex>`); a job in `needs_manual` after an unresolved create (timeline event
+   `card_open_unconfirmed` / audit `procurement.zzshu_card_unconfirmed`, with the label and request id): find the card
+   with that label in the vendor console before anything else (the vendor API never returns the label, so the system
+   does not adopt a card by itself). Delete or use it, then press Retry on the job: that starts a new request id.
 
 ## SEO and Google Search Console (review-v5.2 §6, ADR-024)
 

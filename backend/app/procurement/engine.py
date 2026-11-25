@@ -76,6 +76,7 @@ from app.procurement.risk import DECLINE_CODES
 from app.procurement.service import SupplierRef, make_supplier, refresh_balance, refresh_offers
 from app.suppliers import direct_progress as progress
 from app.suppliers.base import (
+    CardOpenState,
     FundingPolicy,
     JobSpec,
     Money,
@@ -990,6 +991,7 @@ def _spec(
     funding: FundingPolicy | None = None,
     upgrade_usd: Decimal | None = None,
     cancel_renewal: bool = False,
+    card_open: CardOpenState | None = None,
 ) -> JobSpec:
     voiding = mode in ("void", "dvoid")
     tol = Decimal(str(tolerance))
@@ -1019,7 +1021,25 @@ def _spec(
         attempt=job.card_attempt or 0,
         upgrade_max_usd=upgrade_usd,
         cancel_renewal=cancel_renewal,
+        card_open=card_open,
     )
+
+
+def _card_open_state(ctx: ProcurementContext, job: ProcurementJob) -> CardOpenState:
+    """The job's persisted open state of its zzshu dedicated card (ADR-055). ``persist`` commits
+    in its OWN transaction, so the issuer asked is on disk before the issuer is called."""
+    tenant_id, job_id = job.tenant_id, job.id
+
+    async def persist(issuer: str | None, seq: int) -> None:
+        async with tenant_session(ctx.maker, tenant_id) as db:
+            await db.execute(
+                update(ProcurementJob)
+                .where(ProcurementJob.id == job_id, ProcurementJob.tenant_id == tenant_id)
+                .values(card_open_issuer=issuer, card_open_seq=seq)
+            )
+            await db.commit()
+
+    return CardOpenState(job.card_open_seq or 0, job.card_open_issuer, persist)
 
 
 async def _upgrade_usd(db: AsyncSession, job: ProcurementJob) -> Decimal | None:
@@ -1608,6 +1628,9 @@ async def _lease(ctx: ProcurementContext, job_id: uuid.UUID, tenant_id: uuid.UUI
                 and mode == "submit"
                 and (await topups.settings_of(db, job.tenant_id))["cancel_renewal_before_upgrade"]
                 is True
+            ),
+            card_open=(
+                _card_open_state(ctx, job) if _dedicated(offer) and mode == "submit" else None
             ),
         )
         lease = Lease(
@@ -2846,6 +2869,27 @@ async def _zzshu_card(
     cid = clean_detail(res.card_id or job.card_id or "", 48)
     issuer = _issuer_of(res.card_id or job.card_id)
     events: list[dict[str, str]] = []
+    code = res.error_code or ""
+    if res.outcome in (Outcome.AMBIGUOUS, Outcome.RETRYABLE) and code.startswith(
+        ("open_dup:", "open_unread:")
+    ):
+        # ADR-055: a vmcardio card MAY exist and is never adopted: staff find it in the vendor
+        # console by its label (``zz-<job>``, the start of the request id) and delete / use it
+        rid = clean_detail(code.split(":", 1)[1], 64)
+        label = rid.rsplit("-open-", 1)[0]
+        events.append(
+            {"tid": f"zzcard-unconfirmed-{rid}", "cat": "zzshu", "code": "card_open_unconfirmed",
+             "msg": f"A vmcardio card may exist for this job: label {label}, request id "
+             f"{rid}. Check the vendor console before a retry"}
+        )  # fmt: skip
+        await audit(
+            db,
+            tenant_id=job.tenant_id,
+            action="procurement.zzshu_card_unconfirmed",
+            target=f"procurement_job:{job.id}",
+            detail={"order_id": str(job.order_id), "issuer": "vmcardio", "request_id": rid},
+            severity="warning",
+        )
     if res.card_loaded is not None:
         events.append(
             {"tid": f"zzcard-open-{cid}", "cat": "zzshu", "code": "card_opened",
@@ -2855,8 +2899,13 @@ async def _zzshu_card(
     if res.card_swept:
         events.append(
             {"tid": f"zzcard-swept-{cid}", "cat": "zzshu", "code": "card_swept",
-             "msg": f"Dedicated card {job.card_last4 or '-'} ({issuer}) returned "
-             f"{(res.card_leftover or Decimal(0)):.2f} USD to the wallet and was deleted"}
+             "msg": (
+                 f"Dedicated card {job.card_last4 or '-'} ({issuer}) returned "
+                 f"{(res.card_leftover or Decimal(0)):.2f} USD to the wallet and was deleted"
+                 if res.card_returned
+                 else f"Dedicated card {job.card_last4 or '-'} ({issuer}) deleted with "
+                 f"{(res.card_leftover or Decimal(0)):.2f} USD on it (the vendor returns it)"
+             )}
         )  # fmt: skip
     if res.card_loaded is not None or res.card_swept:
         await audit(
@@ -2872,6 +2921,7 @@ async def _zzshu_card(
                 "loaded": str(res.card_loaded) if res.card_loaded is not None else None,
                 "leftover": str(res.card_leftover) if res.card_leftover is not None else None,
                 "swept": res.card_swept,
+                "returned": res.card_swept and res.card_returned,
                 "currency": "USD",
             },
             severity="info",

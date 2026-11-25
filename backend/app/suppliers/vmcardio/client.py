@@ -23,9 +23,11 @@ import asyncio
 import json
 import logging
 import re
+import secrets
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Any
 
 import httpx
@@ -194,7 +196,11 @@ class VmcardioClient:
             headers["X-Client-Request-Id"] = request_id
         url = self.config.base_url.rstrip("/") + path
         try:
-            return await self._http.post(url, json=dict(body or {}), headers=headers)
+            return await self._http.post(
+                url,
+                content=dumps_exact(dict(body or {})),
+                headers={**headers, "Content-Type": "application/json"},
+            )
         except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout):
             log.warning("vmcardio %s connect_error", path)
             raise SupplierError(
@@ -235,6 +241,25 @@ class VmcardioClient:
         raise SupplierError(
             "supplier error", outcome=out, status=status, error_code=tag, supplier_stop=stop
         )
+
+
+def dumps_exact(body: Mapping[str, Any]) -> bytes:
+    """JSON with every ``Decimal`` written as an exact number (``100`` / ``12.34``), never through
+    a float. The vendor's amount fields are JSON numbers. A random per-call marker stands in for
+    each Decimal while ``json.dumps`` runs and is then replaced by its digits."""
+    marker = "~dec" + secrets.token_hex(8) + "~"
+    seen: list[str] = []
+
+    def default(o: Any) -> Any:
+        if isinstance(o, Decimal) and o.is_finite():
+            seen.append(format(o, "f"))
+            return f"{marker}{len(seen) - 1}~"
+        raise TypeError("not JSON serialisable")
+
+    text = json.dumps(body, default=default, separators=(",", ":"))
+    for i, digits in enumerate(seen):
+        text = text.replace(f'"{marker}{i}~"', digits)
+    return text.encode()
 
 
 def _parse(resp: httpx.Response) -> _Parsed:

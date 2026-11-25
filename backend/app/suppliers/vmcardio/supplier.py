@@ -6,14 +6,17 @@ when ZovoCard could not (see ``app/suppliers/issuers.py``).
 
 Lifecycle of one card, same as the ZovoCard dedicated card (ADR-054):
 
-* open: ``/v2/getProductCode`` -> the owner's BIN priority (``vmcardio_bin_priority``) picks the
-  product, skipping one whose ``remaining_open_card_num`` is at or below ``vmcardio_reserve_slots``
-  -> ``/v2/createCard`` loaded with ``need`` in whole dollars up. The request id is deterministic
-  (``zz-<job uuid hex>-open``) and the card ``label`` is the same reference. A repeat of a request
-  id answers ``Duplicate Client Request Id`` (not the first result): the card is then looked up in
-  ``/v2/getCardList``. The vendor's list shows no label, so the lookup takes the ONE active card
-  created in the last 45 minutes that holds exactly the loaded amount; none yet = RETRYABLE (the
-  engine retries under the same id), several = AMBIGUOUS (staff). Never a second create.
+* open: `/v2/getProductCode` -> the owner's BIN priority (`vmcardio_bin_priority`) picks the
+  product, skipping one whose `remaining_open_card_num` is at or below `vmcardio_reserve_slots`
+  -> `/v2/createCard` loaded with `need` in whole dollars up. The card `label` is
+  `zz-<job uuid hex>` and the request id `zz-<job uuid hex>-open-<n>` where `n` is the job's
+  persisted open sequence (`CardOpenState.seq`), bumped only after a definite "nothing created"
+  answer, so a later retry of the same job never meets "duplicate". A repeat of a request id
+  answers `Duplicate Client Request Id` (not the first result): a card may exist, but the
+  vendor's list / detail show no label, so it is NEVER adopted by amount or time (it could be a
+  card the owner opened by hand, or another job's). The answer is AMBIGUOUS: the job goes to staff
+  with the request id (it contains the label) in the error code, to find the card in the vendor
+  console.
 * read: ``/v2/cardDetail`` for the number / expiry / CVV, held in memory for the one zzshu POST.
 * finish: ``/v2/refundCard`` of the balance above the vendor's minimum, then ``/v2/deleteCard``
   (which returns the rest to the account).
@@ -29,7 +32,7 @@ import re
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from typing import Any
 
@@ -37,8 +40,10 @@ from app.suppliers.base import (
     Availability,
     Balance,
     Capability,
+    CardOpenState,
     FundingPolicy,
     JobSpec,
+    Leftover,
     OfferSpec,
     Outcome,
     ProbeReport,
@@ -46,6 +51,7 @@ from app.suppliers.base import (
     SupplierError,
     SupplierEvent,
     WebhookRejected,
+    clean_detail,
     dec,
 )
 from app.suppliers.vmcardio.client import VmcardioClient
@@ -57,9 +63,6 @@ PREFIX = "vm:"
 DEFAULT_BINS = ("537872", "537882", "532604", "555659")
 DEFAULT_RESERVE_SLOTS = 1
 PRODUCTS_TTL_S = 30.0
-RECOVER_WINDOW = timedelta(minutes=45)
-RECOVER_PAGES = 3
-PAGE_SIZE = 50
 REFUND_KEEP = Decimal("0.10")  # the highest minimum the vendor keeps on a card (FAQ 14)
 FUNDS_INSUFFICIENT = "funds_insufficient"
 CAP_REACHED = "funding_cap_reached"
@@ -158,24 +161,14 @@ def _last4(data: Mapping[str, Any]) -> str | None:
     return digits[-4:] if len(digits) >= 12 else None
 
 
-def _created(text: Any) -> datetime | None:
-    if not isinstance(text, str):
-        return None
-    t = text.strip().replace("T", " ").rstrip("Z")
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f"):
-        try:
-            return datetime.strptime(t[:26], fmt).replace(tzinfo=timezone.utc)
-        except ValueError:
-            continue
-    return None
-
-
-def _recent(created: datetime | None, now: datetime) -> bool:
-    """The list gives no zone: a time that is recent as UTC or as UTC+8 (the vendor's console zone)
-    counts."""
-    if created is None:
-        return False
-    return any(abs(now - (created - timedelta(hours=h))) <= RECOVER_WINDOW for h in (0, 8))
+def _unconfirmed(prefix: str, request_id: str) -> SupplierError:
+    """AMBIGUOUS: a card may exist. The error code carries the request id (it contains the card's
+    label ``zz-<job>``) for the staff timeline / alert."""
+    return SupplierError(
+        "card creation unconfirmed",
+        outcome=Outcome.AMBIGUOUS,
+        error_code=clean_detail(f"{prefix}:{request_id}", 64),
+    )
 
 
 class VmcardioSupplier:
@@ -273,12 +266,17 @@ class VmcardioSupplier:
 
     # ---- the dedicated card (same names as ZovoCardSupplier, ADR-054)
     async def open_dedicated_card(
-        self, need: Decimal, pol: FundingPolicy, key: str
+        self,
+        need: Decimal,
+        pol: FundingPolicy,
+        key: str,
+        state: CardOpenState | None = None,
     ) -> DedicatedCard:
         """Open ONE card loaded with ``need`` (whole dollars up, at least 1). Raises
         ``SupplierError``: UNAVAILABLE = nothing opened (wallet / cap / no product with a free
-        slot / vendor refusal); RETRYABLE / AMBIGUOUS = it may exist, call again with the SAME key
-        (the request id repeats, the card is then looked up, never created twice)."""
+        slot / vendor refusal); RETRYABLE = a card may exist, call again with the SAME key and
+        sequence (the vendor deduplicates the request id: at most one card, and a repeat that
+        finds one answers "duplicate"); AMBIGUOUS = a card may exist and cannot be named: staff."""
         amount = max(Decimal(1), need.to_integral_value(rounding=ROUND_CEILING))
         wallet = await self._wallet(True)
         if wallet is None:
@@ -304,11 +302,12 @@ class VmcardioSupplier:
                 error_code="no_card_product",
             )
         ref = reference_of(key)
+        request_id = f"{ref}-open-{state.seq if state is not None else 0}"
         body: dict[str, Any] = {
             "product_code": plan.code,
             "first_name": self.holder.first_name,
             "last_name": self.holder.last_name,
-            "amount": int(amount),
+            "amount": amount,  # a whole-dollar Decimal: the client writes it as an exact number
             "label": ref,
         }
         address = self.holder.address()
@@ -316,15 +315,18 @@ class VmcardioSupplier:
             body["card_address"] = address
         try:
             resp = await self.client.call(
-                "/v2/createCard", body, request_id=f"{ref}-open", creates=True
+                "/v2/createCard", body, request_id=request_id, creates=True
             )
         except SupplierError as exc:
             if exc.error_code == "duplicate_request":
-                return await self._recover(amount)
+                # the request id was used: a card may exist and is NOT adopted (see the module
+                # docstring). Staff find it by its label
+                log.warning("vmcardio duplicate create request_id=%s", request_id)
+                raise _unconfirmed("open_dup", request_id) from None
             if exc.outcome is Outcome.AMBIGUOUS:
-                # a card may exist. Retrying under the SAME request id is safe (a repeat answers
-                # "duplicate" and the card is then looked up), so the engine retries, it does not
-                # park the job: RETRYABLE
+                # a card may exist. Retrying under the SAME request id is safe (a repeat creates
+                # it, or answers "duplicate" and the job goes to staff), so the engine retries
+                # and does not park the job: RETRYABLE
                 raise SupplierError(
                     "card creation unconfirmed",
                     outcome=Outcome.RETRYABLE,
@@ -335,55 +337,10 @@ class VmcardioSupplier:
         data = resp.data if isinstance(resp.data, Mapping) else {}
         vid = data.get("vm_card_id")
         if not isinstance(vid, str) or not _VM_ID_RE.fullmatch(vid):
-            # something may exist but we cannot name it: the same-id retry looks it up
-            raise SupplierError(
-                "unreadable card", outcome=Outcome.RETRYABLE, error_code="card_open_unreadable"
-            )
+            # a card exists but we cannot name it: never a second create, staff find it by label
+            raise _unconfirmed("open_unread", request_id)
         self._wallet_hit = None
         return DedicatedCard(PREFIX + vid, None, amount, amount)
-
-    async def _recover(self, amount: Decimal) -> DedicatedCard:
-        """The request id was used before (a lost answer or a concurrent call): find the card. The
-        ONE active card created recently that holds exactly ``amount``; anything else is
-        AMBIGUOUS."""
-        now = datetime.now(timezone.utc)
-        found: list[tuple[str, str | None]] = []
-        for page in range(1, RECOVER_PAGES + 1):
-            resp = await self.client.call(
-                "/v2/getCardList",
-                {"card_type": "save", "status": "ACTIVE", "page": page, "page_size": PAGE_SIZE},
-            )
-            data = resp.data if isinstance(resp.data, Mapping) else {}
-            rows = data.get("list")
-            rows = rows if isinstance(rows, list) else []
-            for r in rows:
-                if not isinstance(r, Mapping):
-                    continue
-                vid = r.get("vm_card_id")
-                try:
-                    held = dec(r.get("available_amount"))
-                except ValueError:
-                    continue
-                if (
-                    isinstance(vid, str)
-                    and _VM_ID_RE.fullmatch(vid)
-                    and held == amount
-                    and _recent(_created(r.get("create_time")), now)
-                ):
-                    found.append((vid, _last4(r)))
-            last_page = len(rows) < PAGE_SIZE
-            del resp, data, rows  # the list carried full card numbers
-            if last_page or len(found) > 1:
-                break
-        if len(found) != 1:
-            # none yet: the list may lag, retry; several: which one is ours is for staff to say
-            raise SupplierError(
-                "card not confirmed",
-                outcome=Outcome.RETRYABLE if not found else Outcome.AMBIGUOUS,
-                error_code="open_unconfirmed",
-            )
-        self._wallet_hit = None
-        return DedicatedCard(PREFIX + found[0][0], found[0][1], amount, amount)
 
     async def read_dedicated_card(self, card_id: str) -> DedicatedRead | None:
         """``/v2/cardDetail``: state, balance and the number / expiry / CVV for the ONE zzshu POST.
@@ -429,17 +386,19 @@ class VmcardioSupplier:
         status = data.get("status")
         del resp, data
         if status == "DELETED":
-            return Decimal(0)
+            return Leftover(0)
         # request ids are unique forever: a retry minutes later needs a new one
         bucket = int(time.time() // 60)
         amt = (available - REFUND_KEEP).quantize(Decimal("0.01"), rounding=ROUND_FLOOR)
+        refunded = False
         if status == "ACTIVE" and amt >= Decimal("0.01"):
             try:
                 await self.client.call(
                     "/v2/refundCard",
-                    {"vm_card_id": vid, "amount": float(amt)},
+                    {"vm_card_id": vid, "amount": amt},
                     request_id=f"vr-{vid}-{int(amt * 100)}-{bucket}"[:64],
                 )
+                refunded = True
             except SupplierError as exc:
                 log.warning("dedicated card refund refused reason=%s", exc.reason)
         try:
@@ -450,7 +409,9 @@ class VmcardioSupplier:
             log.warning("dedicated card delete refused reason=%s", exc.reason)
             return None
         self._wallet_hit = None
-        return available
+        out = Leftover(available)
+        out.refunded = refunded
+        return out
 
     # ---- the Supplier protocol: nothing is sold through this adapter
     async def availability(self, offer: OfferSpec) -> Availability:

@@ -752,7 +752,7 @@ CVV / expiry the zzshu create needs. It is used for nothing else.
   procurement env is skipped. `CardIssuers` (`app/suppliers/issuers.py`) replaces the single ZovoCard supplier a
   `ZzshuSupplier` held and routes `open / read / finish` by issuer; a card id `vm:<vm_card_id>` is vmcardio, a number is
   ZovoCard. The next issuer opens a card only after a DEFINITE "nothing opened": UNAVAILABLE (wallet low, no product /
-  slot, cap, `product_unavailable`), or a coded refusal before any card exists. RETRYABLE / AMBIGUOUS is raised as is.
+  slot, cap, `product_unavailable`), or a refusal that carries a vendor business code (`vm_<n>` / a ZovoCard error code, never a generic `http_4xx`) before any card exists. RETRYABLE / AMBIGUOUS is raised as is. Which issuer was asked is persisted on the job (`procurement_jobs.card_open_issuer`, written in its own transaction BEFORE the issuer is called) and cleared only by a definite "nothing opened": a restart or another worker asks the SAME issuer again and never falls through to the next while a card may be open.
   Settings `vmcardio_bin_priority` (default 537872, 537882, 532604, 555659; only these BINs are ever used, the product
   is looked up through `/v2/getProductCode`, never hard-coded) and `vmcardio_reserve_slots` (default 1: a product whose
   `remaining_open_card_num` is at or below it is skipped, so slots stay for other uses).
@@ -764,17 +764,23 @@ CVV / expiry the zzshu create needs. It is used for nothing else.
   timeline and the audit rows show issuer, card id, last four, loaded and leftover. Number / CVV / expiry come from
   `/v2/cardDetail` right before the one zzshu POST and live in memory only; `getCardList` also returns full numbers, so
   its reply is reduced to id / amount / time at once. Nothing is logged, stored, audited or put in an exception.
-- Idempotency and lost answers: request id `zz-<job uuid hex>-open` (unique per app forever; the vendor answers
-  `Duplicate Client Request Id` and not the first result) and card `label` = `zz-<job uuid hex>`. A timeout or 5xx after
-  the send is RETRYABLE: the engine retries with the SAME key, the repeat answers "duplicate" and the card is looked up
-  in `/v2/getCardList`. The vendor's list and detail do NOT return the label, so the lookup takes the ONE active card
-  created in the last 45 minutes that holds exactly the loaded amount (the list gives no time zone: a time that is recent
-  as UTC or as UTC+8 counts). None yet = retry (the list may lag), several = AMBIGUOUS for staff; a second card is never
-  created under a new id. The label is visible in the vendor console for the staff check.
+- Idempotency and lost answers: request id `zz-<job uuid hex>-open-<n>` and card `label` = `zz-<job uuid hex>`. The
+  request id is unique per app forever (a repeat answers `Duplicate Client Request Id`, not the first result), so `n` is
+  the job's persisted open sequence (`procurement_jobs.card_open_seq`), bumped ONLY after a definite "nothing created"
+  answer (so a later retry of the same job never meets "duplicate"; a staff retry also bumps it). A timeout or 5xx after
+  the send is RETRYABLE: the engine retries with the SAME id and sequence, which either creates the one card or answers
+  "duplicate". "Duplicate" is AMBIGUOUS and goes to staff: the vendor's list and detail return NO label, so a card is
+  NEVER adopted by amount or time (it could be a card the owner opened by hand through the same app, or another job's).
+  The staff timeline shows the label and request id (`card_open_unconfirmed`, audit warning
+  `procurement.zzshu_card_unconfirmed`); the label is visible in the vendor console. A second card is never created under
+  a new id for an unconfirmed one. Amounts are sent as exact JSON numbers (Decimal, never a float).
 - Webhook `POST /api/v1/webhooks/vmcardio` (API process, CSRF exempt, 300 / min / IP like the ZovoCard one, 64 KiB):
   `X-VM-SIGN` (Base64 RSA-SHA256 PKCS#1 v1.5 over the RAW body) is verified when `APP_VMCARDIO_WEBHOOK_PUBLIC_KEY` (PEM)
-  is configured (bad signature 401; an unreadable key 503, never a silent downgrade). Without a key the event is
-  accepted and stored with `verified: false`. In both cases it is only a hint: a whitelisted payload (ids, status, type,
+  is configured (bad signature 401; an unreadable key 503, never a silent downgrade). Without a key production
+  (`APP_ENV=prod`) refuses with 401 until `APP_VMCARDIO_WEBHOOK_PUBLIC_KEY` is set; dev / test accept and store the
+  event with `verified: false` (and write no audit row for it). The route also has a global 600 / min cap (every address
+  together), reads the body with its own 64 KiB limit (chunked bodies too) and answers 400 for unparsable or too deeply
+  nested JSON. In both cases it is only a hint: a whitelisted payload (ids, status, type,
   amounts, merchant / description with every run of 4+ digits masked, no card number) goes to `supplier_events`
   (kind `vmcardio_card_transaction`, already marked processed, NO outbox row) for staff and ops review; money, jobs and
   orders are never touched. The reply is `{"code":0,"msg":"ok"}`.
@@ -783,5 +789,6 @@ CVV / expiry the zzshu create needs. It is used for nothing else.
 used only on a definite refusal. Open: the vendor's real card-detail `expire` format is unknown (the parser accepts
 `MM/YY`, `MM/YYYY`, `YYYY-MM`, `MMYY`); the opening fee of a vmcardio product is not in the API, so only the loaded amount
 counts against the cap; a ZovoCard "request_failed" on open is AMBIGUOUS (not a definite refusal) and so never falls back;
-the memory of "which issuer answered with a maybe-opened card" is per process (a restart asks the first issuer again);
-the webhook key is still to be found in the vendor console.
+after a "duplicate" the job needs staff (find the card by label in the vendor console, then retry: the retry starts a
+new request id); the webhook key is still to be found in the vendor console (production refuses the webhook until it is
+set).

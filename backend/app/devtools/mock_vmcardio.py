@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -54,12 +55,15 @@ class MockVmcardio:
     )
     create: str = "ok"
     refuse_delete: bool = False
+    refund: str = "ok"  # ok | refuse
     token_ttl: int = 7200
     expire_tokens_once: bool = False
     creates: int = 0
     tokens_issued: int = 0
     cards: dict[str, dict[str, Any]] = field(default_factory=dict)
     request_ids: set[str] = field(default_factory=set)
+    request_log: list[str] = field(default_factory=list)  # request ids in arrival order
+    sent_amounts: list[str] = field(default_factory=list)  # the raw JSON text of each amount
     requests: list[tuple[str, str]] = field(default_factory=list)
     token: str = ""
     # a recent create time (UTC) the next card gets; tests may age a card with it
@@ -93,10 +97,16 @@ def create_mock_vmcardio(state: MockVmcardio | None = None) -> Starlette:
             mock.token = ""
             return err(400003, "Invalid Token")
         try:
-            body = json.loads(await request.body() or b"{}")
+            raw = await request.body() or b"{}"
+            body = json.loads(raw)
         except ValueError:
             return err(400001, "Params Content Error")
         rid = request.headers.get("x-client-request-id")
+        raw_amount = re.search(rb'"amount":\s*([-0-9.eE+]+)', raw)
+        if raw_amount:
+            mock.sent_amounts.append(raw_amount.group(1).decode())
+        if rid:
+            mock.request_log.append(rid)
         if path in ("/v2/createCard", "/v2/refundCard", "/v2/deleteCard") and rid:
             if rid in mock.request_ids:
                 return err(400009, "Duplicate Client Request Id")
@@ -208,6 +218,8 @@ def create_mock_vmcardio(state: MockVmcardio | None = None) -> Starlette:
     def refund(body: dict[str, Any]) -> JSONResponse:
         c = mock.cards.get(str(body.get("vm_card_id")))
         amount = Decimal(str(body.get("amount", 0)))
+        if mock.refund == "refuse":
+            return err(500104, "Refund Failed")
         if c is None or c["status"] != "ACTIVE":
             return err(400404, "Card Not Found")
         if amount <= 0 or Decimal(str(c["available_amount"])) - amount < Decimal("0.10"):

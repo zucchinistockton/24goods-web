@@ -242,7 +242,9 @@ class ZzshuSupplier:
         opened: tuple[str, Decimal] | None = None
         if card_id is None:  # a retry reuses the card it opened (the engine hands its id back)
             try:
-                dc = await self.funding.open_dedicated_card(need, pol, f"zzopen:{job.job_id}")
+                dc = await self.funding.open_dedicated_card(
+                    need, pol, f"zzopen:{job.job_id}", job.card_open
+                )
             except SupplierError as exc:
                 return _refused(exc)
             card_id, last4, loaded, opened = dc.id, dc.last4, dc.loaded, (dc.id, dc.spent)
@@ -311,7 +313,11 @@ class ZzshuSupplier:
         """A definite refusal of the create: the card goes back to the wallet, staff decide."""
         leftover = await self.funding.finish_dedicated_card(card_id)
         res: Result = out(
-            Outcome.FATAL, code, card_leftover=leftover, card_swept=leftover is not None
+            Outcome.FATAL,
+            code,
+            card_leftover=leftover,
+            card_swept=leftover is not None,
+            card_returned=getattr(leftover, "refunded", True),
         )
         return replace(res, supplier_stop=True) if supplier_stop else res
 
@@ -356,7 +362,11 @@ class ZzshuSupplier:
         if st.status in ("pending", "processing"):
             return Result(Outcome.ACCEPTED_PENDING, detail=vstatus, **common)
         leftover = await self.funding.finish_dedicated_card(card_id) if card_id else None
-        sweep = {"card_leftover": leftover, "card_swept": leftover is not None}
+        sweep = {
+            "card_leftover": leftover,
+            "card_swept": leftover is not None,
+            "card_returned": getattr(leftover, "refunded", True),
+        }
         if st.status == "success":
             detail = "completed" if st.cancelled else "completed:renew_unconfirmed"
             text = "----".join((f"gpt/{spec.plan}", mask or "-", st.order_no or ref))

@@ -12,7 +12,6 @@ import base64
 import json
 import logging
 import uuid
-from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import httpx
@@ -24,7 +23,7 @@ from sqlalchemy import text
 from app.core import funding as fs
 from app.devtools.mock_vmcardio import APP_ID, APP_SECRET, MockVmcardio, create_mock_vmcardio
 from app.devtools.mock_zzshu import OK_KEY, MockZzshu, create_mock_zzshu
-from app.suppliers.base import FundingPolicy, Outcome, SupplierError
+from app.suppliers.base import CardOpenState, FundingPolicy, Outcome, SupplierError
 from app.suppliers.issuers import CardIssuers
 from app.suppliers.registry import build_supplier, funding_codes
 from app.suppliers.vmcardio import Holder, VmcardioClient, VmcardioConfig, VmcardioSupplier
@@ -145,7 +144,7 @@ async def test_wallet_cap_and_refusal_open_nothing():
     assert state.creates == 0
 
 
-async def test_lost_answer_is_recovered_by_lookup_never_created_twice():
+async def test_lost_answer_retries_the_same_request_then_goes_to_staff_never_adopted():
     state = MockVmcardio(create="lost")
     sup = _supplier(state)
     key = "zzopen:" + str(uuid.uuid4())
@@ -153,34 +152,81 @@ async def test_lost_answer_is_recovered_by_lookup_never_created_twice():
         await sup.open_dedicated_card(Decimal("30"), POL, key)
     assert ei.value.outcome is Outcome.RETRYABLE and state.creates == 1  # executed, answer lost
     state.create = "ok"
-    card = await sup.open_dedicated_card(Decimal("30"), POL, key)  # same key -> duplicate -> lookup
-    assert state.creates == 1 and next(iter(state.cards)) == card.id[3:]
-    assert card.loaded == 30 and card.last4 == next(iter(state.cards.values()))["card_number"][-4:]
+    with pytest.raises(SupplierError) as ei:  # same request id -> "duplicate": never a 2nd create
+        await sup.open_dedicated_card(Decimal("30"), POL, key)
+    assert state.creates == 1 and ei.value.outcome is Outcome.AMBIGUOUS
+    # the staff text carries the label (= the request id prefix) to find the card by
+    label = "zz-" + key.split(":")[1].replace("-", "")
+    assert ei.value.error_code == f"open_dup:{label}-open-0"[:64]
 
 
-async def test_duplicate_without_one_clear_match_is_ambiguous_for_staff():
+async def test_a_card_opened_by_hand_with_the_same_amount_is_never_adopted():
     state = MockVmcardio(create="lost")
     sup = _supplier(state)
     key = "zzopen:" + str(uuid.uuid4())
     with pytest.raises(SupplierError):
         await sup.open_dedicated_card(Decimal("30"), POL, key)
     state.create = "ok"
-    # a second card with the same load appears: the lookup cannot tell which is ours
-    await sup.open_dedicated_card(Decimal("30"), POL, "zzopen:" + str(uuid.uuid4()))
+    # the owner (or another job) opens a card with the same load just now through the same app
+    other = await sup.open_dedicated_card(Decimal("30"), POL, "zzopen:" + str(uuid.uuid4()))
+    ours_or_other = {c["vm_card_id"] for c in state.cards.values()}
     with pytest.raises(SupplierError) as ei:
         await sup.open_dedicated_card(Decimal("30"), POL, key)
-    assert ei.value.outcome is Outcome.AMBIGUOUS and ei.value.error_code == "open_unconfirmed"
-    # and an old card is never adopted
-    old = MockVmcardio(create="lost")
-    old.created_at = datetime.now(timezone.utc) - timedelta(days=2)
-    sup2 = _supplier(old)
-    k2 = "zzopen:" + str(uuid.uuid4())
-    with pytest.raises(SupplierError):
-        await sup2.open_dedicated_card(Decimal("30"), POL, k2)
-    old.create = "ok"
+    assert ei.value.outcome is Outcome.AMBIGUOUS and ei.value.error_code.startswith("open_dup:")
+    assert state.creates == 2 and {c["vm_card_id"] for c in state.cards.values()} == ours_or_other
+    assert other.id.startswith("vm:")
+    # nothing was read, refunded or deleted for the unconfirmed one
+    assert all(c["status"] == "ACTIVE" for c in state.cards.values())
+
+
+async def test_open_sequence_is_bumped_after_a_definite_refusal_and_persisted():
+    state = MockVmcardio()
+    sup = _supplier(state)
+    saved: list[tuple[str | None, int]] = []
+
+    async def persist(issuer, seq):
+        saved.append((issuer, seq))
+
+    st = CardOpenState(0, None, persist)
+    issuers = CardIssuers([("vmcardio", sup)])
+    state.create = "refuse"  # a definite business refusal, nothing created
     with pytest.raises(SupplierError) as ei:
-        await sup2.open_dedicated_card(Decimal("30"), POL, k2)
-    assert ei.value.error_code == "open_unconfirmed" and old.creates == 1
+        await issuers.open_dedicated_card(Decimal("10"), POL, KEY, st)
+    assert ei.value.outcome is Outcome.UNAVAILABLE and saved == [("vmcardio", 0), (None, 1)]
+    state.create = "ok"
+    card = await issuers.open_dedicated_card(Decimal("10"), POL, KEY, st)  # same job, new id
+    assert card.id.startswith("vm:") and state.creates == 1 and st.seq == 1
+    # the request ids differ: the refused one (-open-0) was never reused
+    assert [x for x in state.request_log if "-open-" in x][-1].endswith("-open-1")
+
+
+async def test_decimal_amounts_are_written_as_exact_json_numbers():
+    from app.suppliers.vmcardio.client import dumps_exact
+
+    raw = dumps_exact({"amount": Decimal("30"), "a": Decimal("12.30"), "s": "x", "n": [1]})
+    assert raw == b'{"amount":30,"a":12.30,"s":"x","n":[1]}'
+    assert json.loads(raw)["a"] == 12.3
+    with pytest.raises(TypeError):
+        dumps_exact({"x": object()})
+    with pytest.raises(TypeError):
+        dumps_exact({"x": Decimal("NaN")})
+    state = MockVmcardio()
+    sup = _supplier(state)
+    card = await sup.open_dedicated_card(Decimal("30.4"), POL, KEY)
+    assert card.loaded == 31 and state.sent_amounts[-1] == "31"  # whole dollars up, no float text
+
+
+async def test_finish_reports_returned_only_when_the_refund_succeeded():
+    state = MockVmcardio()
+    sup = _supplier(state)
+    card = await sup.open_dedicated_card(Decimal("30"), POL, KEY)
+    state.refund = "refuse"
+    left = await sup.finish_dedicated_card(card.id)
+    assert left == 30 and left.refunded is False  # deleted WITH the balance (the vendor returns it)
+    card2 = await sup.open_dedicated_card(Decimal("30"), POL, KEY + "2")
+    state.refund = "ok"
+    left2 = await sup.finish_dedicated_card(card2.id)
+    assert left2 > 0 and left2.refunded is True
 
 
 async def test_cardholder_address_is_sent_only_when_complete():
@@ -241,7 +287,7 @@ class _Stub:
     async def finish_dedicated_card(self, card_id):
         return Decimal(7)
 
-    async def open_dedicated_card(self, need, pol, key):
+    async def open_dedicated_card(self, need, pol, key, state=None):
         self.calls += 1
         if self.outcome is not None:
             raise SupplierError("x", outcome=self.outcome, error_code=self.code)
@@ -256,6 +302,7 @@ class _Stub:
         (Outcome.UNAVAILABLE, "funds_insufficient", True),
         (Outcome.FATAL, "amount_below_min", True),  # a coded refusal before any card exists
         (Outcome.FATAL, None, False),
+        (Outcome.FATAL, "http_400", False),  # a generic 4xx says nothing about a card
         (Outcome.AMBIGUOUS, "request_failed", False),
         (Outcome.RETRYABLE, "connect_error", False),
     ],
@@ -271,6 +318,38 @@ async def test_vmcardio_opens_only_after_a_definite_nothing_opened(outcome, code
         with pytest.raises(SupplierError) as ei:
             await issuers.open_dedicated_card(Decimal(30), POL, KEY)
         assert ei.value.outcome is outcome and state.creates == 0
+
+
+async def test_the_issuer_asked_is_persisted_and_survives_a_restart():
+    store: dict[str, object] = {"issuer": None, "seq": 0}
+
+    async def persist(issuer, seq):
+        store["issuer"], store["seq"] = issuer, seq
+
+    def fresh_state():
+        return CardOpenState(int(store["seq"]), store["issuer"], persist)
+
+    state = MockVmcardio(create="lost")
+    zovo = _Stub(Outcome.UNAVAILABLE, "funds_insufficient")
+    sup = _supplier(state)
+    issuers = CardIssuers([("zovocard", zovo), ("vmcardio", sup)])
+    with pytest.raises(SupplierError) as ei:
+        await issuers.open_dedicated_card(Decimal(30), POL, KEY, fresh_state())
+    assert ei.value.outcome is Outcome.RETRYABLE and store["issuer"] == "vmcardio"
+    # a restart / another worker: a NEW CardIssuers instance. ZovoCard would now open a card, but
+    # a card may exist at vmcardio, so only vmcardio is asked again (and never falls through)
+    zovo2 = _Stub(None)
+    state.create = "ok"
+    again = CardIssuers([("zovocard", zovo2), ("vmcardio", sup)])
+    with pytest.raises(SupplierError) as ei:
+        await again.open_dedicated_card(Decimal(30), POL, KEY, fresh_state())
+    assert ei.value.outcome is Outcome.AMBIGUOUS and zovo2.calls == 0 and state.creates == 1
+    assert store["issuer"] == "vmcardio"  # still pinned for staff
+    # an issuer that is not configured any more is AMBIGUOUS, never a different issuer
+    gone = CardIssuers([("zovocard", zovo2)])
+    with pytest.raises(SupplierError) as ei:
+        await gone.open_dedicated_card(Decimal(30), POL, KEY, fresh_state())
+    assert ei.value.outcome is Outcome.AMBIGUOUS and zovo2.calls == 0
 
 
 async def test_staff_can_swap_the_order_and_unknown_issuers_are_ignored():
@@ -547,17 +626,25 @@ async def test_a_card_that_cannot_be_deleted_is_reported_as_unswept(env, dup):  
     assert any(e.get("code") == "card_unswept" for e in job.progress["events"])
 
 
-async def test_a_lost_create_answer_at_vmcardio_never_makes_a_second_card(env, dup):  # noqa: F811
+async def test_a_lost_create_answer_at_vmcardio_goes_to_staff_never_a_second_card(env, dup):  # noqa: F811
     vendor, vm = _vendor(), MockVmcardio(create="lost")
     vendor.forced["/cards/open"].append("insufficient_balance")
     await _setup(env, dup, vendor, vm)
     buyer, order = await dup.paid_direct(gpt_session(new_marker()))
-    await dup.run()  # the create ran, its answer was lost: the job waits (ambiguous)
+    await dup.run()  # the create ran, its answer was lost: the job waits (retryable)
     assert vm.creates == 1
-    vm.create = "ok"  # the vendor answers again
-    await _drive(env, dup, order, buyer, rounds=14)
     job = await _job(dup, order)
-    assert vm.creates == 1 and job.state == "fulfilled" and job.card_id.startswith("vm:")
+    assert job.card_open_issuer == "vmcardio" and job.card_open_seq == 1  # persisted on the job
+    vm.create = "ok"  # the vendor answers again: "duplicate" -> the card is never adopted
+    with pytest.raises(AssertionError, match="manual_review"):
+        await _drive(env, dup, order, buyer, rounds=14)
+    job = await _job(dup, order)
+    assert vm.creates == 1 and job.state == "needs_manual" and not job.card_id
+    (ev,) = [e for e in job.progress["events"] if e.get("code") == "card_open_unconfirmed"]
+    assert "label zz-" in ev["msg"] and "-open-1" in ev["msg"]
+    (row,) = await _audit(env, "procurement.zzshu_card_unconfirmed")
+    assert row[0] == "warning" and row[1]["request_id"].endswith("-open-1")
+    assert all(c["status"] == "ACTIVE" for c in vm.cards.values())  # nothing deleted / refunded
 
 
 # ------------------------------------------------------------------ webhook
@@ -663,6 +750,31 @@ async def test_webhook_bad_or_missing_signature_is_refused_when_a_key_is_set(env
     env.res.settings = env.res.settings.model_copy(update={"vmcardio_webhook_public_key": "junk"})
     r = await c.post("/api/v1/webhooks/vmcardio", content=raw, headers={})
     assert r.status_code == 503 and await env.scalar("SELECT count(*) FROM supplier_events") == 0
+
+
+async def test_webhook_without_a_key_is_refused_in_production(env, vm_hook_env):
+    env.res.settings = env.res.settings.model_copy(update={"env": "prod"})
+    c = env.client(csrf=False)
+    raw = json.dumps(EVENT).encode()
+    r = await c.post("/api/v1/webhooks/vmcardio", content=raw, headers={"X-VM-SIGN": "ignored"})
+    assert r.status_code == 401 and await env.scalar("SELECT count(*) FROM supplier_events") == 0
+
+
+async def test_webhook_deep_json_is_a_400_and_unverified_events_write_no_audit_row(
+    env, vm_hook_env
+):
+    c = env.client(csrf=False)
+    deep = b"[" * 20000 + b"]" * 20000
+    assert (await c.post("/api/v1/webhooks/vmcardio", content=deep)).status_code == 400
+    before = await env.scalar(
+        "SELECT count(*) FROM audit_log WHERE action = 'supplier.webhook_received'"
+    )
+    r = await c.post("/api/v1/webhooks/vmcardio", content=json.dumps(EVENT).encode())
+    assert r.status_code == 200
+    after = await env.scalar(
+        "SELECT count(*) FROM audit_log WHERE action = 'supplier.webhook_received'"
+    )
+    assert before == after
 
 
 async def test_webhook_without_a_key_is_accepted_and_marked_unverified(env, vm_hook_env):

@@ -7,11 +7,10 @@ issuers. The order comes from the funding setting ``zzshu_card_issuers``
 process.
 
 Fallback rule: the next issuer is tried ONLY after a definite "nothing opened" answer (UNAVAILABLE,
-or a coded refusal before any card exists). A RETRYABLE / AMBIGUOUS answer may mean a card exists:
-it is raised as is, the engine retries with the same key, and a later issuer that answered
-AMBIGUOUS / RETRYABLE is asked first on that retry (in memory; a restart forgets it and falls
-back to the configured order, whose first issuer simply answers "nothing opened" again in
-practice).
+or a refusal that carries a vendor business code, before any card exists). Anything else may mean a
+card exists: it is raised as is. Which issuer was asked is persisted on the job (``CardOpenState``)
+BEFORE it is called and cleared only by a definite "nothing opened", so a restart or another worker
+asks the SAME issuer again and never falls through to the next while a card may be open.
 
 A card id belongs to its issuer: ``vm:<id>`` is vmcardio, a plain number is ZovoCard.
 """
@@ -23,20 +22,21 @@ from collections.abc import Sequence
 from decimal import Decimal
 from typing import Any
 
-from app.suppliers.base import Balance, FundingPolicy, Outcome, SupplierError
+from app.suppliers.base import Balance, CardOpenState, FundingPolicy, Outcome, SupplierError
 from app.suppliers.vmcardio.supplier import is_vm_card
 from app.suppliers.zovocard.supplier import DedicatedCard, DedicatedRead
 
 log = logging.getLogger("app.suppliers.issuers")
-
-STICKY_MAX = 256
 
 
 def nothing_opened(exc: SupplierError) -> bool:
     """A definite refusal: no card exists, the next issuer may try."""
     if exc.outcome is Outcome.UNAVAILABLE:
         return True
-    return exc.outcome is Outcome.FATAL and bool(exc.error_code)
+    code = exc.error_code or ""
+    # FATAL counts only with a vendor business code (``vm_<n>`` / a ZovoCard error code), never a
+    # generic ``http_4xx`` (the vendor did not say what happened)
+    return exc.outcome is Outcome.FATAL and bool(code) and not code.startswith("http_")
 
 
 class CardIssuers:
@@ -47,7 +47,6 @@ class CardIssuers:
             raise ValueError("at least one issuer")
         self.issuers = list(issuers)
         self._owns = owns
-        self._sticky: dict[str, str] = {}  # open key -> issuer code that answered AMBIGUOUS
 
     async def aclose(self) -> None:
         if self._owns:
@@ -83,34 +82,40 @@ class CardIssuers:
 
     # ---- the dedicated card
     async def open_dedicated_card(
-        self, need: Decimal, pol: FundingPolicy, key: str
+        self,
+        need: Decimal,
+        pol: FundingPolicy,
+        key: str,
+        state: CardOpenState | None = None,
     ) -> DedicatedCard:
         order = self._ordered(pol)
         if not order:
             raise SupplierError(
                 "no card issuer configured", outcome=Outcome.UNAVAILABLE, error_code="no_issuer"
             )
-        sticky = self._sticky.get(key)
-        if sticky is not None:
-            order = sorted(order, key=lambda e: e[0] != sticky)  # stable: the sticky one first
+        state = state or CardOpenState()
+        if state.issuer is not None:
+            # a card may exist at this issuer: only it is asked, whatever the order says now
+            by_code = dict(self.issuers)
+            if state.issuer not in by_code:
+                raise SupplierError(
+                    "the issuer of a possibly opened card is not configured",
+                    outcome=Outcome.AMBIGUOUS,
+                    error_code="issuer_unavailable",
+                )
+            order = [(state.issuer, by_code[state.issuer])]
         first_error: SupplierError | None = None
         for code, sup in order:
+            await state.save(code)  # persisted BEFORE the call
             try:
-                card = await sup.open_dedicated_card(need, pol, key)
+                card = await sup.open_dedicated_card(need, pol, key, state)
             except SupplierError as exc:
                 if not nothing_opened(exc):
-                    if (
-                        exc.outcome in (Outcome.AMBIGUOUS, Outcome.RETRYABLE)
-                        and code != order[0][0]
-                    ):
-                        if len(self._sticky) >= STICKY_MAX:
-                            self._sticky.clear()
-                        self._sticky[key] = code
-                    raise
+                    raise  # the issuer stays recorded: a card may exist there
                 log.info("card issuer %s opened nothing reason=%s", code, exc.reason)
+                await state.save(None, state.seq + 1)  # a definite no: the next request id is new
                 first_error = first_error or exc
                 continue
-            self._sticky.pop(key, None)
             return card
         assert first_error is not None
         raise first_error

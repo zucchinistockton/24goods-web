@@ -122,6 +122,10 @@ class ProcurementJob(Base):
     used_last4: Mapped[str | None] = mapped_column(String(4))
     card_candidates_at: Mapped[datetime | None]
     card_attempt: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # 0042 (ADR-055): the open sequence of a zzshu dedicated card and the issuer asked and not yet
+    # known to have opened nothing
+    card_open_seq: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    card_open_issuer: Mapped[str | None] = mapped_column(String(32))
     # 0038 (ADR-048): the top-up (USD) planned for the picked card before the order
     fund_amount: Mapped[Decimal | None] = mapped_column(AMOUNT)
     fund_key: Mapped[str | None] = mapped_column(String(80))
