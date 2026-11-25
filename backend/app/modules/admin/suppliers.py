@@ -39,7 +39,7 @@ from app.suppliers.base import clean_detail, supplier_code_problem
 
 router = APIRouter(prefix="/admin/suppliers", tags=["admin"])
 
-Adapter = Literal["zovocard", "mock", "manual"]
+Adapter = Literal["zovocard", "zzshu", "mock", "manual"]
 Env = Literal["sandbox", "production"]
 AMOUNT_RE = r"^[0-9]{1,9}(\.[0-9]{1,2})?$"
 DEV_ENVS = ("dev", "test")
@@ -121,7 +121,7 @@ async def platform_admin(
 
 
 def _adapters(res: Resources) -> list[str]:
-    base = ["zovocard", "manual"]
+    base = ["zovocard", "zzshu", "manual"]
     return [*base, "mock"] if res.settings.env in DEV_ENVS else base
 
 

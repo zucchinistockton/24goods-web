@@ -15,7 +15,7 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_FLOOR, Decimal, InvalidOperation
 from typing import Any
 
 from app.suppliers import direct_progress as progress
@@ -368,6 +368,8 @@ class ZovoCardSupplier:
         self._fund_cards_hit: tuple[float, list[fd.FundCard]] | None = None
         self._wallet_hit: tuple[float, Decimal] | None = None
         self._usage_hit: dict[tuple[int, str, str], tuple[float, tuple[Any, ...]]] = {}
+        # ADR-054: dedicated cards opened for a zzshu order; never offered as a funding card
+        self._dedicated: set[int] = set()
 
     async def aclose(self) -> None:
         await self.client.aclose()
@@ -927,10 +929,10 @@ class ZovoCardSupplier:
                 "/cards",
                 params={"page": str(page), "page_size": "100", **({"sync": "1"} if fresh else {})},
             )
-            rows = fd.parse_fund_cards(resp.data)
-            cards.extend(rows)
+            parsed = fd.parse_fund_cards(resp.data)
+            cards.extend(c for c in parsed if c.id not in self._dedicated)
             total = resp.data.get("total") if isinstance(resp.data, Mapping) else None
-            if not rows or not isinstance(total, int) or page * 100 >= total:
+            if not parsed or not isinstance(total, int) or page * 100 >= total:
                 break
         self._fund_cards_hit = (time.monotonic(), cards)
         return cards
@@ -1161,6 +1163,118 @@ class ZovoCardSupplier:
         self._fund_cards_hit = None
         self._wallet_hit = None
         return True
+
+    # ---- ADR-054: a dedicated card per zzshu order (opened, read once, swept and deleted)
+    async def open_dedicated_card(
+        self, need: Decimal, pol: FundingPolicy, key: str
+    ) -> DedicatedCard:
+        """Open ONE new card loaded with ``need`` (USD, whole dollars up, at least the product's
+        minimum; the owner's BIN priority picks the product, ADR-049 code) under ``key`` (the
+        vendor replays one key once, so a repeated call returns the same card). Raises
+        ``SupplierError``: UNAVAILABLE = nothing opened (wallet / cap / no product fits);
+        the vendor's own error otherwise. Never returns a card number."""
+        wallet = await self._wallet(True)
+        if wallet is None:
+            raise SupplierError(
+                "wallet unreadable", outcome=Outcome.RETRYABLE, error_code="wallet_unreadable"
+            )
+        if pol.reserved > 0:
+            wallet = max(Decimal(0), wallet - pol.reserved)
+        cards = await self._fund_cards(True)
+        products = await self.card_products(fresh=True)
+        plan = fd.pick_open_product(products, need, "gpt", replace(pol, auto_open=True), wallet)
+        if plan is None:
+            raise SupplierError(
+                "no card product fits",
+                outcome=Outcome.UNAVAILABLE,
+                error_code=dr.FUNDS_INSUFFICIENT,
+            )
+        first, last = fd.holder_for(cards)
+        resp = await self.client.request(
+            "POST",
+            "/cards/open",
+            json_body={
+                "product_code": plan.product_code,
+                "first_name": first,
+                "last_name": last,
+                "init_amount": wire_amount(plan.init),
+            },
+            idempotency_key=key,
+        )
+        card = parse_card_open(resp.data)
+        if card is None:
+            raise SupplierError(
+                "unreadable card", outcome=Outcome.AMBIGUOUS, error_code="card_open_unreadable"
+            )
+        card_id, mask, fee = card
+        self._dedicated.add(int(card_id))
+        self._fund_cards_hit = self._wallet_hit = None
+        last4 = mask[-4:] if mask and mask[-4:].isdigit() else None
+        return DedicatedCard(
+            card_id, last4, plan.init, plan.init + (fee if fee is not None else plan.fee)
+        )
+
+    async def read_dedicated_card(self, card_id: str) -> DedicatedRead | None:
+        """``GET /cards/{id}`` (docs 6.5): state, balance and the number / expiry / CVV, for the
+        ONE zzshu POST. The caller holds the secret in memory only and drops it. ``None`` = the
+        card is not ours / unreadable."""
+        if not card_id.isdigit() or len(card_id) > 13:
+            return None
+        self._dedicated.add(int(card_id))
+        try:
+            resp = await self.client.get(f"/cards/{card_id}")
+        except SupplierError:
+            return None
+        detail = parse_card_detail(resp.data)
+        if detail is None:
+            return None
+        secret = parse_card_secret(detail)
+        last4 = detail.pan[-4:] if detail.pan[-4:].isdigit() else None
+        return DedicatedRead(detail.status, detail.available, last4, secret)
+
+    async def finish_dedicated_card(self, card_id: str) -> Decimal | None:
+        """The order is over (or never reached the vendor): move what is left back to the wallet
+        (``POST /cards/refund``, the vendor keeps its minimum) and delete the card (which returns
+        the rest). Returns the leftover that went back (USD) or ``None`` when nothing could be
+        confirmed (the card stays; the caller audits it for staff)."""
+        try:
+            resp = await self.client.get(f"/cards/{card_id}")
+        except SupplierError:
+            return None
+        detail = parse_card_detail(resp.data)
+        if detail is None:
+            return None
+        if detail.status == "DELETED":
+            self._dedicated.discard(int(card_id))
+            return Decimal(0)
+        keep = (
+            _dec_or_none(resp.data.get("refund_keep_min"))
+            if isinstance(resp.data, Mapping)
+            else None
+        )
+        amt = (
+            detail.available - (keep if keep is not None and keep >= 0 else Decimal(1))
+        ).quantize(fd.CENT, rounding=ROUND_FLOOR)
+        if detail.status == "ACTIVE" and amt >= fd.SWEEP_MIN:
+            try:
+                await self.client.request(
+                    "POST",
+                    "/cards/refund",
+                    json_body={"card_id": int(card_id), "amount": wire_amount(amt)},
+                    idempotency_key=f"zzrefund:{card_id}:{int(amt * 100)}"[:80],
+                )
+            except SupplierError as exc:
+                log.warning("dedicated card refund refused reason=%s", exc.reason)
+        try:
+            await self.client.request(
+                "DELETE", f"/cards/{card_id}", idempotency_key=f"zzdel:{card_id}"
+            )
+        except SupplierError as exc:
+            log.warning("dedicated card delete refused reason=%s", exc.reason)
+            return None
+        self._dedicated.discard(int(card_id))
+        self._fund_cards_hit = self._wallet_hit = None
+        return detail.available
 
     async def _funding_card_problem(
         self, spec: dr.DirectSpec, cost: Money | None
@@ -1615,7 +1729,11 @@ class ZovoCardSupplier:
         phase = dr.order_phase(status)
         if phase == "failed":
             return Result(
-                Outcome.FATAL, error_code=f"order_{clean_status(status)}", upstream_ref=ref, **seen
+                Outcome.FATAL,
+                error_code=f"order_{clean_status(status)}",
+                upstream_ref=ref,
+                precharge_clean=isinstance(data, Mapping) and dr.failed_precharge_clean(data),
+                **seen,
             )
         if phase == "done":
             return await self._direct_status(spec, ref, rid, seen.get("account_mask"), None)
@@ -1694,6 +1812,7 @@ class ZovoCardSupplier:
                 vendor=vendor,
                 card_id=card_id,
                 card_last4=card_last4,
+                precharge_clean=dr.failed_precharge_clean(order),
             )
         if phase == "pending":
             return Result(
@@ -1974,6 +2093,41 @@ class CardDetail:
     @property
     def mask(self) -> str | None:
         return mask_pan(self.pan) if self.pan else None
+
+
+@dataclass(frozen=True)
+class DedicatedCard:
+    id: str
+    last4: str | None
+    loaded: Decimal  # USD put on the card
+    spent: Decimal  # USD taken from the wallet (load + opening fee)
+
+
+@dataclass(frozen=True)
+class CardSecret:
+    """Number, expiry, CVV of a dedicated card: in memory for one POST, never stored."""
+
+    pan: str = field(repr=False)
+    month: int = field(repr=False)
+    year: int = field(repr=False)
+    cvv: str = field(repr=False)
+
+
+@dataclass(frozen=True)
+class DedicatedRead:
+    status: str
+    available: Decimal
+    last4: str | None
+    secret: CardSecret | None = field(repr=False, default=None)
+
+
+def parse_card_secret(detail: CardDetail) -> CardSecret | None:
+    pan = re.sub(r"[ -]", "", detail.pan)
+    m = re.fullmatch(r"(0[1-9]|1[0-2])/([0-9]{2}|[0-9]{4})", detail.expire.strip())
+    if not (re.fullmatch(r"[0-9]{12,19}", pan) and m and re.fullmatch(r"[0-9]{3,4}", detail.cvv)):
+        return None
+    year = int(m.group(2))
+    return CardSecret(pan, int(m.group(1)), year + 2000 if year < 100 else year, detail.cvv)
 
 
 def _vcc_total(spec: VccSpec, prod: CardProduct) -> Decimal:

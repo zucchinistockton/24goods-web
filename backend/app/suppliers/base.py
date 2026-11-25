@@ -26,7 +26,7 @@ IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9._:-]{1,80}$")
 # Supplier codes double as the prefix of their secrets in the procurement env file.
 SUPPLIER_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{1,31}$")
 # adapters whose credentials come from the procurement env file (``<CODE>_[SANDBOX_]APP_SECRET``)
-CREDENTIAL_ADAPTERS: tuple[str, ...] = ("zovocard",)
+CREDENTIAL_ADAPTERS: tuple[str, ...] = ("zovocard", "zzshu")
 
 
 _DETAIL_BAD = re.compile(r"[^A-Za-z0-9_.:-]")
@@ -177,6 +177,16 @@ class Result:
     card_opened: tuple[str, Decimal] | None = None  # as Availability
     # direct submit: the USD the adapter moved from the wallet onto the funding card (ADR-048)
     funded: Decimal | None = None
+    # ADR-054 (zzshu): the dedicated card the adapter opened for the order. ``card_id`` /
+    # ``card_last4`` above name it (never a number); ``card_loaded`` = USD put on it,
+    # ``card_leftover`` = USD that went back to the wallet after the order (card deleted)
+    card_loaded: Decimal | None = None
+    card_leftover: Decimal | None = None
+    # direct (ZovoCard): the order failed DEFINITELY before any charge and holds nothing (status
+    # ``failed_precharge`` with its fee and funding hold released or none): ADR-054 lets the job
+    # go to the standby source
+    precharge_clean: bool = False
+    card_swept: bool = False  # the card was refunded and deleted: nothing is left to look after
     # direct submit: the vendor refused BEFORE an order existed AND the lookup by client request id
     # verified that none exists (the only case in which a new attempt key is allowed)
     no_order_verified: bool = False
@@ -245,6 +255,8 @@ class FundingPolicy:
     # USD the wallet must keep for paid direct orders not sent yet (their top-up / new card has not
     # happened): the sold-out check counts only what is left (owner 2026-11-21)
     reserved: Decimal = Decimal(0)
+    # ADR-054: the dedicated card of a zzshu order is loaded with cost x (1 + pct / 100)
+    zzshu_margin_pct: Decimal = Decimal(20)
 
 
 @dataclass(frozen=True)

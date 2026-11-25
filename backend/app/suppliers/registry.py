@@ -26,8 +26,13 @@ from app.suppliers.zovocard import (
     ZovoClient,
     ZovoConfig,
 )
+from app.suppliers.zzshu import PRODUCTION_BASE_URL as ZZSHU_BASE_URL
+from app.suppliers.zzshu import ZzshuClient, ZzshuConfig, ZzshuSupplier
 
-ADAPTERS: tuple[str, ...] = ("zovocard", "mock", "manual")
+ADAPTERS: tuple[str, ...] = ("zovocard", "zzshu", "mock", "manual")
+# the ZovoCard supplier (code) whose wallet funds the dedicated cards of a zzshu order; the env
+# variable ZZSHU_FUNDING_SUPPLIER overrides it
+ZZSHU_FUNDING_DEFAULT = "zovocard"
 DEV_ENVS = ("dev", "test")
 _MOCKS: dict[tuple[str, str], MockSupplier] = {}
 
@@ -71,6 +76,7 @@ def build_supplier(
     app_env: str,
     allow_production_writes: bool = False,
     http: httpx.AsyncClient | None = None,
+    funding: Supplier | None = None,
 ) -> Supplier:
     if adapter not in ADAPTERS:
         raise SupplierConfigError("unknown adapter")
@@ -90,6 +96,10 @@ def build_supplier(
         if key not in _MOCKS:
             _MOCKS[key] = MockSupplier(code, env=env)
         return _MOCKS[key]
+    if adapter == "zzshu":
+        return _build_zzshu(
+            code, env, environ, app_env, allow_production_writes, http=http, funding=funding
+        )
     default = PRODUCTION_BASE_URL if env == "production" else SANDBOX_BASE_URL
     sec = load_secrets(code, env, environ, default_base=default)
     if not sec.base_url.startswith("https://") and app_env not in DEV_ENVS:
@@ -102,6 +112,42 @@ def build_supplier(
         allow_production_writes=allow_production_writes,
     )
     return ZovoCardSupplier(code, ZovoClient(cfg, http=http))
+
+
+def _build_zzshu(
+    code: str,
+    env: str,
+    environ: Mapping[str, str],
+    app_env: str,
+    allow_production_writes: bool,
+    *,
+    http: httpx.AsyncClient | None,
+    funding: Supplier | None,
+) -> Supplier:
+    """``ZZSHU_APP_SECRET`` (the API key) / ``ZZSHU_BASE_URL``; the cards that pay its orders come
+    from the ZovoCard supplier ``ZZSHU_FUNDING_SUPPLIER`` (default ``zovocard``, same env)."""
+    sec = load_secrets(code, env, environ, default_base=ZZSHU_BASE_URL)
+    if not sec.base_url.startswith("https://") and app_env not in DEV_ENVS:
+        raise SupplierConfigError("supplier base URL must be https:// outside dev/test")
+    owns = funding is None
+    if funding is None:
+        fcode = environ.get("ZZSHU_FUNDING_SUPPLIER", "").strip() or ZZSHU_FUNDING_DEFAULT
+        funding = build_supplier(
+            code=fcode,
+            adapter="zovocard",
+            env=env,
+            environ=environ,
+            app_env=app_env,
+            allow_production_writes=allow_production_writes,
+            http=http,
+        )
+    cfg = ZzshuConfig(
+        base_url=sec.base_url,
+        api_key=sec.app_secret,
+        env=env,
+        allow_production_writes=allow_production_writes,
+    )
+    return ZzshuSupplier(code, ZzshuClient(cfg, http=http), funding, owns_funding=owns)
 
 
 __all__ = [
