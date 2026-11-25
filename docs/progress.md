@@ -14,6 +14,14 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
   while low); daily top-up cap 80 % used (once per UTC day) and a job refused with `funding_cap_reached` today
   (once per UTC day), both only with `auto_recharge` on and a cap above 0. Tests: test_card_funding_unit,
   test_procurement_breaker, test_zzshu. No migration.
+- **2026-11-25 vmcardio (backup card issuer) and snpay (德云付, payment channel) researched (docs only).** Notes:
+  [`docs/research/vmcardio/vmcardio-api.md`](research/vmcardio/vmcardio-api.md) and
+  [`docs/research/snpay/snpay-epay-api.md`](research/snpay/snpay-epay-api.md), vendor pages under `vendor/`.
+  Verified read-only from the dev box and c4: vmcardio V2 production token / balance / products work (no IP whitelist
+  in V2; sandbox is a separate account); snpay `api.php?act=query` works (merchant active). snpay V1 is the EPay
+  protocol: it can be added as one more EPay gateway in the console (Alipay) without code. vmcardio needs an adapter
+  (decision pending: dedicated cards for zzshu orders first). Credentials in `/root/.secrets/{vmcardio,snpay}.env`.
+
 - **2026-11-25 08:42 UTC PRODUCTION DEPLOY of #113 (zzshu standby provider, ADR-054; owner: "Deploying the zzshu
   provider ... Pro 20x to use the backup provider. The maximum limit per top-up transaction is $250").** c4 runs
   `431f5d5` (api + web revision verified), migration `0041_zzshu_adapter`. Dump

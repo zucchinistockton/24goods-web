@@ -1,0 +1,40 @@
+# VM_API
+
+## Docs
+- [接入指南](https://vmcardio.com/apidocuments/6664455m0.md): 
+- [环境配置](https://vmcardio.com/apidocuments/6664456m0.md): 
+- [全局错误码](https://vmcardio.com/apidocuments/6664457m0.md): 
+- [交易类型说明](https://vmcardio.com/apidocuments/6830857m0.md): 
+- [卡状态说明](https://vmcardio.com/apidocuments/6831007m0.md): 
+- VM卡操作 V1（仅限 2026-10-30 前已配置商户公钥的账户） [Webhook  验签接入说明](https://vmcardio.com/apidocuments/9364102m0.md): 
+- 通知 [WebHook](https://vmcardio.com/apidocuments/6664458m0.md): 
+- 变更日志 [变更日志](https://vmcardio.com/apidocuments/8987582m0.md): 
+- FAQ [FAQ](https://vmcardio.com/apidocuments/9338753m0.md): 
+
+## API Docs
+- VM卡操作 V1（仅限 2026-10-30 前已配置商户公钥的账户） [获取accessToken](https://vmcardio.com/apidocuments/295812044e0.md): > 本页展示的是加密前的请求参数和解密后的返回数据。V1 实际请求需按《接入指南》用 VM 公钥加密后放入 `{"content": "密文"}`，返回的 `data` 需用商户私钥解密。
+- VM卡操作 V1（仅限 2026-10-30 前已配置商户公钥的账户） [获取账号余额](https://vmcardio.com/apidocuments/295812053e0.md): > 本页展示的是加密前的请求参数和解密后的返回数据。V1 实际请求需按《接入指南》用 VM 公钥加密后放入 `{"content": "密文"}`，返回的 `data` 需用商户私钥解密。
+- VM卡操作 V1（仅限 2026-10-30 前已配置商户公钥的账户） [获取卡产品码](https://vmcardio.com/apidocuments/295812052e0.md): > 当前暂未开放额度卡（share）产品，返回示例中的 share 产品仅作字段说明。
+- VM卡操作 V1（仅限 2026-10-30 前已配置商户公钥的账户） [申请卡](https://vmcardio.com/apidocuments/295812045e0.md): > 本页展示的是加密前的请求参数和解密后的返回数据。V1 实际请求需按《接入指南》用 VM 公钥加密后放入 `{"content": "密文"}`，返回的 `data` 需用商户私钥解密。
+- VM卡操作 V1（仅限 2026-10-30 前已配置商户公钥的账户） [卡详情](https://vmcardio.com/apidocuments/295812046e0.md): > 本页展示的是加密前的请求参数和解密后的返回数据。V1 实际请求需按《接入指南》用 VM 公钥加密后放入 `{"content": "密文"}`，返回的 `data` 需用商户私钥解密。
+- VM卡操作 V1（仅限 2026-10-30 前已配置商户公钥的账户） [修改卡限额（仅适用额度卡）](https://vmcardio.com/apidocuments/304580736e0.md): > 当前暂未开放额度卡（share）产品，本接口暂不可用。
+- VM卡操作 V1（仅限 2026-10-30 前已配置商户公钥的账户） [冻结/解冻卡](https://vmcardio.com/apidocuments/295812047e0.md): > 本页展示的是加密前的请求参数和解密后的返回数据。V1 实际请求需按《接入指南》用 VM 公钥加密后放入 `{"content": "密文"}`，返回的 `data` 需用商户私钥解密。
+- VM卡操作 V1（仅限 2026-10-30 前已配置商户公钥的账户） [卡充值（仅适用储值卡）](https://vmcardio.com/apidocuments/295812049e0.md): > 本页展示的是加密前的请求参数和解密后的返回数据。V1 实际请求需按《接入指南》用 VM 公钥加密后放入 `{"content": "密文"}`，返回的 `data` 需用商户私钥解密。
+- VM卡操作 V1（仅限 2026-10-30 前已配置商户公钥的账户） [卡退款（仅适用储值卡）](https://vmcardio.com/apidocuments/295812050e0.md): > 本页展示的是加密前的请求参数和解密后的返回数据。V1 实际请求需按《接入指南》用 VM 公钥加密后放入 `{"content": "密文"}`，返回的 `data` 需用商户私钥解密。
+- VM卡操作 V1（仅限 2026-10-30 前已配置商户公钥的账户） [交易记录](https://vmcardio.com/apidocuments/295812051e0.md): > 本页展示的是加密前的请求参数和解密后的返回数据。V1 实际请求需按《接入指南》用 VM 公钥加密后放入 `{"content": "密文"}`，返回的 `data` 需用商户私钥解密。
+- VM卡操作 V1（仅限 2026-10-30 前已配置商户公钥的账户） [删卡](https://vmcardio.com/apidocuments/295812048e0.md): > 本页展示的是加密前的请求参数和解密后的返回数据。V1 实际请求需按《接入指南》用 VM 公钥加密后放入 `{"content": "密文"}`，返回的 `data` 需用商户私钥解密。
+- VM卡操作 V1（仅限 2026-10-30 前已配置商户公钥的账户） [卡列表](https://vmcardio.com/apidocuments/457519302e0.md): > 本页展示的是加密前的请求参数和解密后的返回数据。V1 实际请求需按《接入指南》用 VM 公钥加密后放入 `{"content": "密文"}`，返回的 `data` 需用商户私钥解密。
+- VM卡操作 V1（仅限 2026-10-30 前已配置商户公钥的账户） [获取卡流水](https://vmcardio.com/apidocuments/470558011e0.md): > 本页展示的是加密前的请求参数和解密后的返回数据。V1 实际请求需按《接入指南》用 VM 公钥加密后放入 `{"content": "密文"}`，返回的 `data` 需用商户私钥解密。
+- VM卡操作 V2（所有账户可用，推荐） [获取accessToken](https://vmcardio.com/apidocuments/531022407e0.md): > V2 无需加密，请求直接提交本页所示的明文 JSON，返回的 `data` 即为本页所示的明文对象。
+- VM卡操作 V2（所有账户可用，推荐） [获取账号余额](https://vmcardio.com/apidocuments/531009462e0.md): > V2 无需加密，请求直接提交本页所示的明文 JSON，返回的 `data` 即为本页所示的明文对象。
+- VM卡操作 V2（所有账户可用，推荐） [获取卡产品码](https://vmcardio.com/apidocuments/531009838e0.md): > 当前暂未开放额度卡（share）产品，返回示例中的 share 产品仅作字段说明。
+- VM卡操作 V2（所有账户可用，推荐） [申请卡](https://vmcardio.com/apidocuments/531009974e0.md): > V2 无需加密，请求直接提交本页所示的明文 JSON，返回的 `data` 即为本页所示的明文对象。
+- VM卡操作 V2（所有账户可用，推荐） [卡详情](https://vmcardio.com/apidocuments/531010043e0.md): > V2 无需加密，请求直接提交本页所示的明文 JSON，返回的 `data` 即为本页所示的明文对象。
+- VM卡操作 V2（所有账户可用，推荐） [修改卡限额（仅适用额度卡）](https://vmcardio.com/apidocuments/531010063e0.md): > 当前暂未开放额度卡（share）产品，本接口暂不可用。
+- VM卡操作 V2（所有账户可用，推荐） [冻结/解冻卡](https://vmcardio.com/apidocuments/531010087e0.md): > V2 无需加密，请求直接提交本页所示的明文 JSON，返回的 `data` 即为本页所示的明文对象。
+- VM卡操作 V2（所有账户可用，推荐） [卡充值（仅适用储值卡）](https://vmcardio.com/apidocuments/531010104e0.md): > V2 无需加密，请求直接提交本页所示的明文 JSON，返回的 `data` 即为本页所示的明文对象。
+- VM卡操作 V2（所有账户可用，推荐） [卡退款（仅适用储值卡）](https://vmcardio.com/apidocuments/531010113e0.md): > V2 无需加密，请求直接提交本页所示的明文 JSON，返回的 `data` 即为本页所示的明文对象。
+- VM卡操作 V2（所有账户可用，推荐） [交易记录](https://vmcardio.com/apidocuments/531010354e0.md): > V2 无需加密，请求直接提交本页所示的明文 JSON，返回的 `data` 即为本页所示的明文对象。
+- VM卡操作 V2（所有账户可用，推荐） [删卡](https://vmcardio.com/apidocuments/531010363e0.md): > V2 无需加密，请求直接提交本页所示的明文 JSON，返回的 `data` 即为本页所示的明文对象。
+- VM卡操作 V2（所有账户可用，推荐） [卡列表](https://vmcardio.com/apidocuments/531010372e0.md): > V2 无需加密，请求直接提交本页所示的明文 JSON，返回的 `data` 即为本页所示的明文对象。
+- VM卡操作 V2（所有账户可用，推荐） [获取卡流水](https://vmcardio.com/apidocuments/531010392e0.md): > V2 无需加密，请求直接提交本页所示的明文 JSON，返回的 `data` 即为本页所示的明文对象。
