@@ -13,4 +13,6 @@ regexes = [
   '''https?://api:(8000|8081)(/[A-Za-z0-9/_.-]*)?''',
   # .env.example placeholders, e.g. APP_SEED_ADMIN_PASSWORD=REPLACE_MIN_12_CHARS
   '''[A-Z0-9_]+=REPLACE_[A-Z0-9_]+''',
+  # card.zzshu.pro vendor docs (docs/research/zzshu/): the documented placeholder order key
+  '''"cardKey": "ABCDEF-123456"''',
 ]
