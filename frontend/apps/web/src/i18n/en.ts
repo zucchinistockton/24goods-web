@@ -3,7 +3,7 @@ import { BRAND } from '@24goods/shared'
 
 export default {
   challenge: {"title": "Security verification", "accessibility": "If verification is slow or unavailable, cancel and contact support. No payment has been confirmed by this check.", "visit": "Verify access to the store", "visitNote": "Complete the configured access check before browsing.", "verify": "Verify and continue", "visitBanner": "Some content on this page needs a quick access check."},
-  epay: { title: 'Pay securely', checkPayee: 'Check the payee and amount in your payment app before confirming.', openCashier: 'Open payment cashier', unknown: 'The result is uncertain. Do not pay again; refresh or contact support.', expires: 'Expires: {at}', refresh: 'Refresh payment status' },
+  epay: { title: 'Pay securely', scan: 'Scan the QR code with Alipay to pay.', openAlipay: 'Open Alipay to pay', unknown: 'The result is uncertain. Do not pay again; refresh or contact support.', expires: 'Expires: {at}', refresh: 'Refresh payment status' },
   app: {
     name: BRAND.name,
     tagline: 'Accounts, gift cards & digital services — delivered fast',

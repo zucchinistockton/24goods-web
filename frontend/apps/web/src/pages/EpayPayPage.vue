@@ -14,7 +14,9 @@ const failed = ref(false)
 const busy = ref(false)
 const qr = computed(() => view.value?.qr_svg ? `data:image/svg+xml;base64,${btoa(view.value.qr_svg)}` : '')
 const done = computed(() => !!view.value && ['paid', 'delivered', 'completed'].includes(view.value.status))
-const redirect = computed(() => view.value?.redirect_url ? safePayUrl(view.value.redirect_url, undefined, view.value.redirect_host ? [view.value.redirect_host] : []) : null)
+const touch = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches
+// Only the shop's own hop link or Alipay's own QR host: never an upstream gateway domain.
+const openUrl = computed(() => touch && view.value?.open_url ? safePayUrl(view.value.open_url, undefined, ['qr.alipay.com']) : null)
 async function load() {
   if (busy.value) return
   busy.value = true
@@ -45,8 +47,8 @@ onBeforeUnmount(() => clearInterval(timer))
         <p v-else-if="view.expired">{{ t('pay.expired') }}</p>
         <template v-else>
           <img v-if="qr" :src="qr" :alt="t('pay.qrAlt')" width="240" height="240" />
-          <p>{{ t('epay.checkPayee') }}</p>
-          <a v-if="redirect" :href="redirect" class="wallet-link" rel="noreferrer">{{ t('epay.openCashier') }}</a>
+          <p>{{ t('epay.scan') }}</p>
+          <a v-if="openUrl" :href="openUrl" class="wallet-link" rel="noreferrer">{{ t('epay.openAlipay') }}</a>
           <p v-if="view.attempt_status === 'unknown'">{{ t('epay.unknown') }}</p>
           <p v-if="view.expires_at" class="muted">{{ t('epay.expires', { at: new Date(view.expires_at).toLocaleString(locale) }) }}</p>
         </template>
