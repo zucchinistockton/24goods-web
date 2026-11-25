@@ -160,12 +160,12 @@ TEXTS: dict[str, dict[str, str]] = {
         "proc.pause_reason": "原因：{reason}（{kind}）",
         "proc.wallet_low": "{code} 钱包余额偏低：{balance} USD（低于 {limit} USD 提醒）",
         "proc.points_low": (
-            "card.zzshu.pro 积分偏低：剩余 {points}（{limit} 及以下提醒）；" "每成功一单消耗 1 点"
+            "card.zzshu.pro 积分偏低：剩余 {points}（{limit} 及以下提醒）；每成功一单消耗 1 点"
         ),
         "proc.points_low_hint": "请到 card.zzshu.pro 购买积分，以免新的 zzshu 订单无法处理",
         "proc.cap_80": "每日开卡充值额度已用 80%：今日已用 {spent} / {cap} USD",
         "proc.cap_reached": (
-            "每日开卡充值额度已用完（{cap} USD）：" "新的卡充值将等到 UTC 00:00 或调高额度后进行"
+            "每日开卡充值额度已用完（{cap} USD）：新的卡充值将等到 UTC 00:00 或调高额度后进行"
         ),
         "proc.cap_hint": "如有需要，请在采购资金设置中调高每日额度",
         "proc.wallet_low_hint": "请给供应商钱包充值，以免无法开新卡和自动充值",
