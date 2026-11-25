@@ -100,6 +100,7 @@ class FundingIn(BaseModel):
     cancel_renewal_before_upgrade: StrictBool | None = None
     wallet_alert_usd: Decimal | None = Field(default=None, ge=0, le=100000)
     daily_cap_usd: Decimal | None = Field(default=None, ge=0, le=10000)
+    zzshu_card_margin_pct: Decimal | None = Field(default=None, ge=0, le=100)
     per_topup_max_usd: Decimal | None = Field(default=None, ge=0, le=5000)
     bin_priority: list[str] | None = Field(default=None, max_length=fs.MAX_BINS)
     totp_code: str = Field(min_length=6, max_length=8, repr=False)

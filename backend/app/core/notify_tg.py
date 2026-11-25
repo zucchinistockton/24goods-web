@@ -89,6 +89,10 @@ TEXTS: dict[str, dict[str, str]] = {
         "orders (check the funding card); re-enable it in the console when fixed",
         "proc.cost_over": "Direct job ...{offer}: a completed order cost MORE than its budget; "
         "check the supplier's price and the offer's cost estimate",
+        "proc.cooldown": "ZovoCard direct orders failed before any charge repeatedly: new "
+        "orders go to the standby source (zzshu) first for a while. Check the funding cards",
+        "proc.zzshu_card": "zzshu job ...{offer}: its dedicated card was not swept back to the "
+        "wallet (card id in the job timeline); look at it by hand",
         "proc.supplier_paused": "Supplier {code} ({env}) is paused for new orders",
         "proc.pause_reason": "Reason: {reason} ({kind})",
         "proc.wallet_low": "{code} wallet is low: {balance} USD (alert below {limit} USD)",
@@ -137,6 +141,10 @@ TEXTS: dict[str, dict[str, str]] = {
         "直充下单已暂停，请检查采购进程",
         "proc.offer_off": "直充货源 ...{offer} 因连续拒付被关闭，请检查付款卡后重新启用",
         "proc.cost_over": "直充任务 ...{offer}：已完成订单成本超出预算，请核对供应商价格与成本估算",
+        "proc.cooldown": "ZovoCard 直充订单多次在扣款前失败：一段时间内新订单将优先走备用货源"
+        "（zzshu），请检查付款卡",
+        "proc.zzshu_card": "zzshu 任务 ...{offer}：专用卡余额未退回钱包（卡号见任务时间线），"
+        "请人工处理",
         "proc.supplier_paused": "供应商 {code}（{env}）已暂停接收新订单",
         "proc.pause_reason": "原因：{reason}（{kind}）",
         "proc.wallet_low": "{code} 钱包余额偏低：{balance} USD（低于 {limit} USD 提醒）",

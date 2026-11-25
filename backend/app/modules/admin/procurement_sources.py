@@ -33,6 +33,7 @@ from app.suppliers.base import OfferSpec
 from app.suppliers.zovocard import direct as dr
 from app.suppliers.zovocard.direct import direct_spec
 from app.suppliers.zovocard.supplier import cdk_issue_body, vcc_spec
+from app.suppliers.zzshu import zzshu_spec
 
 router = APIRouter(prefix="/admin/procurement/sources", tags=["admin"])
 
@@ -156,8 +157,10 @@ def _card_mode_guard(kind: str, p: OfferParams) -> None:
         )
 
 
-def _valid_params(kind: str, params: dict[str, Any]) -> bool:
+def _valid_params(kind: str, params: dict[str, Any], adapter: str = "zovocard") -> bool:
     spec = OfferSpec(kind=kind, params=params)  # type: ignore[arg-type]
+    if adapter == "zzshu":  # ADR-054: direct only, plan + region, no card parameters
+        return kind == "direct" and zzshu_spec(spec) is not None
     if kind == "vcc":
         return vcc_spec(spec) is not None
     if kind == "direct":
@@ -178,6 +181,13 @@ async def _direct_checks(
     never a card bought for a buyer (H1), and in production a real buyer's session never goes to a
     sandbox supplier (S-L1)."""
     if offer_kind != "direct":
+        return
+    if supplier.adapter == "zzshu":  # its cards are opened per order: no funding card to vet
+        if enabling and res.settings.env == "prod" and supplier.env == "sandbox":
+            raise Validation(
+                "A sandbox supplier cannot take real buyers' sessions in production",
+                code="sandbox_in_prod",
+            )
         return
     if params.get("vendor_switch") is True and supplier.env == "production":
         # the vendor cannot restrict the switch pool yet: a switched order could pay with a card
@@ -413,7 +423,7 @@ async def add_source(
         raise NotFound("Supplier not found")
     _card_mode_guard(kind, body.params)
     params = _params(body.params, kind)
-    if not _valid_params(kind, params):
+    if not _valid_params(kind, params, supplier.adapter):
         raise Validation("These source parameters cannot be sent to a supplier", code="bad_params")
     await _options_guard(db, tid, body.variant_id, kind, params)
     existing = await _offers(db, tid, body.product_id, body.variant_id)
@@ -566,7 +576,7 @@ async def update_source(
     if body.params is not None:
         _card_mode_guard(offer.kind, body.params)
         params = _params(body.params, offer.kind)
-        if not _valid_params(offer.kind, params):
+        if not _valid_params(offer.kind, params, supplier.adapter):
             raise Validation(
                 "These source parameters cannot be sent to a supplier", code="bad_params"
             )

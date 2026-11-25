@@ -628,6 +628,8 @@ export interface FundingSettings {
   cancel_renewal_before_upgrade?: boolean
   /** ADR-049: Telegram alert when the ZovoCard wallet is below this (USD; 0 = off) */
   wallet_alert_usd: string
+  /** ADR-054: a zzshu order's dedicated card is loaded with the plan cost x (1 + this / 100); 0-100 */
+  zzshu_card_margin_pct: string
   daily_cap_usd: string
   per_topup_max_usd: string
   bin_priority: string[]

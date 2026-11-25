@@ -136,6 +136,7 @@ async def policy(
             if st["auto_recharge"]
             else Decimal(0)
         ),
+        zzshu_margin_pct=Decimal(str(st["zzshu_card_margin_pct"])),
     )
 
 

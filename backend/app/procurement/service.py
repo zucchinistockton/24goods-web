@@ -31,7 +31,7 @@ from app.suppliers.base import (
     SupplierError,
     clean_detail,
 )
-from app.suppliers.registry import SupplierConfigError, build_supplier
+from app.suppliers.registry import ZZSHU_FUNDING_DEFAULT, SupplierConfigError, build_supplier
 
 log = logging.getLogger("app.procurement")
 
@@ -56,6 +56,18 @@ class SupplierRef:
 def make_supplier(ctx: ProcurementContext, ref: SupplierRef) -> Supplier:
     if ctx.supplier_factory is not None:
         return ctx.supplier_factory(ref)
+    funding = None
+    if ref.adapter == "zzshu":
+        # ADR-054: the ZovoCard supplier that funds its cards is the ENGINE's shared instance (it
+        # keeps the "never a funding card" set of dedicated cards); it is closed with the engine,
+        # never with a zzshu supplier
+        fcode = ctx.environ.get("ZZSHU_FUNDING_SUPPLIER", "").strip() or ZZSHU_FUNDING_DEFAULT
+        fkey = ("zovocard", fcode, ref.env)
+        funding = ctx.suppliers.get(fkey)
+        if funding is None:
+            funding = ctx.suppliers.setdefault(
+                fkey, make_supplier(ctx, replace(ref, code=fcode, adapter="zovocard"))
+            )
     return build_supplier(
         code=ref.code,
         adapter=ref.adapter,
@@ -64,6 +76,7 @@ def make_supplier(ctx: ProcurementContext, ref: SupplierRef) -> Supplier:
         app_env=ctx.settings.env,
         allow_production_writes=ctx.settings.procurement_allow_production_writes,
         http=ctx.http,
+        funding=funding,
     )
 
 

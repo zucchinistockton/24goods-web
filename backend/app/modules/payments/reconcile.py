@@ -609,7 +609,12 @@ async def alert_declining_offers(
                 .where(
                     AuditLog.tenant_id == tid,
                     AuditLog.action.in_(
-                        ("procurement.offer_declining", "procurement.cost_over_bound")
+                        (
+                            "procurement.offer_declining",
+                            "procurement.cost_over_bound",
+                            "procurement.direct_cooldown",
+                            "procurement.zzshu_card_unswept",
+                        )
                     ),
                     AuditLog.created_at > now - timedelta(hours=24),
                 )
@@ -620,7 +625,11 @@ async def alert_declining_offers(
     )
     await db.rollback()
     for aid, target, action in rows:
-        key = "proc.cost_over" if action == "procurement.cost_over_bound" else "proc.offer_off"
+        key = {
+            "procurement.cost_over_bound": "proc.cost_over",
+            "procurement.direct_cooldown": "proc.cooldown",
+            "procurement.zzshu_card_unswept": "proc.zzshu_card",
+        }.get(action, "proc.offer_off")
         notify_tg.notify_bg(
             res,
             tid,

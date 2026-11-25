@@ -30,6 +30,13 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
   `~/.secrets/zovocard.env`; old api.env in `/opt/kesiv/backups/api.env.bak-20261125T061717Z`); the vendor's backlog
   replayed: 105 deliveries 200, all stored and processed.
 
+- **2026-11-25 zzshu standby provider (`feat/zzshu-provider`, ADR-054).** card.zzshu.pro for ChatGPT direct top-ups:
+  adapter + mock + tests, definite pre-charge fallback from ZovoCard, automatic cool-down (3 pre-charge failures in 60 min
+  -> ZovoCard direct sources behind the others for 30 min, staff alert), a NEW dedicated card per zzshu order loaded with
+  cost x (1 + `zzshu_card_margin_pct`, default 20, admin Funding panel) and swept + deleted afterwards. Migration `0041`.
+  Not deployed. Setup steps in `docs/production.md` (zzshu). Next: create the supplier and its sources on production
+  after the review; check the real `funding_hold_status` vocabulary on the first live fallback.
+
 - **2026-11-23 06:50 UTC PRODUCTION DEPLOY of #108 (owner: "bypass 141 by default … deploy PR #105 … take the
   necessary actions").** c4 runs `fcfa678` (revision verified, no migration). `deploy/env/api.env` gained
   `APP_ZPAY_RELAY_ONLY=true` (old file in `/opt/kesiv/backups/predeploy-20261123T064918Z/api.env.bak`). Dump

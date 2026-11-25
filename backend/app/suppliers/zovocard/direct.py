@@ -45,6 +45,18 @@ NOT_CHARGED = frozenset({"cancelled", "failed_precharge"})
 NOTHING_HELD_FEE = frozenset({"released", "refunded", "none"})
 
 
+def failed_precharge_clean(order: Mapping[str, Any]) -> bool:
+    """ADR-054: the order failed DEFINITELY before any charge. Only ``failed_precharge`` whose
+    service fee is released / refunded / none and whose funding hold (when the vendor states one)
+    is too. Anything else (declined, cancelled, a held or settled fee, a missing fee status) may
+    have charged or holds money: never a reason to try another source."""
+    if str(order.get("status") or "").strip().lower() != "failed_precharge":
+        return False
+    fee = str(order.get("service_fee_status") or "").strip().lower()
+    hold = str(order.get("funding_hold_status") or "").strip().lower()
+    return fee in NOTHING_HELD_FEE and hold in ("", *NOTHING_HELD_FEE)
+
+
 # issue #29 / review-v12 §21: how the funding card of a direct order is chosen
 CARD_MODES = ("fixed", "auto_existing")
 CARD_MODE_RESERVED = "auto_issue"  # issuing a NEW card per order: reserved, refused (§21.4)
@@ -565,6 +577,7 @@ __all__ = [
     "client_request_id",
     "delivery_text",
     "direct_spec",
+    "failed_precharge_clean",
     "order_body",
     "order_id_of",
     "order_phase",
