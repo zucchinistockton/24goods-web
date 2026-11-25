@@ -123,6 +123,38 @@ async def test_create_payment_ambiguous_answers_are_not_refusals(response):
     assert not isinstance(caught.value, (ZPayRefused, ZPayUnreachable))
 
 
+@pytest.mark.parametrize(
+    ("gateway", "payurl", "ok"),
+    [
+        ("https://api.snpay.cn", "https://www.snpay.cn/pay/alipay/123/", True),  # 2026-11-25 snpay
+        ("https://api.snpay.cn", "https://snpay.cn/pay/1", True),
+        ("https://api.snpay.cn", "https://qr.alipay.com/abc", True),
+        ("https://api.snpay.cn", "https://evil.cn/pay/1", False),
+        ("https://api.snpay.cn", "https://snpay.cn.evil.com/pay/1", False),
+        ("https://api.snpay.cn", "https://xsnpay.cn/pay/1", False),
+        ("https://pay.shop.com.cn", "https://www.shop.com.cn/p", True),
+        ("https://pay.shop.com.cn", "https://other.com.cn/p", False),
+        ("https://p.example", "http://www.p.example/x", False),  # never plain http
+    ],
+)
+async def test_create_payment_accepts_the_providers_own_site_only(gateway, payurl, ok):
+    http = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, json={"code": 1, "trade_no": "1", "payurl": payurl})
+        )
+    )
+    c = ZPayClient(
+        ZPayConfig("pid", "k" * 16, gateway, gateway, "https://s/n", "https://s/r"), http
+    )
+    if ok:
+        out = await c.create_payment("GX1", "i", Decimal("1.00"), "1.1.1.1")
+        assert out["kind"] == "redirect" and out["payload"] == payurl
+    else:
+        with pytest.raises(ZPayQueryError) as caught:
+            await c.create_payment("GX1", "i", Decimal("1.00"), "1.1.1.1")
+        assert not isinstance(caught.value, ZPayRefused)
+
+
 # ------------------------------------------------------------------------------ helpers
 async def _add_gateway(env, admin, monkeypatch, pid, *, priority=None, enable=True):
     async def vetted(url):

@@ -30,6 +30,33 @@ CHANNEL = "zpay_alipay"
 PAY_TYPE = "alipay"
 
 
+# two-label public suffixes seen for payment providers: the registrable domain is then 3 labels
+_TWO_LABEL_SUFFIXES = frozenset(
+    {
+        "com.cn",
+        "net.cn",
+        "org.cn",
+        "gov.cn",
+        "edu.cn",
+        "com.hk",
+        "com.tw",
+        "co.jp",
+        "co.uk",
+        "com.au",
+    }
+)
+
+
+def _site(gateway_host: str) -> str:
+    """The gateway's registrable domain (``api.snpay.cn`` -> ``snpay.cn``): a cashier link on the
+    provider's own site (``www.snpay.cn``) is the provider's, a link anywhere else is refused."""
+    labels = gateway_host.lower().rstrip(".").split(".")
+    if len(labels) < 2 or not all(labels):
+        return ""
+    n = 3 if ".".join(labels[-2:]) in _TWO_LABEL_SUFFIXES else 2
+    return ".".join(labels[-n:]) if len(labels) >= n else ""
+
+
 class ZPayQueryError(Exception):
     """Re-query failed (transport / protocol). Message never contains the key or URL."""
 
@@ -311,12 +338,16 @@ class ZPayClient:
         value, kind = (qr, "qr") if qr else (redirect, "redirect")
         parsed = urlsplit(value)
         host = (parsed.hostname or "").lower()
+        site = _site(urlsplit(self.config.gateway).hostname or "")
         approved = {
             urlsplit(self.config.gateway).hostname,
             "qr.alipay.com",
             "www.alipay.com",
             "pay.weixin.qq.com",
         }
+        if site and (host == site or host.endswith("." + site)):
+            # 2026-11-25 snpay: the API host is api.snpay.cn, the cashier link www.snpay.cn
+            approved.add(host)
         if (
             not value
             or len(value) > 2048
