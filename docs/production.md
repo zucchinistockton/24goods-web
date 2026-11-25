@@ -160,6 +160,32 @@ The ZPay client therefore has a fallback path (`backend/app/payments/egress.py`)
 - Check: Admin -> Settings -> Payment -> Test now (expects `-1 订单不存在` for the random probe).
 - Removal: clear `APP_ZPAY_RELAYS`, redeploy the api, stop the relay service.
 
+## zzshu standby provider (ADR-054)
+
+card.zzshu.pro takes ChatGPT direct orders when ZovoCard fails before any charge, or first when staff / the cool-down
+put it first. Setup (production needs the owner's go-ahead; nothing here is done by the deploy itself):
+
+1. Procurement env file (`deploy/env/procurement.env`, never in git): `ZZSHU_APP_SECRET=<API key from card.zzshu.pro>`
+   (the key's points = remaining successful activations; 1 per success). Optional: `ZZSHU_BASE_URL` (default
+   `https://card.zzshu.pro/api/v1/third-party`), `ZZSHU_FUNDING_SUPPLIER` (default `zovocard`: the supplier whose wallet
+   opens the dedicated cards). Restart `procurement`. The procurement container reaches card.zzshu.pro and zovocard.com
+   only (no other egress).
+2. Console -> Procurement -> Suppliers: add a supplier, adapter `zzshu`, code `zzshu`, env `production` (a
+   production supplier also asks for your password and stays disabled until `APP_PROCUREMENT_ALLOW_PRODUCTION` is set),
+   then "Test connection" (reads `GET /user` points and the funding wallet).
+3. Console -> Procurement -> Cards -> Card funding: `auto_recharge` ON (zzshu opens a card per order, so it needs the
+   master switch and the daily cap), set `zzshu card margin` (default 20 %; the owner wants it high).
+4. Sources, one per ChatGPT variant that has a zzshu plan (go, plus, pro_5x, pro_20x in PH / US / EG / CL; JP and the
+   other plans cannot have one): product / variant -> supplier `zzshu`, params `product gpt`, the SAME `plan` and
+   `payment_country` as the variant, cost estimate in USD (what the plan costs us; the card is loaded with it x 1.2),
+   priority AFTER the ZovoCard source (for example ZovoCard 10, zzshu 20), then enable.
+5. Make zzshu primary by hand: give its source a smaller priority than ZovoCard's (or disable the ZovoCard source);
+   back again the same way. Automatic: 3 definite pre-charge ZovoCard failures within 60 minutes put ZovoCard's direct
+   sources behind zzshu for 30 minutes (Telegram alert "ZovoCard direct orders failed before any charge repeatedly").
+6. Watch: `procurement.precharge_failover`, `procurement.zzshu_card` (card id, last four, loaded, leftover) in the job
+   timeline; `procurement.zzshu_card_unswept` = a card still holds money, look at it by hand; `create_unconfirmed` =
+   the zzshu answer was lost, check the zzshu order history before anything else (the order may exist and be paid).
+
 ## SEO and Google Search Console (review-v5.2 §6, ADR-024)
 
 - Public pages (`/`, `/p/*`, `/a/*`, `/help`) are rendered by the API into the SPA shell for crawlers;

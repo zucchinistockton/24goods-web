@@ -672,3 +672,56 @@ shop refused sessions whose short-lived access token had expired although ZovoCa
 
 **Consequences.** Upgrades earn the full margin by default; staff can switch to difference pricing and renewal cancelling
 without a deploy. Buyers stop resubmitting dead sessions blindly.
+### ADR-054: card.zzshu.pro as the standby provider of ChatGPT direct top-ups (owner 2026-11-25)
+
+**Context.** ChatGPT direct orders depend on ZovoCard alone. Its checkout sometimes fails BEFORE any charge
+(`failed_precharge`, vendor event codes such as `checkout_unusual_activity`, `checkout_pricing_unavailable:401`); those
+jobs stopped in `needs_manual` although nothing was spent. card.zzshu.pro offers the same top-up through
+`POST /orders/direct` (vendor docs: `docs/research/zzshu/zzshu-gpt-api.md`) but is paid with a bank card WE hand over
+per order together with the buyer's session, and it has no idempotency key.
+
+**Decision.**
+- Adapter `zzshu` (`app/suppliers/zzshu/`, own bounded client: 5 s / 30 s timeouts, 1 MiB cap, strict parsing, production
+  write guard). Plans: go -> `go`, plus -> `plus`, pro_5x -> `pro5`, pro_20x -> `pro20`, always the FULL-price types
+  (upgrades are sold at full price, owner rule); regions PH, US, EG, CL (no JP). plus_half, pro_50x, Claude and Grok have
+  no zzshu source (the admin refuses such a source). Secret `ZZSHU_APP_SECRET` (API key), optional `ZZSHU_BASE_URL`,
+  `ZZSHU_FUNDING_SUPPLIER` (default `zovocard`, the supplier whose wallet funds the cards). Migration `0041` lets
+  `suppliers.adapter` be `zzshu`.
+- Points gate: `GET /user` points < 1 (or unreadable) = the source is not used (`points_exhausted`), fail closed, cached
+  60 s.
+- Dedicated card (mitigates sending a PAN to a third party): every order gets a NEW ZovoCard card opened just for it
+  (ADR-049 code: the owner's BIN priority picks the product) and loaded with `offer cost (USD) x (1 + margin)`, whole
+  dollars up; margin = funding setting `zzshu_card_margin_pct` (default 20, 0-100, admin Funding panel). It needs the
+  `auto_recharge` master switch and the daily cap, like every automatic wallet spend. Number / expiry / CVV are read from
+  `GET /cards/{id}` right before the one POST and the buyer's session comes from the sealed credential; both live in
+  memory for that call and are never stored, logged, audited or put in an exception. When the order is over (success or
+  failure) the leftover goes back (`POST /cards/refund`, then `DELETE /cards/{id}`) and the card id, last four, loaded
+  amount and leftover are recorded on the job (`card_id`, `card_last4`), in audit rows `procurement.zzshu_card` and in
+  the job timeline. A card that could not be swept raises `procurement.zzshu_card_unswept` (staff alert). The card is
+  never offered as a ZovoCard funding card (in-process exclusion set + `funding_card_clash`-style job record).
+- No idempotency key: the create is sent at most once per job. A create whose answer is lost is AMBIGUOUS, the job goes
+  to `needs_manual` (`create_unconfirmed`) with the card left untouched (it may be charged); staff check the zzshu
+  history. 429 / 42902 and 502 / 50300 mean nothing was created: retried with the SAME card. A definite refusal (40020,
+  40305, 40306) sweeps the card and goes to staff. A zzshu `failed` (re-read after 2.5 s as the docs advise) ends in
+  `needs_manual` with the card swept, never in a third source.
+- Fallback (the one exception to "a job holding a supplier order is never moved"): a ZovoCard direct order that failed
+  DEFINITELY before any charge, i.e. status `failed_precharge` with its service fee and funding hold released / refunded /
+  none (`Result.precharge_clean`, set by the adapter), fails over to the zzshu source of the same variant. Declined,
+  cancelled, a held or settled fee, a missing fee status or an unread order stay in `needs_manual`. The ZovoCard order id
+  stays in audit `procurement.precharge_failover` and in the job timeline; the job forgets the ZovoCard card / account
+  mask and starts the zzshu source like a fresh job (new idempotency key).
+- Primary switch: by hand with the existing source tools: give the zzshu source a smaller `priority` than the ZovoCard
+  one (or disable the ZovoCard offer); both are normal sources of the variant. Automatic: every definite pre-charge
+  failure of a ZovoCard direct order counts in Redis (`rl:proc:pcf:<supplier>`, fixed 60-minute window); at 3 the
+  supplier's direct sources are put BEHIND the others for 30 minutes (`rl:proc:cool:<supplier>`; constants in
+  `procurement/engine.py`), one critical audit row `procurement.direct_cooldown` is written and the API reconciler sends
+  the Telegram alert. Demoted, not removed: with nothing else usable ZovoCard is still tried. The breaker columns were
+  not reused: a supplier breaker stops the supplier's CDK and card products too.
+
+**Consequences.** A pre-charge ZovoCard failure no longer needs staff when a zzshu source exists. A card number does
+reach a third party (zzshu), which is why each card is new, holds only the plan cost plus the margin and is deleted at
+the end; a zzshu order that charged more than expected is limited by the margin. Each zzshu order costs a card opening
+fee; the wallet and daily cap guard it. The procurement Redis ACL only allows incr / expire / get / ttl, so the window is
+fixed, not sliding. Open: the real vendor's `funding_hold_status` values are unknown (a value outside released /
+refunded / none blocks the fallback, safe); zzshu's `is_subscription_cancelled = 0` after success is delivered anyway and
+recorded as `completed:renew_unconfirmed` for staff; a card left over after a lost create must be reviewed by hand.

@@ -21,7 +21,7 @@ const api = createSuppliersApi(client)
 const { t, locale } = useI18n()
 
 const items = ref<AdminSupplier[]>([])
-const adapters = ref<SupplierAdapter[]>(['zovocard', 'manual'])
+const adapters = ref<SupplierAdapter[]>(['zovocard', 'zzshu', 'manual'])
 const productionLocked = ref(true)
 const loading = ref(false)
 
