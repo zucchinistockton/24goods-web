@@ -1,8 +1,9 @@
 """Local pre-check of a buyer-pasted ChatGPT session (``chatgpt.com/api/auth/session`` JSON).
 
 Pure and offline: no network call, no logging. It rejects input that cannot work (a bare access
-token, truncated JSON, an expired token) before anything is sealed or sent to a supplier, and
-returns a non-secret summary for the UI. The access-token payload is decoded **without** verifying
+token, truncated JSON, an expired session) before anything is sealed or sent to a supplier, and
+returns a non-secret summary for the UI. An expired access token is accepted (the supplier
+renews it from the session token). The access-token payload is decoded **without** verifying
 its signature, so every field here is a hint: the supplier's preflight stays the truth
 (review-v12 §5).
 
@@ -105,8 +106,9 @@ def parse_gpt_session(raw: str, *, now: datetime | None = None) -> GptSession:
         access_expires = datetime.fromtimestamp(exp, tz=timezone.utc)
     except (OverflowError, OSError, ValueError) as exc:
         raise GptSessionError("malformed_access_token") from exc
-    if access_expires <= now:
-        raise GptSessionError("expired")
+    # An expired accessToken alone is no reason to refuse (owner 2026-11-25): the supplier's
+    # preflight and order renew it from the sessionToken (ZovoCard docs 6.18b). Only a session
+    # whose own ``expires`` has passed is dead.
 
     session_expires: datetime | None = None
     expires_raw = _str(data, "expires")

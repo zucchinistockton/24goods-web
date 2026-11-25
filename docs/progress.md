@@ -20,6 +20,15 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
   quotes. Live check 2026-11-25: Pro 5x CL quote ~CLP 86,365 = USD 84.8 vs bound USD 95.6. Also found: 459 ZovoCard
   webhooks rejected "bad signature" in 48 h (production holds a self-made secret; the vendor's `whsec_` secret from the
   dashboard was never configured), so the shop runs on polling only.
+- **2026-11-25 ADR-053 (`feat/direct-session-upgrade-settings`; owner: "proceed with development … by default upgrading
+  from Plus to Pro is charged at full price … the backend can be configured").** Funding switches
+  `upgrade_pay_difference` and `cancel_renewal_before_upgrade` (both off; admin Procurement → Funding); full-price
+  upgrade orders keep the upgrade quote for delivery but may buy the full plan; sessions refused only by their own
+  `expires`; buyer reasons `session` / `account_flagged` with fresh-Incognito-session instructions; vendor
+  `GPT_SESSION_INCOMPLETE` logged. **Production webhooks fixed 2026-11-25 06:17 UTC:** `APP_ZOVOCARD_WEBHOOK_SECRET` now
+  holds the vendor's API-key and general `whsec_` signing keys (owner, from zovocard.com/developer; also in
+  `~/.secrets/zovocard.env`; old api.env in `/opt/kesiv/backups/api.env.bak-20261125T061717Z`); the vendor's backlog
+  replayed: 105 deliveries 200, all stored and processed.
 
 - **2026-11-23 06:50 UTC PRODUCTION DEPLOY of #108 (owner: "bypass 141 by default … deploy PR #105 … take the
   necessary actions").** c4 runs `fcfa678` (revision verified, no migration). `deploy/env/api.env` gained

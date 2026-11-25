@@ -931,6 +931,7 @@ def _spec(
     tolerance: float = 0.10,
     funding: FundingPolicy | None = None,
     upgrade_usd: Decimal | None = None,
+    cancel_renewal: bool = False,
 ) -> JobSpec:
     voiding = mode in ("void", "dvoid")
     tol = Decimal(str(tolerance))
@@ -959,6 +960,7 @@ def _spec(
         quote_tolerance=tol,
         attempt=job.card_attempt or 0,
         upgrade_max_usd=upgrade_usd,
+        cancel_renewal=cancel_renewal,
     )
 
 
@@ -969,6 +971,10 @@ async def _upgrade_usd(db: AsyncSession, job: ProcurementJob) -> Decimal | None:
         select(Order.terms).where(Order.id == job.order_id, Order.tenant_id == job.tenant_id)
     )
     up = terms.get("upgrade") if isinstance(terms, dict) else None
+    if isinstance(up, dict) and up.get("credit_minor") == 0:
+        # owner 2026-11-25: the buyer paid the FULL list price; the upgrade quote is only the
+        # cheaper way to deliver it, and the full plan stays allowed when no upgrade is offered
+        return None
     try:
         return Decimal(str(up["usd"])) if isinstance(up, dict) and up.get("usd") else None
     except (InvalidOperation, ValueError):
@@ -1417,6 +1423,12 @@ async def _lease(ctx: ProcurementContext, job_id: uuid.UUID, tenant_id: uuid.UUI
             ctx.settings.direct_quote_tolerance,
             policy,
             await _upgrade_usd(db, job) if job.kind == "direct" else None,
+            cancel_renewal=(
+                job.kind == "direct"
+                and mode == "submit"
+                and (await topups.settings_of(db, job.tenant_id))["cancel_renewal_before_upgrade"]
+                is True
+            ),
         )
         lease = Lease(
             job.id, job.tenant_id, mode, job.state, job.step, job.idempotency_key,

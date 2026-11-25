@@ -1203,6 +1203,10 @@ class ZovoCardSupplier:
             return Result.from_error(exc)
         finally:
             body.clear()
+        if "GPT_SESSION_INCOMPLETE" in resp.warnings:
+            # 2026-11-24: the buyer pasted a trimmed session (no statsigContext = no real browser
+            # UA), which the vendor says is more often refused by OpenAI's risk control
+            log.warning("preflight warning GPT_SESSION_INCOMPLETE product=%s", spec.product)
         pf = dr.parse_preflight(resp.data, parse_time)
         if pf is None:
             return Result(Outcome.RETRYABLE, error_code="malformed_preflight")
@@ -1309,6 +1313,28 @@ class ZovoCardSupplier:
             return None
         return dr.parse_upgrade_quote(resp.data, plan)
 
+    async def _cancel_renewal(self, session: str, job: JobSpec, mask: str | None) -> str:
+        """``POST /gpt-direct/cancel-renewal`` (session only, docs 6.19) before an upgrade order
+        (owner 2026-11-25, funding switch, default off). The current plan stays until its end
+        date. Returns the vendor's ``renewal_status`` (``success`` / ``pending``) or an error tag;
+        logged either way and never blocks the order."""
+        key = "cr-" + hashlib.sha256(job.idempotency_key.encode()).hexdigest()[:40]
+        try:
+            resp = await self.client.request(
+                "POST",
+                "/gpt-direct/cancel-renewal",
+                json_body={"session": session},
+                idempotency_key=key,
+                endpoint="direct.cancel_renewal",
+            )
+        except SupplierError as exc:
+            outcome = "error:" + clean_status(exc.reason)
+        else:
+            data = resp.data if isinstance(resp.data, Mapping) else {}
+            outcome = clean_status(data.get("renewal_status")) or "unknown"
+        log.info("cancel renewal before upgrade account=%s outcome=%s", mask or "-", outcome)
+        return outcome
+
     async def _direct_run(self, job: JobSpec) -> Result:
         """:meth:`_direct_run_once`, with the top-up it made (if any) reported on EVERY answer, so
         the engine records the money that moved even when the order itself then fails."""
@@ -1372,6 +1398,7 @@ class ZovoCardSupplier:
             return Result(Outcome.FATAL, error_code=f"credential_{exc.code}")
         mask: str | None = None
         expires: datetime | None = None
+        renewal_done = False
         for attempt in (1, 2):
             pf = await self._preflight(spec, checked.canonical)
             if isinstance(pf, Result):
@@ -1411,6 +1438,9 @@ class ZovoCardSupplier:
                 if bound is not None and upgrade.usd > bound * (Decimal(1) + job.quote_tolerance):
                     return Result(Outcome.FATAL, error_code="upgrade_over_bound", **seen)
                 token, pay_currency = upgrade.token, upgrade.currency
+                if job.cancel_renewal and not renewal_done:
+                    renewal_done = True  # once per run, also when the preflight is repeated
+                    await self._cancel_renewal(checked.canonical, job, mask)
             elif job.upgrade_max_usd is not None:
                 # the buyer paid the UPGRADE price but the account is no longer upgradable: never
                 # buy the full plan for it (staff refund or retry later)

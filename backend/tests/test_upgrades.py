@@ -105,3 +105,67 @@ def test_the_upgrade_price_is_the_difference_plus_markup_with_the_shop_ending():
     unit = cm.recommend_minor(usd, D("6.680778"), st["round_step_minor"], st["price_ending"])
     assert unit == 70900  # 97.27 x 1.079 x 6.68 = 701.2 -> 702 -> 709
     assert min(unit, 72900) == 70900  # never above the list price (Pro 5x US 729)
+
+
+def test_upgrade_switches_are_off_by_default_and_validated():
+    """Owner 2026-11-25: upgrades sell at the full list price and no renewal is cancelled unless
+    staff switch it on (funding settings, 2FA write)."""
+    from app.core import funding as fs
+
+    d = fs.normalize(None)
+    assert d["upgrade_pay_difference"] is False and d["cancel_renewal_before_upgrade"] is False
+    on = fs.validate({"upgrade_pay_difference": True, "cancel_renewal_before_upgrade": True})
+    assert on["upgrade_pay_difference"] is True and on["cancel_renewal_before_upgrade"] is True
+    import pytest
+
+    with pytest.raises(ValueError):
+        fs.validate({"upgrade_pay_difference": "yes"})
+
+
+async def test_an_upgrade_order_pays_the_list_price_unless_the_switch_is_on(env):
+    from sqlalchemy import text
+
+    from app.modules.orders.service import pays_difference
+
+    async with env.owner_session() as db:
+        assert await pays_difference(db, env.tenant_id) is False
+        await db.execute(
+            text(
+                "UPDATE tenants SET funding_settings = "
+                "'{\"upgrade_pay_difference\": true}'::jsonb WHERE id = :t"
+            ),
+            {"t": env.tenant_id},
+        )
+        await db.commit()
+        assert await pays_difference(db, env.tenant_id) is True
+
+
+async def test_cancel_renewal_is_called_with_the_session_and_its_outcome_returned():
+    from app.suppliers.base import JobSpec, OfferSpec
+
+    vendor = MockZovo()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=create_mock_zovocard(vendor))
+    ) as http:
+        s = ZovoCardSupplier(
+            "zovocard",
+            ZovoClient(
+                ZovoConfig(base_url="http://m/openapi/v1", app_secret=OK_KEY),
+                http=http,
+                bucket=TokenBucket(6000, 100),
+            ),
+        )
+        job = JobSpec(
+            job_id="a" * 32,
+            step="submit",
+            idempotency_key="pj:" + "a" * 32,
+            offer=OfferSpec(kind="direct", params={"product": "gpt", "plan": "pro_5x"}),
+            cancel_renewal=True,
+        )
+        session = gpt_session("CR1")
+        assert await s._cancel_renewal(session, job, "m***@gmail.com") == "success"
+        assert vendor.renewal_cancels == 1
+        vendor.renewal_status = "pending"
+        assert await s._cancel_renewal(session, job, None) == "pending"
+        vendor.forced["/gpt-direct/cancel-renewal"].append("500")
+        assert (await s._cancel_renewal(session, job, None)).startswith("error:")

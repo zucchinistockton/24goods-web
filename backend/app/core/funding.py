@@ -6,7 +6,8 @@ default, so a bad row can never switch spending on: ``auto_recharge`` is the mas
 stays OFF by default. ADR-049 (owner 2026-11-21): ``auto_open_cards`` (open a new card when no
 card has a use left) and ``sweep_leftover`` (move a used-up card's money back to the wallet) are
 ON by default but only act while ``auto_recharge`` is on; ``wallet_alert_usd`` is the vendor
-wallet level below which staff get a Telegram alert.
+wallet level below which staff get a Telegram alert. 2026-11-25: ``upgrade_pay_difference`` and
+``cancel_renewal_before_upgrade`` (both OFF by default) steer plan upgrades.
 """
 
 from __future__ import annotations
@@ -27,7 +28,18 @@ LIMITS: dict[str, tuple[Decimal, Decimal, Decimal]] = {
     "wallet_alert_usd": (Decimal(60), Decimal(0), Decimal(100000)),
 }
 # switch -> default (ADR-049: the two card switches act only under ``auto_recharge``)
-BOOLS: dict[str, bool] = {"auto_recharge": False, "auto_open_cards": True, "sweep_leftover": True}
+BOOLS: dict[str, bool] = {
+    "auto_recharge": False,
+    "auto_open_cards": True,
+    "sweep_leftover": True,
+    # owner 2026-11-25: an upgrade of a running plan is sold at the FULL list price by default
+    # (the vendor still only charges us the difference); on = the buyer pays the difference +
+    # markup with the credit shown (ADR-052)
+    "upgrade_pay_difference": False,
+    # owner 2026-11-25: call the vendor's cancel-renewal (session only) before each upgrade order;
+    # off by default, results are logged either way and never block the order
+    "cancel_renewal_before_upgrade": False,
+}
 
 
 def defaults() -> dict[str, Any]:

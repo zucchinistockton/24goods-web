@@ -15,7 +15,7 @@ export interface SessionSummary {
   account: string | null
   /** the account's current plan as the session reports it (`free`, `plus`...) */
   plan: string | null
-  /** when the session stops working (the earlier of the token and session expiry), ms epoch */
+  /** when the session stops working: its `expires` (else the access token's expiry), ms epoch */
   validUntil: number | null
   /** set when the paste cannot be used; the order cannot continue with it */
   problem: SessionProblem | null
@@ -79,8 +79,10 @@ export function summariseSession(raw: string, kind: string | null, now: number =
     out.problem = 'missing_token'
     return out
   }
-  const ends = [jwtExpiry(access), Date.parse(str(data, 'expires') ?? '')].filter((t): t is number => t !== null && Number.isFinite(t))
-  out.validUntil = ends.length ? Math.min(...ends) : null
+  // owner 2026-11-25: the supplier renews an expired access token from the session token, so only
+  // the session's own `expires` decides (the access token's expiry is the fallback when it is absent)
+  const sessionEnd = Date.parse(str(data, 'expires') ?? '')
+  out.validUntil = Number.isFinite(sessionEnd) ? sessionEnd : jwtExpiry(access)
   if (out.validUntil !== null && out.validUntil <= now) out.problem = 'expired'
   return out
 }

@@ -75,7 +75,6 @@ def test_secret_never_appears_in_repr_or_error() -> None:
         (json.dumps(_session(accessToken="a.!!!.c")), "malformed_access_token"),
         (json.dumps(_session(accessToken=f"a.{_b64({'exp': True})}.c")), "malformed_access_token"),
         (json.dumps(_session(accessToken=f"a.{_b64({'exp': 1e30})}.c")), "malformed_access_token"),
-        (json.dumps(_session(accessToken=_jwt(NOW - timedelta(seconds=1)))), "expired"),
         (json.dumps(_session(expires="2026-01-01T00:00:00Z")), "expired"),
         (json.dumps(_session(account={"planType": "plus"})), "missing_account"),
         (json.dumps(_session(user="x")), "missing_account"),
@@ -85,3 +84,10 @@ def test_secret_never_appears_in_repr_or_error() -> None:
 )
 def test_rejections(raw: str, code: str) -> None:
     assert _code(raw) == code
+
+
+def test_an_expired_access_token_with_a_live_session_is_accepted() -> None:
+    """Owner 2026-11-25: the supplier renews the access token from the session token, so only
+    the session's own ``expires`` decides; the summary still shows when the access token ran out."""
+    s = parse_gpt_session(json.dumps(_session(accessToken=_jwt(NOW - timedelta(days=2)))), now=NOW)
+    assert s.access_expires_at < NOW and s.session_expires_at is not None

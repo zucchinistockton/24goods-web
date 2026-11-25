@@ -118,11 +118,25 @@ def _simulator_host(url: str) -> bool:
     return ip.is_loopback or (ip.is_private and not ip.is_link_local)
 
 
+def _warning_codes(raw: Any) -> tuple[str, ...]:
+    """Machine codes of a success answer's ``warnings`` (never their free text)."""
+    if not isinstance(raw, list):
+        return ()
+    out = []
+    for w in raw[:10]:
+        code = w.get("code") if isinstance(w, Mapping) else None
+        if isinstance(code, str) and re.fullmatch(r"[A-Z0-9_]{1,48}", code):
+            out.append(code)
+    return tuple(out)
+
+
 @dataclass(frozen=True)
 class ZovoResponse:
     status: int
     data: Any
     replayed: bool = False
+    # top-level ``warnings`` codes of a success answer (2026-11-24: ``GPT_SESSION_INCOMPLETE``)
+    warnings: tuple[str, ...] = ()
 
 
 class TokenBucket:
@@ -269,7 +283,12 @@ class ZovoClient:
         if 200 <= status < 300 and isinstance(body, dict):
             if code == 0 or (code is None and status == 202):
                 log.info("zovocard %s %s status=%d key=%s", method, path, status, kh)
-                return ZovoResponse(status=status, data=body.get("data"), replayed=replayed)
+                return ZovoResponse(
+                    status=status,
+                    data=body.get("data"),
+                    replayed=replayed,
+                    warnings=_warning_codes(body.get("warnings")),
+                )
             # HTTP 2xx with code != 0: an error in disguise; classify by the body code
             effective = code if isinstance(code, int) and 400 <= code <= 599 else 502
             self._fail(method, path, effective, error_code, write, endpoint, kh, resp)

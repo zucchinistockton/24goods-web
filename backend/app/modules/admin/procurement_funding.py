@@ -96,6 +96,8 @@ class FundingIn(BaseModel):
     auto_recharge: StrictBool | None = None
     auto_open_cards: StrictBool | None = None
     sweep_leftover: StrictBool | None = None
+    upgrade_pay_difference: StrictBool | None = None
+    cancel_renewal_before_upgrade: StrictBool | None = None
     wallet_alert_usd: Decimal | None = Field(default=None, ge=0, le=100000)
     daily_cap_usd: Decimal | None = Field(default=None, ge=0, le=10000)
     per_topup_max_usd: Decimal | None = Field(default=None, ge=0, le=5000)

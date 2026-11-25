@@ -622,6 +622,10 @@ export interface FundingSettings {
   auto_open_cards: boolean
   /** ADR-049: move a used-up card's money back to the wallet (only while auto_recharge is on) */
   sweep_leftover: boolean
+  /** owner 2026-11-25: off = upgrades sell at the full list price */
+  upgrade_pay_difference?: boolean
+  /** owner 2026-11-25: cancel auto-renewal (vendor API) before each upgrade order */
+  cancel_renewal_before_upgrade?: boolean
   /** ADR-049: Telegram alert when the ZovoCard wallet is below this (USD; 0 = off) */
   wallet_alert_usd: string
   daily_cap_usd: string

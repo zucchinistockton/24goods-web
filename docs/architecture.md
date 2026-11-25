@@ -649,3 +649,26 @@ called the existing staff read endpoint).
 - Chat: the inbox calls `POST /admin/conversations/{id}/read` when a chat is opened / a message arrives while it is open;
   conversation rows carry `awaiting_reply` (buyer wrote last) and `peer_read_id`; a realtime `read` event clears the
   dot for every agent and updates the read receipts ("Read" / "Sent" for the buyer, "Read by the buyer" for staff).
+
+### ADR-053: Upgrades sell at the list price; optional renewal cancel; sessions judged by the session token (owner 2026-11-25)
+
+**Context.** The owner does not want to lose money on upgrades whose remaining coverage is large: a buyer paying only the
+difference (ADR-052) can cost more than they paid. Production 2026-11-24 also showed ZovoCard refusing accounts with
+`checkout_unusual_activity` (OpenAI risk control) and once with a `:401` after which the session may be unusable, and the
+shop refused sessions whose short-lived access token had expired although ZovoCard renews it from the session token
+(docs 6.18b). ZovoCard offers `POST /gpt-direct/cancel-renewal` (session only, 6.19).
+
+**Decision.**
+- Funding settings (2FA write, audited) gain two switches, both OFF by default: `upgrade_pay_difference` (on = the ADR-052
+  difference pricing) and `cancel_renewal_before_upgrade` (on = call cancel-renewal right before each upgrade order;
+  logged, never blocks). By default an upgrade order costs the full list price (credit 0, nothing shown); procurement
+  still uses the vendor's upgrade quote as the cheaper way to deliver and may buy the full plan when no upgrade is
+  offered (`upgrade_max_usd` is only set for difference-priced orders).
+- A pasted session is refused only when its own `expires` has passed (server and client); an expired access token is
+  accepted.
+- The latest failed vendor event of a direct job gives the buyer a reason: `account_flagged` (risk control) or `session`
+  (refused / expired / 401), with instructions for a fresh session (computer, new Chrome Incognito window, e-mail and
+  password sign-in, no passkey, no phone) and that support was told. Vendor `GPT_SESSION_INCOMPLETE` warnings are logged.
+
+**Consequences.** Upgrades earn the full margin by default; staff can switch to difference pricing and renewal cancelling
+without a deploy. Buyers stop resubmitting dead sessions blindly.

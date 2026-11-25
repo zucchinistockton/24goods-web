@@ -24,6 +24,8 @@ const form = reactive({
   auto_recharge: false,
   auto_open_cards: true,
   sweep_leftover: true,
+  upgrade_pay_difference: false,
+  cancel_renewal_before_upgrade: false,
   wallet_alert_usd: '',
   daily_cap_usd: '',
   per_topup_max_usd: '',
@@ -39,6 +41,8 @@ function fill(v: FundingView) {
     auto_recharge: v.settings.auto_recharge,
     auto_open_cards: v.settings.auto_open_cards,
     sweep_leftover: v.settings.sweep_leftover,
+    upgrade_pay_difference: v.settings.upgrade_pay_difference ?? false,
+    cancel_renewal_before_upgrade: v.settings.cancel_renewal_before_upgrade ?? false,
     wallet_alert_usd: v.settings.wallet_alert_usd,
     daily_cap_usd: v.settings.daily_cap_usd,
     per_topup_max_usd: v.settings.per_topup_max_usd,
@@ -77,6 +81,8 @@ const changed = computed(() => {
     s.auto_recharge !== form.auto_recharge ||
     s.auto_open_cards !== form.auto_open_cards ||
     s.sweep_leftover !== form.sweep_leftover ||
+    (s.upgrade_pay_difference ?? false) !== form.upgrade_pay_difference ||
+    (s.cancel_renewal_before_upgrade ?? false) !== form.cancel_renewal_before_upgrade ||
     Number(s.wallet_alert_usd) !== Number(form.wallet_alert_usd) ||
     Number(s.daily_cap_usd) !== Number(form.daily_cap_usd) ||
     Number(s.per_topup_max_usd) !== Number(form.per_topup_max_usd) ||
@@ -98,6 +104,8 @@ async function save() {
         auto_recharge: form.auto_recharge,
         auto_open_cards: form.auto_open_cards,
         sweep_leftover: form.sweep_leftover,
+        upgrade_pay_difference: form.upgrade_pay_difference,
+        cancel_renewal_before_upgrade: form.cancel_renewal_before_upgrade,
         wallet_alert_usd: form.wallet_alert_usd.trim(),
         daily_cap_usd: form.daily_cap_usd.trim(),
         per_topup_max_usd: form.per_topup_max_usd.trim(),
@@ -146,6 +154,14 @@ const when = (iso: string | null) => (iso ? iso.replace('T', ' ').slice(0, 16) +
         <el-form-item :label="t('funding.sweep')">
           <el-switch v-model="form.sweep_leftover" :disabled="!form.auto_recharge" :aria-label="t('funding.sweep')" />
           <div class="muted small">{{ t('funding.sweepHint') }}</div>
+        </el-form-item>
+        <el-form-item :label="t('funding.upgradeDiff')">
+          <el-switch v-model="form.upgrade_pay_difference" :aria-label="t('funding.upgradeDiff')" />
+          <div class="muted small">{{ t('funding.upgradeDiffHint') }}</div>
+        </el-form-item>
+        <el-form-item :label="t('funding.cancelRenewal')">
+          <el-switch v-model="form.cancel_renewal_before_upgrade" :aria-label="t('funding.cancelRenewal')" />
+          <div class="muted small">{{ t('funding.cancelRenewalHint') }}</div>
         </el-form-item>
         <el-form-item :label="t('funding.alert')" :error="errors.wallet_alert_usd">
           <el-input v-model="form.wallet_alert_usd" inputmode="decimal" class="alert-input"><template #suffix>USD</template></el-input>
