@@ -8,8 +8,8 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 - **2026-11-25 07:10 UTC PRODUCTION DEPLOY of #110, #111, #112 (owner: "if there are no issues, proceed directly").** c4
   runs `56bb559` (api + procurement revision verified, no migration). Dump `/root/kesiv-backups/predeploy-20261125T070848Z/`
-  (sha256 `f37edbc5…f2fd`, also on c4); rollback images `goods24-{api,web}:rollback-fcfa678` and `:rollback-56bb559` is
-  the next one. Verified: live `GET /fx/rates` conversion in procurement (Pro 5x CL quote CLP 86,365 = USD 84.84 vs bound
+  (sha256 `f37edbc5…f2fd`, also on c4); rollback images `goods24-{api,web}:rollback-fcfa678` and `:rollback-a6371e4`.
+  Verified: live `GET /fx/rates` conversion in procurement (Pro 5x CL quote CLP 86,365 = USD 84.84 vs bound
   95.62), smoke all pass, no errors. **#113 (zzshu, ADR-054) is merged (`a801158`) but NOT deployed:** the deploy step that
   adds `ZZSHU_APP_SECRET` to `env/procurement.env` (enables sending card numbers to card.zzshu.pro) needs the owner's
   explicit go-ahead. After it: create supplier `zzshu` and its sources in the console (docs/production.md "zzshu standby
