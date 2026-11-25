@@ -68,6 +68,10 @@ class ZzshuSpec:
     region: str
 
 
+# the submit pass that only opened the dedicated card (the engine re-leases the job at once)
+CARD_OPENED = "card_opened"
+
+
 def zzshu_spec(offer: OfferSpec) -> ZzshuSpec | None:
     """Validate a zzshu ``direct`` offer BEFORE any call (None = invalid): GPT only, a plan with a
     full-price zzshu type and an explicit region zzshu offers. No card parameters exist: the card
@@ -241,6 +245,11 @@ class ZzshuSupplier:
                 **kw,
             )
 
+        if opened is not None:
+            # security review of #113: the card id must be in the job row BEFORE anything is sent,
+            # or a crash / lost lease here would leave a funded card nobody knows about. The engine
+            # records it now and hands it back on the next pass (which is still "never sent").
+            return out(Outcome.RETRYABLE, CARD_OPENED)
         rd = await self.funding.read_dedicated_card(card_id)
         if rd is None or rd.secret is None or rd.status != "ACTIVE" or rd.available < cost:
             # nothing sent: the card is kept, the engine retries and finds it again by id

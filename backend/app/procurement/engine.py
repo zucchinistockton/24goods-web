@@ -423,6 +423,18 @@ async def _needs_manual(
     await _transition(db, job, "needs_manual", reason, severity="warning")
     if job.kind == "direct" and job.order_id is not None:
         await _keep_for_support(db, job)
+    if job.kind == "direct" and job.card_id and _zzshu_card_unswept(job):
+        # security review of #113: a held zzshu job (retry_exhausted, create_unconfirmed...) whose
+        # dedicated card was opened and never swept still holds money: staff are told
+        await audit(
+            db,
+            tenant_id=job.tenant_id,
+            action="procurement.zzshu_card_unswept",
+            target=f"procurement_job:{job.id}",
+            detail={"order_id": str(job.order_id), "card_id": job.card_id,
+                    "last4": job.card_last4, "reason": job.error_code},
+            severity="warning",
+        )  # fmt: skip
     if notify_order:
         _emit(
             db,
@@ -431,6 +443,16 @@ async def _needs_manual(
             f"failed:{job.order_id}:{job.id}",
             {"order_id": str(job.order_id), "job_id": str(job.id), "reason": job.error_code},
         )
+
+
+def _zzshu_card_unswept(job: ProcurementJob) -> bool:
+    """The job's timeline shows a zzshu dedicated card opened and not (yet) swept."""
+    events = (job.progress or {}).get("events")
+    if not isinstance(events, list):
+        return False
+    codes = {e.get("code") for e in events if isinstance(e, dict) and e.get("cat") == "zzshu"}
+    # ``card_unswept``: the warning was already given for this card
+    return "card_opened" in codes and not codes & {"card_swept", "card_unswept"}
 
 
 WATCH_REASONS = frozenset(
@@ -2718,7 +2740,11 @@ async def _apply(ctx: ProcurementContext, lease: Lease, res: Result) -> None:
                 if not (job.kind == "direct" and lease.prior_send):
                     _unsent(job)  # (a direct refusal before the order says nothing about an
                     # EARLIER send of the same job)
-            if job.attempts > MAX_RETRIES:
+            if lease.ref.adapter == "zzshu" and res.error_code == "card_opened":
+                # the dedicated card is open and now recorded: send at once, not a failed attempt
+                job.attempts = max(0, job.attempts - 1)
+                job.next_poll_at = now
+            elif job.attempts > MAX_RETRIES:
                 await _needs_manual(db, job, "retry_exhausted")
             else:
                 job.next_poll_at = now + _backoff(job.attempts, res.retry_after)
@@ -2829,6 +2855,13 @@ async def _zzshu_card(
         _record_progress(job, {"events": events}, "engine", now)
     over = res.outcome in (Outcome.OK, Outcome.FATAL, Outcome.UNAVAILABLE)
     if over and res.card_id and not res.card_swept:
+        _record_progress(
+            job,
+            {"events": [{"tid": f"zzcard-unswept-{cid}", "cat": "zzshu", "code": "card_unswept",
+                         "msg": f"Dedicated card {job.card_last4 or '-'} still holds money"}]},
+            "engine",
+            now,
+        )  # fmt: skip
         await audit(
             db,
             tenant_id=job.tenant_id,
