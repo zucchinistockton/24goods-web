@@ -121,6 +121,7 @@ export default {
     startNew: 'Start a new conversation',
     connecting: 'Connecting…',
     tooLong: 'Message is too long (max 2000 characters)',
+    tooLarge: 'Message is too large (max 1 MB). Split it or attach less text.',
     longTitle: 'Send as .txt file?',
     longMessage: 'Your message is long ({n} characters). A file is easier to read and copy.',
     sendAsFile: 'Send as .txt',

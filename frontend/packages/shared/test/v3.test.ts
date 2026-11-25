@@ -14,6 +14,8 @@ import {
   leadingZeroBits,
   longTextDecision,
   messageFilename,
+  longTextTooLarge,
+  LONG_TEXT_MAX_BYTES,
   searchNonce,
   sha256Sync,
   solvePow,
@@ -142,6 +144,9 @@ describe('long text', () => {
     expect(longTextDecision('a'.repeat(LONG_TEXT_ASK + 1))).toBe('ask')
     expect(longTextDecision('a'.repeat(LONG_TEXT_FORCE))).toBe('ask')
     expect(longTextDecision('a'.repeat(LONG_TEXT_FORCE + 1))).toBe('file')
+    expect(longTextTooLarge('a'.repeat(LONG_TEXT_MAX_BYTES))).toBe(false)
+    expect(longTextTooLarge('a'.repeat(LONG_TEXT_MAX_BYTES + 1))).toBe(true)
+    expect(longTextTooLarge('你'.repeat(400000))).toBe(true)
   })
   it('filename', () => {
     expect(messageFilename(new Date(2026, 10, 5, 9, 7))).toBe('message-20261105-0907.txt')

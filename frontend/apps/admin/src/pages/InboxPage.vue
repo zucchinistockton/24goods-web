@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { ArrowLeft, InfoFilled } from '@element-plus/icons-vue'
 import {
   formatRelative,
+  messageFilename,
   messagePreview,
   userAvatar,
   type Conversation,
@@ -458,6 +459,7 @@ function openProduct(id: string) {
           :reply="replyBar"
           :editing="editing ? { text: editing.text ?? '' } : null"
           @send-text="(v) => (chat.sendText(v, takeReply()), sent())"
+          @send-file="(v) => (chat.sendFile(v, messageFilename(), takeReply()), sent())"
           @send-image="(b, m) => (chat.sendImage(b, m, takeReply()), sent())"
           @send-voice="(b, d, f) => (chat.sendVoice(b, d, f, takeReply()), sent())"
           @send-product="sendProduct"

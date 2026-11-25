@@ -174,7 +174,7 @@ def process_image(data: bytes) -> Processed:
     return Processed(out.getvalue(), mime, width, height)
 
 
-MAX_FILE_BYTES = 256 * 1024
+MAX_FILE_BYTES = 1024 * 1024
 _NAME_BAD = re.compile(r"[^\w .()\[\]+-]", re.UNICODE)
 
 
@@ -189,11 +189,11 @@ def sanitize_filename(raw: str | None) -> str:
 
 
 def process_text(data: bytes) -> Processed:
-    """Plain text only: valid UTF-8, no NUL bytes, at most 256 KB."""
+    """Plain text only: valid UTF-8, no NUL bytes, at most 1 MiB."""
     if not data:
         raise UploadRejected("Empty file")
     if len(data) > MAX_FILE_BYTES:
-        raise UploadRejected("Text file larger than 256 KB")
+        raise UploadRejected("Text file larger than 1 MB")
     if b"\x00" in data:
         raise UploadRejected("Not a text file")
     try:

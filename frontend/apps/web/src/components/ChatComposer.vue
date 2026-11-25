@@ -5,6 +5,7 @@ import {
   IMAGE_MAX_BYTES,
   VOICE_MAX_MS,
   longTextDecision,
+  longTextTooLarge,
   VoiceError,
   VoiceRecorder,
   compressImage,
@@ -75,6 +76,10 @@ async function submitText() {
   if (props.editing) {
     // Keep the text: the page ends the edit on success, which restores the draft.
     emit('saveEdit', v)
+    return
+  }
+  if (longTextTooLarge(v)) {
+    showToast(t('chat.tooLarge'))
     return
   }
   const decision = longTextDecision(v)
@@ -290,7 +295,6 @@ onBeforeUnmount(() => {
         v-model="text"
         class="input"
         rows="1"
-        maxlength="2000"
         enterkeyhint="send"
         :placeholder="t('chat.placeholder')"
         :aria-label="t('chat.placeholder')"
