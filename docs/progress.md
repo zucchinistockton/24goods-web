@@ -14,6 +14,13 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
   while low); daily top-up cap 80 % used (once per UTC day) and a job refused with `funding_cap_reached` today
   (once per UTC day), both only with `auto_recharge` on and a cap above 0. Tests: test_card_funding_unit,
   test_procurement_breaker, test_zzshu. No migration.
+- **2026-11-25 EPay cashier link on the provider's own site (`fix/epay-payurl-sibling-host`).** snpay (德云付) answers
+  `mapi.php` with `payurl` on `www.snpay.cn` while the API host is `api.snpay.cn`; the create check accepted only the
+  gateway host (plus Alipay / WeChat), so every snpay create ended "unknown" (test payment `gateway_unknown`). Now a
+  link on the gateway's registrable domain (`*.snpay.cn`, three labels for `com.cn`-style suffixes) is accepted too;
+  any other host and plain http stay refused. snpay gateway on production: created 2026-11-25, priority 20, OFF until
+  its test payment is paid. snpay minimum amount 0.10 CNY.
+
 - **2026-11-25 vmcardio (backup card issuer) and snpay (德云付, payment channel) researched (docs only).** Notes:
   [`docs/research/vmcardio/vmcardio-api.md`](research/vmcardio/vmcardio-api.md) and
   [`docs/research/snpay/snpay-epay-api.md`](research/snpay/snpay-epay-api.md), vendor pages under `vendor/`.
