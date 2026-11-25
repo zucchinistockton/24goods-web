@@ -1,7 +1,7 @@
 /** review-v12 M1: supplier configuration and the read-only connection test (admin only). */
 import { seg, type ApiClient } from '@24goods/shared'
 
-export type SupplierAdapter = 'zovocard' | 'zzshu' | 'mock' | 'manual'
+export type SupplierAdapter = 'zovocard' | 'zzshu' | 'vmcardio' | 'mock' | 'manual'
 export type SupplierEnv = 'sandbox' | 'production'
 export type SupplierHealth = 'unknown' | 'ok' | 'degraded' | 'down'
 

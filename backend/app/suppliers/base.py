@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import enum
 import re
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -26,7 +26,7 @@ IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9._:-]{1,80}$")
 # Supplier codes double as the prefix of their secrets in the procurement env file.
 SUPPLIER_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{1,31}$")
 # adapters whose credentials come from the procurement env file (``<CODE>_[SANDBOX_]APP_SECRET``)
-CREDENTIAL_ADAPTERS: tuple[str, ...] = ("zovocard", "zzshu")
+CREDENTIAL_ADAPTERS: tuple[str, ...] = ("zovocard", "zzshu", "vmcardio")
 
 
 _DETAIL_BAD = re.compile(r"[^A-Za-z0-9_.:-]")
@@ -186,6 +186,7 @@ class Result:
     # ``failed_precharge`` with its fee and funding hold released or none): ADR-054 lets the job
     # go to the standby source
     precharge_clean: bool = False
+    card_returned: bool = True  # card_leftover went back by a refund (False: deleted with it)
     card_swept: bool = False  # the card was refunded and deleted: nothing is left to look after
     # direct submit: the vendor refused BEFORE an order existed AND the lookup by client request id
     # verified that none exists (the only case in which a new attempt key is allowed)
@@ -257,6 +258,40 @@ class FundingPolicy:
     reserved: Decimal = Decimal(0)
     # ADR-054: the dedicated card of a zzshu order is loaded with cost x (1 + pct / 100)
     zzshu_margin_pct: Decimal = Decimal(20)
+    # ADR-055: who may open that card, in order (supplier codes; empty = the adapter's own order),
+    # and the vmcardio product choice (BIN priority, slots to leave for other uses)
+    card_issuers: tuple[str, ...] = ()
+    vmcardio_bins: tuple[str, ...] = ()
+    vmcardio_reserve_slots: int = 1
+
+
+class Leftover(Decimal):
+    """What a finished dedicated card still held. ``refunded`` is True only when the issuer's
+    refund call moved it back to the wallet; otherwise the card was deleted WITH the balance
+    (the vendor returns it to the account) and the audit must not say "returned"."""
+
+    refunded: bool = True
+
+
+@dataclass
+class CardOpenState:
+    """The persisted open state of a zzshu job's dedicated card (ADR-055, migration 0042).
+
+    ``seq`` numbers the open requests of the job (``zz-<job>-open-<seq>``): it is bumped ONLY after
+    a definite nothing-created answer, so a later retry of the same job never meets "duplicate".
+    ``issuer`` is the issuer asked and not yet known to have opened nothing: while it is set a
+    card may exist there, so the same issuer is asked again and no other one ever is. ``persist``
+    writes both to the job row (its own transaction) and is awaited BEFORE an issuer is called."""
+
+    seq: int = 0
+    issuer: str | None = None
+    persist: Callable[[str | None, int], Awaitable[None]] | None = field(default=None, repr=False)
+
+    async def save(self, issuer: str | None, seq: int | None = None) -> None:
+        new_seq = self.seq if seq is None else seq
+        if self.persist is not None and (issuer != self.issuer or new_seq != self.seq):
+            await self.persist(issuer, new_seq)
+        self.issuer, self.seq = issuer, new_seq
 
 
 @dataclass(frozen=True)
@@ -320,6 +355,8 @@ class JobSpec:
     # direct: owner 2026-11-25 (funding switch ``cancel_renewal_before_upgrade``, default off):
     # cancel the account's auto-renewal through the vendor right before an UPGRADE order
     cancel_renewal: bool = False
+    # zzshu: the persisted open state of the dedicated card (ADR-055)
+    card_open: CardOpenState | None = None
 
     def __post_init__(self) -> None:
         if not IDEMPOTENCY_KEY_RE.fullmatch(self.idempotency_key):

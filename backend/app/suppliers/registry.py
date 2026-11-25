@@ -17,8 +17,16 @@ from dataclasses import dataclass, field
 import httpx
 
 from app.suppliers.base import SUPPLIER_CODE_RE, SUPPLIER_ENVS, Supplier, supplier_code_problem
+from app.suppliers.issuers import CardIssuers
 from app.suppliers.manual import ManualSupplier
 from app.suppliers.mock import MockSupplier
+from app.suppliers.vmcardio import (
+    PRODUCTION_BASE_URL as VMCARDIO_PRODUCTION_URL,
+)
+from app.suppliers.vmcardio import (
+    SANDBOX_BASE_URL as VMCARDIO_SANDBOX_URL,
+)
+from app.suppliers.vmcardio import Holder, VmcardioClient, VmcardioConfig, VmcardioSupplier
 from app.suppliers.zovocard import (
     PRODUCTION_BASE_URL,
     SANDBOX_BASE_URL,
@@ -29,12 +37,34 @@ from app.suppliers.zovocard import (
 from app.suppliers.zzshu import PRODUCTION_BASE_URL as ZZSHU_BASE_URL
 from app.suppliers.zzshu import ZzshuClient, ZzshuConfig, ZzshuSupplier
 
-ADAPTERS: tuple[str, ...] = ("zovocard", "zzshu", "mock", "manual")
-# the ZovoCard supplier (code) whose wallet funds the dedicated cards of a zzshu order; the env
-# variable ZZSHU_FUNDING_SUPPLIER overrides it
+ADAPTERS: tuple[str, ...] = ("zovocard", "zzshu", "vmcardio", "mock", "manual")
+# the card issuers (supplier codes, comma separated, in order) whose wallets fund the dedicated
+# cards of a zzshu order; the env variable ZZSHU_FUNDING_SUPPLIER overrides it (ADR-055:
+# ``zovocard,vmcardio``)
 ZZSHU_FUNDING_DEFAULT = "zovocard"
+FUNDING_MAX = 4
 DEV_ENVS = ("dev", "test")
 _MOCKS: dict[tuple[str, str], MockSupplier] = {}
+
+
+def funding_codes(environ: Mapping[str, str]) -> list[str]:
+    """``ZZSHU_FUNDING_SUPPLIER`` as an ordered list of distinct valid supplier codes."""
+    raw = environ.get("ZZSHU_FUNDING_SUPPLIER", "").strip() or ZZSHU_FUNDING_DEFAULT
+    out: list[str] = []
+    for part in raw.split(","):
+        code = part.strip()
+        if code and code not in out:
+            if not SUPPLIER_CODE_RE.fullmatch(code) or code.endswith("_sandbox"):
+                raise SupplierConfigError("invalid ZZSHU_FUNDING_SUPPLIER")
+            out.append(code)
+    if not out or len(out) > FUNDING_MAX:
+        raise SupplierConfigError("invalid ZZSHU_FUNDING_SUPPLIER")
+    return out
+
+
+def issuer_adapter(code: str) -> str:
+    """The adapter a funding supplier code belongs to (a code is its adapter or ``<adapter>_x``)."""
+    return "vmcardio" if code == "vmcardio" or code.startswith("vmcardio_") else "zovocard"
 
 
 class SupplierConfigError(RuntimeError):
@@ -96,6 +126,8 @@ def build_supplier(
         if key not in _MOCKS:
             _MOCKS[key] = MockSupplier(code, env=env)
         return _MOCKS[key]
+    if adapter == "vmcardio":
+        return _build_vmcardio(code, env, environ, app_env, allow_production_writes, http=http)
     if adapter == "zzshu":
         return _build_zzshu(
             code, env, environ, app_env, allow_production_writes, http=http, funding=funding
@@ -112,6 +144,48 @@ def build_supplier(
         allow_production_writes=allow_production_writes,
     )
     return ZovoCardSupplier(code, ZovoClient(cfg, http=http))
+
+
+def _build_vmcardio(
+    code: str,
+    env: str,
+    environ: Mapping[str, str],
+    app_env: str,
+    allow_production_writes: bool,
+    *,
+    http: httpx.AsyncClient | None,
+) -> Supplier:
+    """``VMCARDIO_APP_ID`` / ``VMCARDIO_APP_SECRET`` / ``VMCARDIO_BASE_URL`` (``..._SANDBOX_...``
+    for sandbox) and the cardholder data ``VMCARDIO_CARDHOLDER_*`` / ``VMCARDIO_CARD_*``
+    (procurement
+    env only; the address is optional as a whole)."""
+    default = VMCARDIO_PRODUCTION_URL if env == "production" else VMCARDIO_SANDBOX_URL
+    sec = load_secrets(code, env, environ, default_base=default)
+    if not sec.app_id:
+        raise SupplierConfigError("VMCARDIO_APP_ID is not set")
+    if not sec.base_url.startswith("https://") and app_env not in DEV_ENVS:
+        raise SupplierConfigError("supplier base URL must be https:// outside dev/test")
+
+    def val(name: str, default: str = "") -> str:
+        return environ.get(f"VMCARDIO_{name}", "").strip() or default
+
+    holder = Holder(
+        first_name=val("CARDHOLDER_FIRST_NAME", Holder.first_name),
+        last_name=val("CARDHOLDER_LAST_NAME", Holder.last_name),
+        address_line_one=val("CARD_ADDRESS_LINE1"),
+        city=val("CARD_CITY"),
+        state=val("CARD_STATE"),
+        post_code=val("CARD_POSTCODE"),
+        country=val("CARD_COUNTRY", "US"),
+    )
+    cfg = VmcardioConfig(
+        base_url=sec.base_url,
+        app_id=sec.app_id,
+        app_secret=sec.app_secret,
+        env=env,
+        allow_production_writes=allow_production_writes,
+    )
+    return VmcardioSupplier(code, VmcardioClient(cfg, http=http), holder)
 
 
 def _build_zzshu(
@@ -131,16 +205,27 @@ def _build_zzshu(
         raise SupplierConfigError("supplier base URL must be https:// outside dev/test")
     owns = funding is None
     if funding is None:
-        fcode = environ.get("ZZSHU_FUNDING_SUPPLIER", "").strip() or ZZSHU_FUNDING_DEFAULT
-        funding = build_supplier(
-            code=fcode,
-            adapter="zovocard",
-            env=env,
-            environ=environ,
-            app_env=app_env,
-            allow_production_writes=allow_production_writes,
-            http=http,
-        )
+        issuers: list[tuple[str, Supplier]] = []
+        for i, fcode in enumerate(funding_codes(environ)):
+            try:
+                issuers.append(
+                    (
+                        fcode,
+                        build_supplier(
+                            code=fcode,
+                            adapter=issuer_adapter(fcode),
+                            env=env,
+                            environ=environ,
+                            app_env=app_env,
+                            allow_production_writes=allow_production_writes,
+                            http=http,
+                        ),
+                    )
+                )
+            except SupplierConfigError:
+                if i == 0:
+                    raise  # the first issuer is required, a later one is skipped when unset
+        funding = CardIssuers(issuers, owns=True)
     cfg = ZzshuConfig(
         base_url=sec.base_url,
         api_key=sec.app_secret,
@@ -152,8 +237,11 @@ def _build_zzshu(
 
 __all__ = [
     "ADAPTERS",
+    "FUNDING_MAX",
     "SupplierConfigError",
     "SupplierSecrets",
     "build_supplier",
+    "funding_codes",
+    "issuer_adapter",
     "load_secrets",
 ]

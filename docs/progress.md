@@ -6,6 +6,18 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 **Hand-off 2026-11-18 (after PR #49; the owner's order #29 → #30 → #31 is done on the demo). START HERE.**
 
+- **2026-11-25 vmcardio as the second issuer of the zzshu dedicated card (`feat/vmcardio-issuer`, ADR-055, owner decision).**
+  ZovoCard stays first; vmcardio opens the card only after a definite "nothing opened" (wallet low, no product / slot,
+  vendor refusal before any card exists). New adapter `vmcardio` (V2 client, token cache, request id
+  `zz-<job uuid hex>-open-<n>` with a persisted per-job sequence, a duplicate goes to staff and is never adopted, sweep with `refundCard` +
+  `deleteCard`), `CardIssuers` ordered list (`ZZSHU_FUNDING_SUPPLIER=zovocard,vmcardio`, funding setting
+  `zzshu_card_issuers` editable in the Funding panel), `vmcardio_bin_priority`, `vmcardio_reserve_slots`, webhook
+  `POST /api/v1/webhooks/vmcardio` (hint only, signature verified when `APP_VMCARDIO_WEBHOOK_PUBLIC_KEY` is set;
+  without it production refuses with 401, dev / test store it unverified), the issuer asked is persisted on the job
+  before the call, mock vendor, migration `0042_vmcardio_adapter` (also `card_open_seq`, `card_open_issuer`). Setup: `docs/production.md`. Open: the webhook
+  public key (owner is asking vmcardio support; production refuses the webhook until it is set); not deployed; the
+  vendor returns no label, so after a lost answer staff find the card by label in the vendor console (security review
+  of #119: no adoption by amount / time).
 - **2026-11-25 zzshu points in the console and limit alerts (`feat/zzshu-points-limit-alerts`, owner request).**
   Every probe and the periodic balance refresh read the zzshu points and store `points` / `points_at` in
   `suppliers.settings`; the admin supplier list returns them and the supplier row shows "Points: N (checked ...)".

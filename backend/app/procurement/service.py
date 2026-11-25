@@ -31,7 +31,13 @@ from app.suppliers.base import (
     SupplierError,
     clean_detail,
 )
-from app.suppliers.registry import ZZSHU_FUNDING_DEFAULT, SupplierConfigError, build_supplier
+from app.suppliers.issuers import CardIssuers
+from app.suppliers.registry import (
+    SupplierConfigError,
+    build_supplier,
+    funding_codes,
+    issuer_adapter,
+)
 
 log = logging.getLogger("app.procurement")
 
@@ -58,16 +64,25 @@ def make_supplier(ctx: ProcurementContext, ref: SupplierRef) -> Supplier:
         return ctx.supplier_factory(ref)
     funding = None
     if ref.adapter == "zzshu":
-        # ADR-054: the ZovoCard supplier that funds its cards is the ENGINE's shared instance (it
-        # keeps the "never a funding card" set of dedicated cards); it is closed with the engine,
-        # never with a zzshu supplier
-        fcode = ctx.environ.get("ZZSHU_FUNDING_SUPPLIER", "").strip() or ZZSHU_FUNDING_DEFAULT
-        fkey = ("zovocard", fcode, ref.env)
-        funding = ctx.suppliers.get(fkey)
-        if funding is None:
-            funding = ctx.suppliers.setdefault(
-                fkey, make_supplier(ctx, replace(ref, code=fcode, adapter="zovocard"))
-            )
+        # ADR-054 / ADR-055: the card issuers (ZovoCard first, vmcardio second) are the ENGINE's
+        # shared instances (ZovoCard keeps the "never a funding card" set of dedicated cards); they
+        # are closed with the engine, never with a zzshu supplier. The first is required, a later
+        # one that is not configured here is skipped.
+        issuers: list[tuple[str, Supplier]] = []
+        for i, fcode in enumerate(funding_codes(ctx.environ)):
+            adapter = issuer_adapter(fcode)
+            fkey = (adapter, fcode, ref.env)
+            sup = ctx.suppliers.get(fkey)
+            if sup is None:
+                try:
+                    sup = make_supplier(ctx, replace(ref, code=fcode, adapter=adapter))
+                except SupplierConfigError:
+                    if i == 0:
+                        raise
+                    continue
+                ctx.suppliers[fkey] = sup
+            issuers.append((fcode, sup))
+        funding = CardIssuers(issuers)
     return build_supplier(
         code=ref.code,
         adapter=ref.adapter,

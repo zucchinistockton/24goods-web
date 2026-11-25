@@ -729,9 +729,10 @@ WALLET_FRESH = timedelta(hours=2)
 
 
 async def alert_wallet_low(res: Resources, db: AsyncSession, tid: uuid.UUID, now: datetime) -> int:
-    """ADR-049 (owner 2026-11-21): a ZovoCard production wallet below ``wallet_alert_usd`` (tenant
-    funding settings, USD 60 by default) raises one staff alert per 6 hours while it stays low.
-    Reads the balance procurement last recorded (fresh within 2 h); ``0`` switches it off."""
+    """ADR-049 (owner 2026-11-21): a ZovoCard / vmcardio production wallet below
+    ``wallet_alert_usd`` (tenant funding settings, USD 60 by default) raises one staff alert per
+    6 hours while it stays low. Reads the balance procurement last recorded (fresh within 2 h);
+    ``0`` switches it off."""
     from app.core import funding as fs
     from app.core import notify_tg
     from app.models import SupplierAccount, Tenant
@@ -747,7 +748,7 @@ async def alert_wallet_low(res: Resources, db: AsyncSession, tid: uuid.UUID, now
                     select(SupplierAccount.id, SupplierAccount.code, SupplierAccount.last_balance)
                     .where(
                         SupplierAccount.tenant_id == tid,
-                        SupplierAccount.adapter == "zovocard",
+                        SupplierAccount.adapter.in_(("zovocard", "vmcardio")),
                         SupplierAccount.env == "production",
                         SupplierAccount.enabled.is_(True),
                         SupplierAccount.last_balance.is_not(None),

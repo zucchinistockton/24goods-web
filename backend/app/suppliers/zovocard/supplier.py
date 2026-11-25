@@ -23,6 +23,7 @@ from app.suppliers.base import (
     Availability,
     Balance,
     Capability,
+    CardOpenState,
     FundingPolicy,
     JobSpec,
     LedgerRow,
@@ -355,6 +356,7 @@ class ZovoCardSupplier:
     capabilities = frozenset(
         {Capability.CDK, Capability.VCC, Capability.DIRECT, Capability.VOID, Capability.WEBHOOK}
     )
+    adapter_name = "zovocard"
 
     def __init__(self, code: str, client: ZovoClient, *, webhook_secret: str = "") -> None:
         self.code = code
@@ -1166,7 +1168,11 @@ class ZovoCardSupplier:
 
     # ---- ADR-054: a dedicated card per zzshu order (opened, read once, swept and deleted)
     async def open_dedicated_card(
-        self, need: Decimal, pol: FundingPolicy, key: str
+        self,
+        need: Decimal,
+        pol: FundingPolicy,
+        key: str,
+        state: CardOpenState | None = None,  # ADR-055: vmcardio only
     ) -> DedicatedCard:
         """Open ONE new card loaded with ``need`` (USD, whole dollars up, at least the product's
         minimum; the owner's BIN priority picks the product, ADR-049 code) under ``key`` (the

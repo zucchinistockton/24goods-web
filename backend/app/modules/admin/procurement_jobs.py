@@ -577,6 +577,11 @@ async def retry(
     await _resume_order(db, job, staff, ip)
     charged = maybe_charged(job) and job.offer_id is not None  # judged BEFORE the code is cleared
     job.attempts, job.error_code, job.next_poll_at = 0, None, _now()
+    if job.card_open_issuer and not job.card_id:
+        # ADR-055: a zzshu dedicated card that may exist at an issuer but was never recorded.
+        # Staff retry = "I looked in the vendor console": the next open request is a new one
+        # (otherwise it would meet "duplicate" forever) and the issuer order applies again
+        job.card_open_issuer, job.card_open_seq = None, job.card_open_seq + 1
     job.step, to = ("reconcile", "submitting") if charged else ("submit", "queued")
     assert job.idempotency_key == key_before
     await engine._transition(

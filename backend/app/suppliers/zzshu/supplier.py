@@ -91,6 +91,17 @@ def zzshu_spec(offer: OfferSpec) -> ZzshuSpec | None:
     return ZzshuSpec(plan, PLAN_TYPES[plan], region)
 
 
+def _picked_card(params: Mapping[str, Any]) -> str | None:
+    """The dedicated card the engine hands back on a retry: a ZovoCard id (a number) or, ADR-055,
+    a vmcardio one (``vm:<id>``)."""
+    picked = params.get(dr.PICKED_CARD_KEY)
+    if isinstance(picked, int) and not isinstance(picked, bool):
+        return str(picked)
+    if isinstance(picked, str) and re.fullmatch(r"vm:[A-Za-z0-9_-]{6,40}", picked):
+        return picked
+    return None
+
+
 def _int(v: Any) -> int | None:
     return v if isinstance(v, int) and not isinstance(v, bool) else None
 
@@ -225,14 +236,15 @@ class ZzshuSupplier:
         except SupplierError as exc:
             return _refused(exc)
         need = need_usd(cost, pol.zzshu_margin_pct)
-        picked = job.offer.params.get(dr.PICKED_CARD_KEY)
-        card_id = str(picked) if isinstance(picked, int) and not isinstance(picked, bool) else None
+        card_id = _picked_card(job.offer.params)
         last4: str | None = None
         loaded: Decimal | None = None
         opened: tuple[str, Decimal] | None = None
         if card_id is None:  # a retry reuses the card it opened (the engine hands its id back)
             try:
-                dc = await self.funding.open_dedicated_card(need, pol, f"zzopen:{job.job_id}")
+                dc = await self.funding.open_dedicated_card(
+                    need, pol, f"zzopen:{job.job_id}", job.card_open
+                )
             except SupplierError as exc:
                 return _refused(exc)
             card_id, last4, loaded, opened = dc.id, dc.last4, dc.loaded, (dc.id, dc.spent)
@@ -301,7 +313,11 @@ class ZzshuSupplier:
         """A definite refusal of the create: the card goes back to the wallet, staff decide."""
         leftover = await self.funding.finish_dedicated_card(card_id)
         res: Result = out(
-            Outcome.FATAL, code, card_leftover=leftover, card_swept=leftover is not None
+            Outcome.FATAL,
+            code,
+            card_leftover=leftover,
+            card_swept=leftover is not None,
+            card_returned=getattr(leftover, "refunded", True),
         )
         return replace(res, supplier_stop=True) if supplier_stop else res
 
@@ -312,8 +328,7 @@ class ZzshuSupplier:
         if spec is None:
             return Result(Outcome.FATAL, error_code="invalid_offer")
         ref = job.upstream_ref
-        picked = job.offer.params.get(dr.PICKED_CARD_KEY)
-        card_id = str(picked) if isinstance(picked, int) and not isinstance(picked, bool) else None
+        card_id = _picked_card(job.offer.params)
         if not ref:
             # an unconfirmed create: the card may hold money zzshu took or will take; staff look
             return Result(Outcome.FATAL, error_code="create_unconfirmed", card_id=card_id)
@@ -347,7 +362,11 @@ class ZzshuSupplier:
         if st.status in ("pending", "processing"):
             return Result(Outcome.ACCEPTED_PENDING, detail=vstatus, **common)
         leftover = await self.funding.finish_dedicated_card(card_id) if card_id else None
-        sweep = {"card_leftover": leftover, "card_swept": leftover is not None}
+        sweep = {
+            "card_leftover": leftover,
+            "card_swept": leftover is not None,
+            "card_returned": getattr(leftover, "refunded", True),
+        }
         if st.status == "success":
             detail = "completed" if st.cancelled else "completed:renew_unconfirmed"
             text = "----".join((f"gpt/{spec.plan}", mask or "-", st.order_no or ref))

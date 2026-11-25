@@ -32,6 +32,9 @@ const form = reactive({
   daily_cap_usd: '',
   per_topup_max_usd: '',
   bins: '',
+  issuers: '',
+  vmBins: '',
+  vmReserve: '',
 })
 const dlg = reactive({ open: false, code: '', error: '', saving: false })
 const errors = reactive<Record<string, string>>({})
@@ -51,6 +54,9 @@ function fill(v: FundingView) {
     daily_cap_usd: v.settings.daily_cap_usd,
     per_topup_max_usd: v.settings.per_topup_max_usd,
     bins: v.settings.bin_priority.join(' '),
+    issuers: (v.settings.zzshu_card_issuers ?? ['zovocard']).join(' '),
+    vmBins: (v.settings.vmcardio_bin_priority ?? []).join(' '),
+    vmReserve: String(v.settings.vmcardio_reserve_slots ?? 1),
   })
 }
 async function load() {
@@ -68,6 +74,8 @@ async function load() {
 onMounted(load)
 
 const bins = computed(() => form.bins.split(/[\s,]+/).filter(Boolean))
+const issuers = computed(() => form.issuers.split(/[\s,]+/).filter(Boolean))
+const vmBins = computed(() => form.vmBins.split(/[\s,]+/).filter(Boolean))
 function validate(): boolean {
   for (const k of Object.keys(errors)) delete errors[k]
   if (!USD_RE.test(form.daily_cap_usd.trim()) || Number(form.daily_cap_usd) > 10000) errors.daily_cap_usd = t('funding.err.daily')
@@ -80,6 +88,16 @@ function validate(): boolean {
   if (!/^\d{1,4}$/.test(form.zzshu_points_alert.trim()) || Number(form.zzshu_points_alert) > 1000)
     errors.zzshu_points_alert = t('funding.err.zzshuPoints')
   if (bins.value.length > 20 || bins.value.some((b) => !BIN_RE.test(b))) errors.bins = t('funding.err.bins')
+  const options = view.value?.issuer_options ?? []
+  if (
+    !issuers.value.length ||
+    issuers.value.length > 4 ||
+    new Set(issuers.value).size !== issuers.value.length ||
+    issuers.value.some((c) => !options.includes(c))
+  )
+    errors.issuers = t('funding.err.issuers')
+  if (vmBins.value.length > 20 || vmBins.value.some((b) => !BIN_RE.test(b))) errors.vmBins = t('funding.err.vmBins')
+  if (!/^\d{1,3}$/.test(form.vmReserve.trim()) || Number(form.vmReserve) > 100) errors.vmReserve = t('funding.err.vmReserve')
   return !Object.keys(errors).length
 }
 const changed = computed(() => {
@@ -96,7 +114,10 @@ const changed = computed(() => {
     Number(s.zzshu_points_alert ?? 3) !== Number(form.zzshu_points_alert) ||
     Number(s.daily_cap_usd) !== Number(form.daily_cap_usd) ||
     Number(s.per_topup_max_usd) !== Number(form.per_topup_max_usd) ||
-    s.bin_priority.join(' ') !== bins.value.join(' ')
+    s.bin_priority.join(' ') !== bins.value.join(' ') ||
+    (s.zzshu_card_issuers ?? []).join(' ') !== issuers.value.join(' ') ||
+    (s.vmcardio_bin_priority ?? []).join(' ') !== vmBins.value.join(' ') ||
+    Number(s.vmcardio_reserve_slots ?? 1) !== Number(form.vmReserve)
   )
 })
 function askCode() {
@@ -122,6 +143,9 @@ async function save() {
         daily_cap_usd: form.daily_cap_usd.trim(),
         per_topup_max_usd: form.per_topup_max_usd.trim(),
         bin_priority: bins.value,
+        zzshu_card_issuers: issuers.value,
+        vmcardio_bin_priority: vmBins.value,
+        vmcardio_reserve_slots: Number(form.vmReserve),
         totp_code: code,
       }),
     )
@@ -198,6 +222,18 @@ const when = (iso: string | null) => (iso ? iso.replace('T', ' ').slice(0, 16) +
         <el-form-item :label="t('funding.bins')" :error="errors.bins">
           <el-input v-model="form.bins" class="mono" spellcheck="false" autocomplete="off" />
           <div class="muted small">{{ t('funding.binsHint') }}</div>
+        </el-form-item>
+        <el-form-item :label="t('funding.issuers')" :error="errors.issuers">
+          <el-input v-model="form.issuers" class="mono" spellcheck="false" autocomplete="off" />
+          <div class="muted small">{{ t('funding.issuersHint', { options: (view.issuer_options ?? []).join(', ') || '-' }) }}</div>
+        </el-form-item>
+        <el-form-item :label="t('funding.vmBins')" :error="errors.vmBins">
+          <el-input v-model="form.vmBins" class="mono" spellcheck="false" autocomplete="off" />
+          <div class="muted small">{{ t('funding.vmBinsHint') }}</div>
+        </el-form-item>
+        <el-form-item :label="t('funding.vmReserve')" :error="errors.vmReserve">
+          <el-input v-model="form.vmReserve" inputmode="numeric" class="alert-input" />
+          <div class="muted small">{{ t('funding.vmReserveHint') }}</div>
         </el-form-item>
         <el-button v-if="auth.isAdmin" type="primary" native-type="submit" :disabled="!changed">{{ t('funding.save') }}</el-button>
         <p v-else class="muted small">{{ t('funding.adminOnly') }}</p>

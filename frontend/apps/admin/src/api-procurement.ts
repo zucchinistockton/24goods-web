@@ -635,6 +635,12 @@ export interface FundingSettings {
   daily_cap_usd: string
   per_topup_max_usd: string
   bin_priority: string[]
+  /** ADR-055: who opens the dedicated card of a zzshu order, in order (supplier codes) */
+  zzshu_card_issuers?: string[]
+  /** ADR-055: vmcardio card ranges, best first */
+  vmcardio_bin_priority?: string[]
+  /** ADR-055: skip a vmcardio product with this many open-card slots left or fewer */
+  vmcardio_reserve_slots?: number
 }
 export interface FundingTopup {
   id: string
@@ -650,6 +656,8 @@ export interface FundingTopup {
 }
 export interface FundingView {
   settings: FundingSettings
+  /** ADR-055: supplier codes that can issue a zzshu dedicated card */
+  issuer_options?: string[]
   today: { spent_usd: string; left_usd: string }
   topups: FundingTopup[]
 }

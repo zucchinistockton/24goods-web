@@ -137,6 +137,9 @@ async def policy(
             else Decimal(0)
         ),
         zzshu_margin_pct=Decimal(str(st["zzshu_card_margin_pct"])),
+        card_issuers=tuple(str(c) for c in st["zzshu_card_issuers"]),  # type: ignore[attr-defined]
+        vmcardio_bins=tuple(str(b) for b in st["vmcardio_bin_priority"]),  # type: ignore[attr-defined]
+        vmcardio_reserve_slots=int(st["vmcardio_reserve_slots"]),  # type: ignore[call-overload]
     )
 
 
@@ -164,7 +167,7 @@ async def _record(
             job_id=job.id if job else None,
             order_id=job.order_id if job else None,
             kind=kind,
-            card_id=card_id[:20],
+            card_id=card_id[:64],
             amount=amount,
             state="done",
             idem_key=key[:80],

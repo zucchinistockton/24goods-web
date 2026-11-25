@@ -78,7 +78,7 @@ from app.modules.reseller.router import admin as reseller_admin_router
 from app.modules.reseller.router import router as reseller_router
 from app.modules.seo.router import router as seo_router
 from app.modules.uploads.router import router as uploads_router
-from app.modules.webhooks import ZOVOCARD_PATH
+from app.modules.webhooks import VMCARDIO_PATH, ZOVOCARD_PATH
 from app.modules.webhooks import router as webhooks_router
 
 log = logging.getLogger("app.main")
@@ -304,7 +304,10 @@ def create_app(res: Resources | None = None, *, background: bool = True) -> Fast
     # Added inner-most first:
     # Core (outermost) -> IPBlock -> GlobalRateLimit -> BodyLimit -> CSRF -> SiteVisit -> routes.
     app.add_middleware(SiteVisitMiddleware)
-    app.add_middleware(CSRFMiddleware, exempt=[NOTIFY_PATH, NOTIFY_BEPUSDT_PATH, ZOVOCARD_PATH])
+    app.add_middleware(
+        CSRFMiddleware,
+        exempt=[NOTIFY_PATH, NOTIFY_BEPUSDT_PATH, ZOVOCARD_PATH, VMCARDIO_PATH],
+    )
     app.add_middleware(
         BodyLimitMiddleware,
         default_limit=JSON_BODY_LIMIT,

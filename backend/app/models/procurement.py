@@ -112,7 +112,7 @@ class ProcurementJob(Base):
     account_mask: Mapped[str | None] = mapped_column(String(64))
     # 0033 (issue #29): the funding card a direct job used (id + last four, never a number), the
     # usable cards of its last pre-check ("id:last4,..."), and when it first waited for a card
-    card_id: Mapped[str | None] = mapped_column(String(20))
+    card_id: Mapped[str | None] = mapped_column(String(64))
     card_last4: Mapped[str | None] = mapped_column(String(4))
     card_candidates: Mapped[str | None] = mapped_column(String(120))  # 0038: "id:last4:cents"
     card_wait_since: Mapped[datetime | None]
@@ -122,6 +122,10 @@ class ProcurementJob(Base):
     used_last4: Mapped[str | None] = mapped_column(String(4))
     card_candidates_at: Mapped[datetime | None]
     card_attempt: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # 0042 (ADR-055): the open sequence of a zzshu dedicated card and the issuer asked and not yet
+    # known to have opened nothing
+    card_open_seq: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    card_open_issuer: Mapped[str | None] = mapped_column(String(32))
     # 0038 (ADR-048): the top-up (USD) planned for the picked card before the order
     fund_amount: Mapped[Decimal | None] = mapped_column(AMOUNT)
     fund_key: Mapped[str | None] = mapped_column(String(80))
@@ -143,7 +147,7 @@ class ProcurementFunding(Base):
     job_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("procurement_jobs.id"))
     order_id: Mapped[uuid.UUID | None]
     kind: Mapped[str] = mapped_column(String(8), default="recharge")
-    card_id: Mapped[str] = mapped_column(String(20))
+    card_id: Mapped[str] = mapped_column(String(64))
     amount: Mapped[Decimal] = mapped_column(Numeric(18, 6))
     currency: Mapped[str] = mapped_column(String(3), default="USD")
     state: Mapped[str] = mapped_column(String(8), default="planned")
