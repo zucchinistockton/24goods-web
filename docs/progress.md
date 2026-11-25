@@ -11,6 +11,15 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
   dialog, staff confirm box); over 1 MB (UTF-8) is refused with an i18n error (`longTextTooLarge` in shared
   `longtext.ts`). Backend `MAX_FILE_BYTES` is now 1 MiB (Caddy body limit is 10 MB, unchanged). Received files keep
   the existing open / download actions.
+- **2026-11-25 Direct GPT orders for Chile / Egypt / Japan stopped before ordering (`fix/direct-quote-fx`).** 48-hour
+  review: both Pro 5x Chile orders (GVJ4BDSI6HIXE, GHMGCE5HDXXPO) went `needs_manual` with `quote_currency_mismatch`
+  right after submit (nothing charged; the owner fulfilled them by hand). The vendor's preflight quotes in the region's
+  currency (CLP / EGP / JPY) but `GET /gpt-direct/plans` bounds GPT plans in PHP only. Fix: a quote whose currency differs
+  from the catalogue's is converted with the vendor's `GET /fx/rates` (`usd_per_unit`, cached 30 min, refused when older
+  than 4 days or malformed -> `quote_fx_unavailable`) and held to the offer's USD bound (cost estimate x 1.1), like USD
+  quotes. Live check 2026-11-25: Pro 5x CL quote ~CLP 86,365 = USD 84.8 vs bound USD 95.6. Also found: 459 ZovoCard
+  webhooks rejected "bad signature" in 48 h (production holds a self-made secret; the vendor's `whsec_` secret from the
+  dashboard was never configured), so the shop runs on polling only.
 
 - **2026-11-23 06:50 UTC PRODUCTION DEPLOY of #108 (owner: "bypass 141 by default … deploy PR #105 … take the
   necessary actions").** c4 runs `fcfa678` (revision verified, no migration). `deploy/env/api.env` gained

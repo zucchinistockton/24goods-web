@@ -14,7 +14,7 @@ import re
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -49,6 +49,9 @@ log = logging.getLogger("app.suppliers.zovocard")
 
 DIRECT_PRODUCTS = ("gpt", "claude", "grok")  # products with a plans catalogue (``x`` has none)
 PLANS_TTL_S = 60.0
+# ``GET /fx/rates`` (daily reference rates; the vendor asks callers to cache 10-60 min)
+FX_TTL_S = 1800.0
+FX_MAX_AGE_DAYS = 4  # an older snapshot is not trusted for a price check
 # ADR-048 funding reads: storefront checks share them this long; a pre-check reads fresh
 SWEEP_MAX = 10  # cards swept per pass (each is one usage read + one refund)
 FUND_TTL_S = 30.0
@@ -160,6 +163,36 @@ def _int_or_none(v: Any) -> int | None:
 
 def _str_or_none(v: Any, limit: int = 64) -> str | None:
     return v[:limit] if isinstance(v, str) and v else None
+
+
+def parse_fx_rate(data: Any, currency: str, today: date) -> Decimal | None:
+    """``usd_per_unit`` of ``currency`` from a ``GET /fx/rates`` payload, strictly: a positive
+    finite number (``units_per_usd`` inverted when only that is given) whose ``rate_date`` (or the
+    snapshot date) is at most FX_MAX_AGE_DAYS old. Anything else is ``None``."""
+    if not isinstance(data, Mapping) or not isinstance(data.get("rates"), list):
+        return None
+    for row in data["rates"]:
+        if not isinstance(row, Mapping) or str(row.get("currency", "")).upper() != currency:
+            continue
+        day = row.get("rate_date") or data.get("snapshot_date")
+        try:
+            seen = date.fromisoformat(str(day)[:10])
+        except ValueError:
+            return None
+        if (today - seen).days > FX_MAX_AGE_DAYS:
+            return None
+        for key, invert in (("usd_per_unit", False), ("units_per_usd", True)):
+            raw = row.get(key)
+            if isinstance(raw, bool) or not isinstance(raw, int | float | str):
+                continue
+            try:
+                val = Decimal(str(raw))
+            except InvalidOperation:
+                continue
+            if val.is_finite() and val > 0:
+                return (1 / val) if invert else val
+        return None
+    return None
 
 
 def parse_plans(product: str, data: Any) -> PlanCatalog:
@@ -329,6 +362,7 @@ class ZovoCardSupplier:
         self.client = client
         self.env = client.config.env
         self._plans: dict[str, tuple[float, PlanCatalog]] = {}
+        self._fx: dict[str, tuple[float, Decimal]] = {}
         self._cards: tuple[float, list[CardProduct]] | None = None
         # ADR-048: short caches for the storefront check (a fresh check never reads them)
         self._fund_cards_hit: tuple[float, list[fd.FundCard]] | None = None
@@ -1486,16 +1520,16 @@ class ZovoCardSupplier:
         amount = Decimal(minor).scaleb(-exp)
         tol = Decimal(1) + job.quote_tolerance
         if currency == "USD":
-            bound = job.cost_bound
-            if bound is None:
-                est = await self._direct_cost(job.offer)
-                bound = Money(est.amount * tol, "USD") if est else None
-            if bound is None or bound.currency != "USD":
-                return "quote_unbounded"
-            return "quote_over_bound" if amount > bound.amount else None
+            return await self._usd_bound_problem(amount, job, tol)
         plan = catalog.plans.get(entry.acc_plan_key or "") if entry else None
         if not isinstance(plan, Mapping) or str(plan.get("currency", "")).upper() != currency:
-            return "quote_currency_mismatch"
+            # 2026-11-24 production: the catalogue bounds GPT plans in PHP only, while a Chile /
+            # Egypt / Japan offer is quoted in CLP / EGP / JPY. Convert with the vendor's own
+            # reference rate (GET /fx/rates) and check the USD amount against the offer's bound.
+            rate = await self._usd_per_unit(currency)
+            if rate is None:
+                return "quote_fx_unavailable"
+            return await self._usd_bound_problem(amount * rate, job, tol)
         ceiling = _int_or_none(plan.get("maxAmountMinor"))
         if ceiling is None:
             expected = _int_or_none(plan.get("expectedAmountMinor"))
@@ -1503,6 +1537,37 @@ class ZovoCardSupplier:
         if ceiling is None:
             return "quote_unbounded"
         return "quote_over_bound" if minor > ceiling else None
+
+    async def _usd_bound_problem(self, usd: Decimal, job: JobSpec, tol: Decimal) -> str | None:
+        """A USD amount against the job's bound (offer cost x (1 + tolerance)), or, without one,
+        the catalogue's own USD cost x (1 + tolerance)."""
+        bound = job.cost_bound
+        if bound is None:
+            est = await self._direct_cost(job.offer)
+            bound = Money(est.amount * tol, "USD") if est else None
+        if bound is None or bound.currency != "USD":
+            return "quote_unbounded"
+        return "quote_over_bound" if usd > bound.amount else None
+
+    async def _usd_per_unit(self, currency: str) -> Decimal | None:
+        """USD per unit of ``currency`` from the vendor's ``GET /fx/rates`` (cached FX_TTL_S).
+        ``None`` (no price check possible, so no order) when the rate is missing, malformed, not
+        positive, or its snapshot is older than FX_MAX_AGE_DAYS."""
+        code = currency.upper()
+        if not (len(code) == 3 and code.isalpha()):
+            return None
+        now = time.monotonic()
+        hit = self._fx.get(code)
+        if hit is not None and now - hit[0] < FX_TTL_S:
+            return hit[1]
+        try:
+            resp = await self.client.get("/fx/rates", params={"currency": code})
+        except SupplierError:
+            return None
+        rate = parse_fx_rate(resp.data, code, datetime.now(timezone.utc).date())
+        if rate is not None:
+            self._fx[code] = (now, rate)
+        return rate
 
     async def _direct_created(
         self, spec: dr.DirectSpec, data: Any, rid: str, seen: dict[str, Any]
