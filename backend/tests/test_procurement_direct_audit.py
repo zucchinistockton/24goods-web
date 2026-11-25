@@ -295,8 +295,7 @@ async def test_no_usable_rate_means_no_order(env, dup, missing):
     vendor = _vendor()
     vendor.direct_local_quotes = True
     if missing == "rate":
-        vendor.fx_usd_per_unit = {**vendor.fx_usd_per_unit, "CLP": None}
-        vendor.direct_local_quotes = True
+        vendor.fx_missing = {"CLP"}  # quoted in CLP, but the rate list has no CLP
     else:
         vendor.fx_rate_date = "2026-01-01"
     await _zovo(dup, vendor, GPT_CL)

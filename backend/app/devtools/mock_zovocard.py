@@ -331,6 +331,7 @@ class MockZovo:
         }
     )  # fmt: skip
     fx_rate_date: str | None = None  # None = today
+    fx_missing: set[str] = field(default_factory=set)  # left out of GET /fx/rates (still quoted)
     direct_quotes_null: bool = False  # [V] the real sandbox answers ``quotes: null``
     preflight_over: dict[str, Any] = field(default_factory=dict)  # preflight fields overridden
     usage_busy: set[int] = field(default_factory=set)  # funding cards that are busy / cooling
@@ -1129,7 +1130,7 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
                 {"currency": c, "usd_per_unit": float(v), "units_per_usd": 1 / float(v),
                  "rate_date": day}
                 for c, v in mock.fx_usd_per_unit.items()
-                if v and (not want or want == [""] or c in want)
+                if v and c not in mock.fx_missing and (not want or want == [""] or c in want)
             ]  # fmt: skip
             return JSONResponse(
                 _env(0, {"snapshot_date": day, "stale": False, "count": len(rates), "rates": rates})
