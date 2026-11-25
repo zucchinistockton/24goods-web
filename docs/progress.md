@@ -6,6 +6,12 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 **Hand-off 2026-11-18 (after PR #49; the owner's order #29 → #30 → #31 is done on the demo). START HERE.**
 
+- **2026-11-25 Long text in chat (`feat/chat-long-text-file`).** Both composers no longer truncate pasted text
+  (removed `maxlength=2000`); text over 2000 characters is sent as a `.txt` file (kind `file`), 501-2000 asks (buyer
+  dialog, staff confirm box); over 1 MB (UTF-8) is refused with an i18n error (`longTextTooLarge` in shared
+  `longtext.ts`). Backend `MAX_FILE_BYTES` is now 1 MiB (Caddy body limit is 10 MB, unchanged). Received files keep
+  the existing open / download actions.
+
 - **2026-11-23 06:50 UTC PRODUCTION DEPLOY of #108 (owner: "bypass 141 by default … deploy PR #105 … take the
   necessary actions").** c4 runs `fcfa678` (revision verified, no migration). `deploy/env/api.env` gained
   `APP_ZPAY_RELAY_ONLY=true` (old file in `/opt/kesiv/backups/predeploy-20261123T064918Z/api.env.bak`). Dump

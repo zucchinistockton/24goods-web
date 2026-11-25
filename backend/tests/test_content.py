@@ -478,7 +478,7 @@ async def test_text_file_upload_and_file_message(env):
         (b"", "a.txt"),
         (b"abc\x00def", "a.txt"),
         (b"\xff\xfe\xfa", "a.txt"),
-        (b"x" * (256 * 1024 + 1), "a.txt"),
+        (b"x" * (1024 * 1024 + 1), "a.txt"),
         (png_bytes(), "a.txt"),
     ],
 )
@@ -495,7 +495,7 @@ async def test_file_exactly_at_limit_ok_and_image_cannot_be_sent_as_file(env):
     conv = await open_conversation(buyer)
     r = await buyer.post(
         "/api/v1/uploads",
-        files={"file": ("a.txt", b"x" * (256 * 1024), "text/plain")},
+        files={"file": ("a.txt", b"x" * (1024 * 1024), "text/plain")},
         data={"kind": "file"},
     )
     assert r.status_code == 200

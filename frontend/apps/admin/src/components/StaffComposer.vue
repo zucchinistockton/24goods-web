@@ -11,8 +11,11 @@ import {
   imageExtension,
   isAcceptedImage,
   isVoiceSupported,
+  longTextDecision,
+  longTextTooLarge,
   voiceExtension,
 } from '@24goods/shared'
+import { ElMessageBox } from 'element-plus'
 import { ReplyBar } from '@24goods/shared/chat'
 
 import ProductPickerDialog from './ProductPickerDialog.vue'
@@ -21,6 +24,7 @@ import QuickReplies from './QuickReplies.vue'
 const props = withDefaults(defineProps<{ disabled?: boolean; reply?: { title: string; preview: string } | null; editing?: { text: string } | null }>(), { reply: null, editing: null })
 const emit = defineEmits<{
   sendText: [text: string]
+  sendFile: [text: string]
   sendImage: [blob: Blob, meta: { width?: number; height?: number; filename: string }]
   sendVoice: [blob: Blob, durationMs: number, filename: string]
   sendProduct: [productId: string]
@@ -67,19 +71,40 @@ function cancelBar() {
     emit('cancelEdit')
   } else emit('cancelReply')
 }
-function send() {
+async function send() {
   const v = text.value.trim()
   if (!v) return
-  if (v.length > 2000) {
-    ElMessage.warning(t('inbox.tooLong'))
-    return
-  }
   if (props.editing) {
     // Keep the text: the page ends the edit on success, which restores the draft.
+    if ([...v].length > 2000) {
+      ElMessage.warning(t('inbox.tooLong'))
+      return
+    }
     emit('saveEdit', v)
     return
   }
-  emit('sendText', v)
+  if (longTextTooLarge(v)) {
+    ElMessage.warning(t('inbox.tooLarge'))
+    return
+  }
+  const decision = longTextDecision(v)
+  if (decision === 'ask') {
+    // confirm = send as a .txt file; cancel = send as plain text
+    let asFile = true
+    try {
+      await ElMessageBox.confirm(t('inbox.longMessage', { n: [...v].length }), t('inbox.longTitle'), {
+        confirmButtonText: t('inbox.sendAsFile'),
+        cancelButtonText: t('inbox.sendAsText'),
+        distinguishCancelAndClose: true,
+      })
+    } catch (e) {
+      if (e === 'close') return
+      asFile = false
+    }
+    if (asFile) emit('sendFile', v)
+    else emit('sendText', v)
+  } else if (decision === 'file') emit('sendFile', v)
+  else emit('sendText', v)
   text.value = ''
 }
 /** A quick reply fills the box so staff can still edit it; it is never sent on its own. */
@@ -216,7 +241,6 @@ onBeforeUnmount(() => recorder?.cancel())
           type="textarea"
           :autosize="{ minRows: 2, maxRows: 6 }"
           resize="none"
-          maxlength="2000"
           :placeholder="t('inbox.placeholder')"
           :disabled="disabled"
           @keydown="onKeydown"

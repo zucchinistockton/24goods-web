@@ -121,6 +121,7 @@ const zhCN: WebMessages = {
     startNew: '发起新会话',
     connecting: '连接中…',
     tooLong: '消息过长（最多 2000 字）',
+    tooLarge: '消息过大（最多 1 MB），请拆分后再发送。',
     longTitle: '作为 .txt 文件发送？',
     longMessage: '您的消息较长（{n} 个字符），以文件发送更便于阅读和复制。',
     sendAsFile: '发送 .txt',
