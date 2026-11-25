@@ -3,7 +3,7 @@ import { BRAND } from '@24goods/shared'
 
 const zhCN: WebMessages = {
   challenge: {"title": "安全验证", "accessibility": "验证缓慢或不可用时可取消并联系客服。此验证不会确认支付到账。", "visit": "验证访问商店", "visitNote": "浏览前请完成管理员设置的访问验证。", "verify": "验证并继续", "visitBanner": "本页部分内容需要先完成访问验证。"},
-  epay: { title: '安全付款', checkPayee: '确认付款前，请在支付应用中核对收款人和金额。', openCashier: '打开收银台', unknown: '结果尚未确定，请勿重复付款，请刷新或联系客服。', expires: '到期时间：{at}', refresh: '刷新支付状态' },
+  epay: { title: '安全付款', scan: '请使用支付宝扫码付款。', openAlipay: '打开支付宝付款', unknown: '结果尚未确定，请勿重复付款，请刷新或联系客服。', expires: '到期时间：{at}', refresh: '刷新支付状态' },
   app: {
     name: `${BRAND.nameZh} ${BRAND.name}`,
     tagline: '账号 · 卡密 · 数字服务，快速交付',

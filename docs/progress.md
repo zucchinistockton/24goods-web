@@ -6,6 +6,14 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 **Hand-off 2026-11-18 (after PR #49; the owner's order #29 → #30 → #31 is done on the demo). START HERE.**
 
+- **2026-11-25 EPay pay page shows only a QR code, never the upstream gateway host (`feat/epay-qr-only-pay-page`, owner request).**
+  New unauthenticated `GET /api/v1/pay/epay/go/{attempt_id}` (tenant-scoped, rate limited, `no-store`, `Referrer-Policy: no-referrer`):
+  302 to the attempt's stored, already vetted redirect payload only while the attempt is `ready`, unexpired, has a provider and the order /
+  checkout is `pending_payment`; otherwise 302 to `/orders` with nothing leaked. `payment_view` now returns `qr_svg` of that hop URL for kind
+  `redirect` (origin = the shop's own verified custom domain, else `public_base_url`) and `open_url` (the hop, or the payload for a
+  `https://qr.alipay.com/` QR); `redirect_url` / `redirect_host` are gone. The page shows the QR and "Scan the QR code with Alipay to pay."; touch
+  devices get one "Open Alipay to pay" button. The attempt id is only returned by the buyer's authenticated view. Owner to verify once: scan the QR
+  with the Alipay app (Alipay may show its own notice for external links). Tests: `backend/tests/test_epay_qr_page.py`. Not deployed.
 - **2026-11-25 EPay slow create no longer blocks the order; admin gateway test goes through the relay (`fix/epay-slow-create-recovery`).**
   Incident: snpay answered `/mapi.php` after about 9 s, our 6 s read gave up, the attempt became `unknown` and every later pay returned 503
   until the order expired. (A) Creates now get a 15 s read budget (`CREATE_READ_S`, `CREATE_TIMEOUT_S` 16 s; connect budget and queries unchanged;

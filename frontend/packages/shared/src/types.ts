@@ -937,7 +937,6 @@ export interface StreamMessageEvent {
 
 /** Private server-generated EPay presentation, never a payment-success assertion. */
 export interface EpayPaymentView {
-  redirect_host: string | null
   attempt_id: string
   status: string
   attempt_status: string
@@ -946,7 +945,8 @@ export interface EpayPaymentView {
   expires_at: string | null
   expired: boolean
   kind: 'qr' | 'redirect' | null
-  redirect_url: string | null
+  /** First-party hop link (or an https://qr.alipay.com/ link) for the phone-only button. */
+  open_url: string | null
   qr_svg: string | null
 }
 
