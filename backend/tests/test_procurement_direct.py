@@ -50,7 +50,8 @@ def gpt_session(marker: str, *, pad: int = 0, days: int = 10, email: str | None 
         "account": {"id": "acct-1", "planType": "free"},
         "accessToken": f"eyJhbGciOiJub25lIn0.{_b64(claims)}.sig",
         "sessionToken": f"{marker}-session-token",
-        "expires": (now + timedelta(days=max(days, 1))).isoformat(),
+        # negative ``days``: the SESSION is expired (ADR-053: an old access token alone is fine)
+        "expires": (now + timedelta(days=days)).isoformat(),
     }
     if pad:
         data["extra"] = "x" * pad
