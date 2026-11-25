@@ -321,6 +321,17 @@ class MockZovo:
     direct_expire_next: int = 0  # the next N preflight tokens are issued already expired
     direct_cancel_409: bool = False  # every cancel answers 409 (payment already started)
     direct_quote_factor: float = 1.0  # the preflight quotes are inflated by this factor
+    # [V] production 2026-11-24: a Chile / Egypt / Japan preflight quotes GPT plans in the
+    # region's currency (CLP / EGP / JPY) while the catalogue bounds them in PHP only
+    direct_local_quotes: bool = False
+    # GET /fx/rates: USD per unit (snapshot of 2026-11-25); None -> the currency is missing
+    fx_usd_per_unit: dict[str, str | None] = field(
+        default_factory=lambda: {
+            "PHP": "0.0156757", "CLP": "0.000982338", "EGP": "0.0184621", "JPY": "0.00628141",
+        }
+    )  # fmt: skip
+    fx_rate_date: str | None = None  # None = today
+    fx_missing: set[str] = field(default_factory=set)  # left out of GET /fx/rates (still quoted)
     direct_quotes_null: bool = False  # [V] the real sandbox answers ``quotes: null``
     preflight_over: dict[str, Any] = field(default_factory=dict)  # preflight fields overridden
     usage_busy: set[int] = field(default_factory=set)  # funding cards that are busy / cooling
@@ -644,11 +655,28 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
                 if row["key"].endswith("_half") and not mock.direct_half_eligible:
                     continue
                 if row["checkout_amount_minor"]:
+                    q_cur, q_minor, q_exp = (
+                        row["checkout_currency"],
+                        int(row["checkout_amount_minor"] * mock.direct_quote_factor),
+                        2,
+                    )
+                    local = mock.fx_usd_per_unit.get(currency)
+                    php = mock.fx_usd_per_unit.get("PHP")
+                    if (
+                        mock.direct_local_quotes
+                        and prod == "gpt"
+                        and q_cur == "PHP"
+                        and currency not in ("PHP", "USD")
+                        and local
+                        and php
+                    ):
+                        # PHP -> USD -> local; CLP / JPY have no minor unit
+                        q_exp = 0 if currency in ("CLP", "JPY") else 2
+                        usd = q_minor / 100 * float(php)
+                        q_cur, q_minor = currency, round(usd / float(local) * 10**q_exp)
                     quotes[row["key"]] = {
-                        "country": country, "currency": row["checkout_currency"],
-                        "plan": row["key"],
-                        "amountMinor": int(row["checkout_amount_minor"] * mock.direct_quote_factor),
-                        "minorUnitExponent": 2,
+                        "country": country, "currency": q_cur, "plan": row["key"],
+                        "amountMinor": q_minor, "minorUnitExponent": q_exp,
                     }  # fmt: skip
         return JSONResponse(
             _env(
@@ -1095,6 +1123,18 @@ def create_mock_zovocard(state: MockZovo | None = None) -> Starlette:
             return JSONResponse(_env(0, BALANCE_FIXTURE))
         if path == "/products":
             return JSONResponse(_env(0, products_fixture()))
+        if path == "/fx/rates":
+            want = [c.strip().upper() for c in request.query_params.get("currency", "").split(",")]
+            day = mock.fx_rate_date or datetime.now(timezone.utc).date().isoformat()
+            rates = [
+                {"currency": c, "usd_per_unit": float(v), "units_per_usd": 1 / float(v),
+                 "rate_date": day}
+                for c, v in mock.fx_usd_per_unit.items()
+                if v and c not in mock.fx_missing and (not want or want == [""] or c in want)
+            ]  # fmt: skip
+            return JSONResponse(
+                _env(0, {"snapshot_date": day, "stale": False, "count": len(rates), "rates": rates})
+            )
         if path == "/gpt-direct/plans":
             product = request.query_params.get("product", "gpt")
             if product not in ("gpt", "claude", "grok"):

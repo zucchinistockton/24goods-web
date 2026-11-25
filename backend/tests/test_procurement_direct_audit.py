@@ -260,6 +260,74 @@ async def test_a_local_currency_quote_is_held_to_the_plan_ceiling(env, dup):
     assert job.error_code == "quote_over_bound" and vendor.direct_executions == 0
 
 
+GPT_CL = {**GPT, "payment_country": "CL", "payment_currency": "CLP"}
+
+
+async def test_a_region_quote_in_its_own_currency_is_converted_with_the_vendor_rate(env, dup):
+    """Production 2026-11-24 (orders GVJ4.../GHMG..., Pro 5x Chile): the preflight quoted CLP, the
+    catalogue bounds the plan in PHP only, and every Chile / Egypt / Japan order stopped with
+    ``quote_currency_mismatch``. The CLP quote is now converted with GET /fx/rates (about USD
+    17.24) and held to the offer's USD bound (25 x 1.1): within it, the order goes ahead."""
+    vendor = _vendor()
+    vendor.direct_local_quotes = True
+    await _zovo(dup, vendor, GPT_CL)
+    _buyer, order = await dup.paid_direct(gpt_session(new_marker()))
+    await dup.run()
+    job = await _job(dup, order)
+    assert not (job.error_code or "").startswith("quote_"), job.error_code
+    assert vendor.direct_executions == 1
+    assert any(path.endswith("/fx/rates") for _m, path, _q in vendor.requests)
+
+
+async def test_a_converted_region_quote_above_the_budget_is_refused(env, dup):
+    vendor = _vendor()
+    vendor.direct_local_quotes = True
+    vendor.direct_quote_factor = 2.0  # about USD 34.5 against 27.5
+    await _zovo(dup, vendor, GPT_CL)
+    _buyer, order = await dup.paid_direct(gpt_session(new_marker()))
+    await dup.run()
+    job = await _job(dup, order)
+    assert job.error_code == "quote_over_bound" and vendor.direct_executions == 0
+
+
+@pytest.mark.parametrize("missing", ["rate", "stale"])
+async def test_no_usable_rate_means_no_order(env, dup, missing):
+    vendor = _vendor()
+    vendor.direct_local_quotes = True
+    if missing == "rate":
+        vendor.fx_missing = {"CLP"}  # quoted in CLP, but the rate list has no CLP
+    else:
+        vendor.fx_rate_date = "2026-01-01"
+    await _zovo(dup, vendor, GPT_CL)
+    _buyer, order = await dup.paid_direct(gpt_session(new_marker()))
+    await dup.run()
+    job = await _job(dup, order)
+    assert job.error_code == "quote_fx_unavailable" and vendor.direct_executions == 0
+
+
+def test_parse_fx_rate_is_strict():
+    from datetime import date
+
+    from app.suppliers.zovocard.supplier import parse_fx_rate
+
+    today = date(2026, 11, 25)
+    ok = {"rates": [{"currency": "CLP", "usd_per_unit": 0.00098, "rate_date": "2026-11-24"}]}
+    assert parse_fx_rate(ok, "CLP", today) == Decimal("0.00098")
+    inv = {"rates": [{"currency": "JPY", "units_per_usd": 160, "rate_date": "2026-11-25"}]}
+    assert parse_fx_rate(inv, "JPY", today) == Decimal(1) / Decimal(160)
+    for bad in (
+        {"rates": [{"currency": "CLP", "usd_per_unit": 0, "rate_date": "2026-11-24"}]},
+        {"rates": [{"currency": "CLP", "usd_per_unit": True, "rate_date": "2026-11-24"}]},
+        {"rates": [{"currency": "CLP", "usd_per_unit": "NaN", "rate_date": "2026-11-24"}]},
+        {"rates": [{"currency": "CLP", "usd_per_unit": 0.001, "rate_date": "2026-11-01"}]},
+        {"rates": [{"currency": "CLP", "usd_per_unit": 0.001}]},
+        {"rates": [{"currency": "EGP", "usd_per_unit": 0.02, "rate_date": "2026-11-24"}]},
+        {"rates": "x"},
+        None,
+    ):
+        assert parse_fx_rate(bad, "CLP", today) is None
+
+
 async def test_a_session_of_another_account_is_refused_by_the_preflight(env, dup):
     from app.suppliers.base import JobSpec, OfferSpec
     from tests.test_procurement_vcc_audit import _adapter
