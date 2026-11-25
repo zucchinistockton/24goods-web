@@ -6,6 +6,15 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 **Hand-off 2026-11-18 (after PR #49; the owner's order #29 → #30 → #31 is done on the demo). START HERE.**
 
+- **2026-11-25 07:10 UTC PRODUCTION DEPLOY of #110, #111, #112 (owner: "if there are no issues, proceed directly").** c4
+  runs `56bb559` (api + procurement revision verified, no migration). Dump `/root/kesiv-backups/predeploy-20261125T070848Z/`
+  (sha256 `f37edbc5…f2fd`, also on c4); rollback images `goods24-{api,web}:rollback-fcfa678` and `:rollback-56bb559` is
+  the next one. Verified: live `GET /fx/rates` conversion in procurement (Pro 5x CL quote CLP 86,365 = USD 84.84 vs bound
+  95.62), smoke all pass, no errors. **#113 (zzshu, ADR-054) is merged (`a801158`) but NOT deployed:** the deploy step that
+  adds `ZZSHU_APP_SECRET` to `env/procurement.env` (enables sending card numbers to card.zzshu.pro) needs the owner's
+  explicit go-ahead. After it: create supplier `zzshu` and its sources in the console (docs/production.md "zzshu standby
+  provider"); `per_topup_max_usd` 200 is below a Pro 20x dedicated card (cost ~140–171 USD x 1.2).
+
 - **2026-11-25 Long text in chat (`feat/chat-long-text-file`).** Both composers no longer truncate pasted text
   (removed `maxlength=2000`); text over 2000 characters is sent as a `.txt` file (kind `file`), 501-2000 asks (buyer
   dialog, staff confirm box); over 1 MB (UTF-8) is refused with an i18n error (`longTextTooLarge` in shared
