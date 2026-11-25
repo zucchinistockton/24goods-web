@@ -234,7 +234,7 @@ async def test_a_precharge_failure_without_a_standby_source_goes_to_staff(env, d
 # ------------------------------------------------------------------ primary switch
 async def test_staff_make_zzshu_primary_by_priority_and_back(env, dup):  # noqa: F811
     vendor, zz = _vendor(), MockZzshu()
-    _zsid, _sid, zoid = await _both(env, dup, vendor, zz, zz_priority=5)
+    _zsid, _sid, _zoid = await _both(env, dup, vendor, zz, zz_priority=5)
     buyer, order = await _order(dup)
     await _wait(env, dup, order, buyer)
     assert zz.creates == 1 and vendor.direct_executions == 0  # ZovoCard was never asked
