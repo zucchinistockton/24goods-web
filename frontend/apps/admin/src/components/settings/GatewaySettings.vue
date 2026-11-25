@@ -65,12 +65,15 @@ async function remove(row: Gateway) {
 }
 function when(iso: string | null) { return iso ? new Date(iso).toLocaleString() : t('gwRouting.never') }
 onMounted(load)
-interface TestResult { ok: boolean; reachable: boolean; latency_ms?: number; message?: string }
+interface TestResult { ok: boolean; reachable: boolean; latency_ms?: number; message?: string; route?: 'relay' | 'direct' }
 async function runTest(id: string) {
   testing.value = id
   try {
     const r = await client.post<TestResult>(`/admin/payment-gateways/${encodeURIComponent(id)}/test`, {})
-    testMsg.value[id] = r.ok ? t('gateways.tested', { ms: r.latency_ms ?? 0, msg: r.message ?? '' }) : t('gateways.testFailed')
+    const route = r.route ? t(r.route === 'relay' ? 'gateways.routeRelay' : 'gateways.routeDirect') : ''
+    testMsg.value[id] = r.ok
+      ? t('gateways.tested', { route, ms: r.latency_ms ?? 0, msg: r.message ?? '' })
+      : route ? t('gateways.testFailedVia', { route }) : t('gateways.testFailed')
     await loadHealth()
   } catch (e) { toastError(e) } finally { testing.value = '' }
 }

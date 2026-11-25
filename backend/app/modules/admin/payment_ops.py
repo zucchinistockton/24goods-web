@@ -29,7 +29,7 @@ from app.modules.admin.payment_gateways import session_admin
 from app.modules.operations.service import record_event
 from app.modules.payments import gateway_tests as test_payments
 from app.modules.payments.gateways import client_for
-from app.payments import bepusdt
+from app.payments import bepusdt, egress
 from app.payments.zpay import ZPayQueryError, ZPayUnreachable
 
 log = logging.getLogger(__name__)
@@ -248,11 +248,32 @@ async def test_gateway(
     client, gateway_url, tid = client_for(res, row), row.gateway, admin.tenant_id
     await db.commit()  # no transaction held across the network calls
     result: dict[str, Any]
+    route, latency = "direct", 0
+    host = (urlsplit(gateway_url).hostname or "").lower()
+    relay = egress.relays().get(host)
     try:
-        target = await safefetch.vet_url(gateway_url)
-        latency = await tcp_connect_ms(target.ip, target.port)
+        if relay is not None:
+            # production reaches some gateways only through a relay: test that address
+            # (relay-only hosts never use the direct route; otherwise either one is enough)
+            try:
+                latency = await tcp_connect_ms(*relay)
+                route = "relay"
+            except (OSError, asyncio.TimeoutError):
+                if egress.relay_only():
+                    raise
+                target = await safefetch.vet_url(gateway_url)
+                latency = await tcp_connect_ms(target.ip, target.port)
+        else:
+            target = await safefetch.vet_url(gateway_url)
+            latency = await tcp_connect_ms(target.ip, target.port)
     except (OSError, asyncio.TimeoutError, safefetch.FetchError):
-        result = _result(False, stage="connect", reachable=False, message="connection failed")
+        result = _result(
+            False,
+            stage="connect",
+            reachable=False,
+            message="connection failed",
+            route="relay" if relay is not None and egress.relay_only() else route,
+        )
     else:
         try:
             ans = await client.probe_order("SELFTEST" + secrets.token_hex(8).upper())
@@ -263,17 +284,21 @@ async def test_gateway(
                 stage="query",
                 reachable=True,
                 latency_ms=latency,
+                route=route,
                 gateway_code=ans["code"],
                 message=ans["msg"],
             )
         except ZPayUnreachable:
-            result = _result(False, stage="query", reachable=False, message="connection failed")
+            result = _result(
+                False, stage="query", reachable=False, message="connection failed", route=route
+            )
         except ZPayQueryError:
             result = _result(
                 False,
                 stage="query",
                 reachable=True,
                 latency_ms=latency,
+                route=route,
                 message="gateway answered with an unexpected response",
             )
     row_ref = str(ref)
