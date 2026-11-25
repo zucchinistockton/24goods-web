@@ -59,6 +59,19 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
   protocol: it can be added as one more EPay gateway in the console (Alipay) without code. vmcardio needs an adapter
   (decision pending: dedicated cards for zzshu orders first). Credentials in `/root/.secrets/{vmcardio,snpay}.env`.
 
+- **2026-11-25 15:28 UTC PRODUCTION DEPLOY of #123 (EPay pay page shows only a QR via a first-party hop link; owner:
+  "deploy #123").** Why: snpay's `/mapi.php` always returns `payurl` (`www.snpay.cn/pay/submit/<trade_no>/`; tried
+  device pc / mobile / alipay / qrcode with unpaid 0.10 CNY orders), never a `qr.alipay.com` code like Xiaodou, so the
+  page showed an "Open payment cashier" link. That snpay page is a hop: desktop -> its own frame of Alipay's QR, mobile /
+  Alipay app -> `openapi.alipay.com` wap pay. Now the QR encodes `/api/v1/pay/epay/go/<attempt id>` on the shop's own
+  origin (302 to the stored, vetted cashier link only while the attempt is ready and the order pending); touch devices
+  also get an "Open Alipay to pay" button. Security review: nothing blocking. c4 runs `91324a2` (api + web verified),
+  no migration. Dump `/root/kesiv-backups/predeploy-20261125T152704Z/` (sha256 `375cf303…`, also on c4, 54 tables);
+  rollback images `goods24-{api,web}:rollback-7dcf5a4` and `:rollback-a6986aa`. Smoke all pass; an unknown hop id
+  answers 302 `/orders` with `no-store` / `no-referrer`. Gateways: the owner tested snpay as primary (14:45 UTC, paid)
+  and put Xiaodou back first at 14:47 UTC (Xiaodou 10, snpay 20, fixed priority). Open: owner scans one real snpay QR
+  with the Alipay app to confirm the hop opens smoothly.
+
 - **2026-11-25 14:21 UTC PRODUCTION DEPLOY of #121 (EPay slow create recovery, relay-aware gateway test; owner:
   "Once the build is complete, deploy it—deploy #121—with Xiaodou as the primary gateway and snpay as the secondary").**
   Cause (13:31 UTC): snpay answered `/mapi.php` after ~9 s (its log: order created 9 s after our request), our 6 s read
