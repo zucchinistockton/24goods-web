@@ -725,3 +725,63 @@ fee; the wallet and daily cap guard it. The procurement Redis ACL only allows in
 fixed, not sliding. Open: the real vendor's `funding_hold_status` values are unknown (a value outside released /
 refunded / none blocks the fallback, safe); zzshu's `is_subscription_cancelled = 0` after success is delivered anyway and
 recorded as `completed:renew_unconfirmed` for staff; a card left over after a lost create must be reviewed by hand.
+
+### ADR-055: vmcardio as the second issuer of the zzshu dedicated card (owner 2026-11-25)
+
+**Context.** Every card.zzshu.pro order is paid with a NEW dedicated card (ADR-054), opened at ZovoCard. When ZovoCard
+cannot open one (wallet too low, no product / slot, vendor refusal) the order stops although zzshu itself is ready.
+vmcardio.com (research: `docs/research/vmcardio/vmcardio-api.md`) issues cards through a V2 API and returns the number /
+CVV / expiry the zzshu create needs. It is used for nothing else.
+
+**Decision.**
+- Adapter `vmcardio` (`app/suppliers/vmcardio/`): V2 only, base `https://vmapi.vmcardio.com` (sandbox
+  `https://sandbox-api.vmcardio.com`). Own bounded client (5 s / 30 s, 1 MiB cap, no redirects, production write guard
+  on `createCard`). `GET /v2/getAccessToken` -> token cached in memory and refreshed 600 s before `expired_time`;
+  an "invalid token" answer (400003, never processed by the vendor) refreshes once and repeats. The supplier row is
+  `vmcardio` (env production / sandbox); it has no capabilities: no offer can be created on it and it never takes
+  CDK / VCC / direct jobs. Secrets only in the procurement env: `VMCARDIO_APP_ID`, `VMCARDIO_APP_SECRET`, optional
+  `VMCARDIO_BASE_URL` (`..._SANDBOX_...` for the sandbox) and the cardholder data `VMCARDIO_CARDHOLDER_FIRST_NAME`,
+  `_LAST_NAME`, `VMCARDIO_CARD_ADDRESS_LINE1`, `_CITY`, `_STATE`, `_POSTCODE`, `_COUNTRY` (default US); the address
+  is sent only when complete, the name defaults to a neutral one. Probe = token + balance + products; the balance
+  refresh feeds the same wallet-low Telegram alert as ZovoCard. Migration `0042` allows the adapter and widens
+  `procurement_jobs.card_id` / `procurement_fundings.card_id` to 64 (a vmcardio id is about 22 characters).
+- Issuer order: `ZZSHU_FUNDING_SUPPLIER` is now an ordered, comma separated list of supplier codes (default
+  `zovocard`; `zovocard,vmcardio` in production). The funding setting `zzshu_card_issuers` (default
+  `["zovocard","vmcardio"]`, 1 to 4 distinct codes, each must be a ZovoCard / vmcardio supplier row, admin Funding
+  panel, 2FA + audit like the other funding settings) orders them at run time; a code not configured in the
+  procurement env is skipped. `CardIssuers` (`app/suppliers/issuers.py`) replaces the single ZovoCard supplier a
+  `ZzshuSupplier` held and routes `open / read / finish` by issuer; a card id `vm:<vm_card_id>` is vmcardio, a number is
+  ZovoCard. The next issuer opens a card only after a DEFINITE "nothing opened": UNAVAILABLE (wallet low, no product /
+  slot, cap, `product_unavailable`), or a coded refusal before any card exists. RETRYABLE / AMBIGUOUS is raised as is.
+  Settings `vmcardio_bin_priority` (default 537872, 537882, 532604, 555659; only these BINs are ever used, the product
+  is looked up through `/v2/getProductCode`, never hard-coded) and `vmcardio_reserve_slots` (default 1: a product whose
+  `remaining_open_card_num` is at or below it is skipped, so slots stay for other uses).
+- Same lifecycle and safeguards as the ZovoCard dedicated card: the card is loaded with `need` (cost x (1 + margin), whole
+  dollars up, at least 1) from the vmcardio account balance, only if the per-top-up max and the daily cap allow it, and
+  `topups.record_open` counts it against the daily cap; its id is persisted on the job BEFORE the zzshu send (the
+  `card_opened` re-lease); at the end `refundCard` (balance above the vendor's 0.10 USD minimum) then `deleteCard`
+  (returns the rest) sweep it; a card that could not be deleted raises `procurement.zzshu_card_unswept`; the staff
+  timeline and the audit rows show issuer, card id, last four, loaded and leftover. Number / CVV / expiry come from
+  `/v2/cardDetail` right before the one zzshu POST and live in memory only; `getCardList` also returns full numbers, so
+  its reply is reduced to id / amount / time at once. Nothing is logged, stored, audited or put in an exception.
+- Idempotency and lost answers: request id `zz-<job uuid hex>-open` (unique per app forever; the vendor answers
+  `Duplicate Client Request Id` and not the first result) and card `label` = `zz-<job uuid hex>`. A timeout or 5xx after
+  the send is RETRYABLE: the engine retries with the SAME key, the repeat answers "duplicate" and the card is looked up
+  in `/v2/getCardList`. The vendor's list and detail do NOT return the label, so the lookup takes the ONE active card
+  created in the last 45 minutes that holds exactly the loaded amount (the list gives no time zone: a time that is recent
+  as UTC or as UTC+8 counts). None yet = retry (the list may lag), several = AMBIGUOUS for staff; a second card is never
+  created under a new id. The label is visible in the vendor console for the staff check.
+- Webhook `POST /api/v1/webhooks/vmcardio` (API process, CSRF exempt, 300 / min / IP like the ZovoCard one, 64 KiB):
+  `X-VM-SIGN` (Base64 RSA-SHA256 PKCS#1 v1.5 over the RAW body) is verified when `APP_VMCARDIO_WEBHOOK_PUBLIC_KEY` (PEM)
+  is configured (bad signature 401; an unreadable key 503, never a silent downgrade). Without a key the event is
+  accepted and stored with `verified: false`. In both cases it is only a hint: a whitelisted payload (ids, status, type,
+  amounts, merchant / description with every run of 4+ digits masked, no card number) goes to `supplier_events`
+  (kind `vmcardio_card_transaction`, already marked processed, NO outbox row) for staff and ops review; money, jobs and
+  orders are never touched. The reply is `{"code":0,"msg":"ok"}`.
+
+**Consequences.** An order no longer stops when ZovoCard cannot open a card, while ZovoCard stays first and vmcardio is
+used only on a definite refusal. Open: the vendor's real card-detail `expire` format is unknown (the parser accepts
+`MM/YY`, `MM/YYYY`, `YYYY-MM`, `MMYY`); the opening fee of a vmcardio product is not in the API, so only the loaded amount
+counts against the cap; a ZovoCard "request_failed" on open is AMBIGUOUS (not a definite refusal) and so never falls back;
+the memory of "which issuer answered with a maybe-opened card" is per process (a restart asks the first issuer again);
+the webhook key is still to be found in the vendor console.

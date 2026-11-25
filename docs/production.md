@@ -190,6 +190,39 @@ put it first. Setup (production needs the owner's go-ahead; nothing here is done
    timeline; `procurement.zzshu_card_unswept` = a card still holds money, look at it by hand; `create_unconfirmed` =
    the zzshu answer was lost, check the zzshu order history before anything else (the order may exist and be paid).
 
+## vmcardio: second issuer of the zzshu dedicated card (ADR-055)
+
+vmcardio opens the dedicated card of a zzshu order only when ZovoCard opened nothing (wallet too low, no product / slot,
+vendor refusal before any card exists). Staff can swap the order. It is used for nothing else. Setup (production needs
+the owner's go-ahead):
+
+1. Procurement env file (`deploy/env/procurement.env`, never in git): `VMCARDIO_APP_ID=<app id>`,
+   `VMCARDIO_APP_SECRET=<app secret>`; optional `VMCARDIO_BASE_URL` (default `https://vmapi.vmcardio.com`). Cardholder
+   data used when a card is opened: `VMCARDIO_CARDHOLDER_FIRST_NAME`, `VMCARDIO_CARDHOLDER_LAST_NAME` (neutral default
+   if unset) and optionally the billing address, all or none: `VMCARDIO_CARD_ADDRESS_LINE1`, `VMCARDIO_CARD_CITY`,
+   `VMCARDIO_CARD_STATE`, `VMCARDIO_CARD_POSTCODE`, `VMCARDIO_CARD_COUNTRY` (default `US`; letters, digits, spaces and
+   hyphens only). Set `ZZSHU_FUNDING_SUPPLIER=zovocard,vmcardio` (the console setting below overrides the order).
+   Restart `procurement`. The container needs egress to `vmapi.vmcardio.com`.
+2. Console -> Procurement -> Suppliers: add a supplier, adapter `vmcardio`, code `vmcardio`, env `production` (asks for
+   your password, stays disabled until `APP_PROCUREMENT_ALLOW_PRODUCTION` is set; production writes also need
+   `APP_PROCUREMENT_ALLOW_PRODUCTION_WRITES`), then "Test connection" (token + balance + products). Do NOT add sources
+   to it. Its balance is refreshed like ZovoCard's and the "wallet below" Telegram alert covers it.
+3. Console -> Procurement -> Cards -> Card funding (2FA): `zzshu card issuers (in order)` = `zovocard vmcardio` (swap them
+   to make vmcardio first); `vmcardio card ranges` (default 537872 537882 532604 555659, best first: the product is
+   looked up by BIN, a BIN not listed is never used); `vmcardio slots to keep` (default 1: a product with that many
+   open-card slots left or fewer is skipped). The card is loaded with plan cost x (1 + `zzshu card margin`) and counts
+   against the daily cap and the per-top-up maximum like a ZovoCard card.
+4. Webhook: vmcardio console -> Personal center -> Developer -> webhook URL
+   `https://shop.kesiv.com/api/v1/webhooks/vmcardio`. Public key: copy the VM public key shown on that page (PEM with the
+   `BEGIN PUBLIC KEY` / `END PUBLIC KEY` lines) into the API env as `APP_VMCARDIO_WEBHOOK_PUBLIC_KEY` (in an env file
+   write the newlines as the two characters backslash n), restart `api`. Until then events are accepted and stored as
+   `verified: false`; with the key a bad signature gets 401. Either way the webhook only records the transaction
+   (table `supplier_events`, kind `vmcardio_card_transaction`) and changes no order or money.
+5. Watch: the job timeline and audit `procurement.zzshu_card` name the issuer (`vmcardio`), the card id (`vm:<id>`), last
+   four, loaded and leftover; `procurement.zzshu_card_unswept` = the card could not be deleted, look at it in the vmcardio
+   console (cards are labelled `zz-<job uuid hex>`); a job in `needs_manual` after an unresolved create: find the card
+   with that label before anything else.
+
 ## SEO and Google Search Console (review-v5.2 §6, ADR-024)
 
 - Public pages (`/`, `/p/*`, `/a/*`, `/help`) are rendered by the API into the SPA shell for crawlers;
