@@ -6,6 +6,21 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 **Hand-off 2026-11-18 (after PR #49; the owner's order #29 → #30 → #31 is done on the demo). START HERE.**
 
+- **2026-11-25 08:42 UTC PRODUCTION DEPLOY of #113 (zzshu standby provider, ADR-054; owner: "Deploying the zzshu
+  provider ... Pro 20x to use the backup provider. The maximum limit per top-up transaction is $250").** c4 runs
+  `431f5d5` (api + web revision verified), migration `0041_zzshu_adapter`. Dump
+  `/root/kesiv-backups/predeploy-20261125T084039Z/` (sha256 `b8db2cdd…0e71f`, also on c4); rollback images
+  `goods24-{api,web}:rollback-56bb559` and `:rollback-fcfa678`; `env/procurement.env` gained `ZZSHU_APP_SECRET` +
+  `ZZSHU_FUNDING_SUPPLIER=zovocard` (backup `procurement.env.bak-20261125T084104Z`). Smoke all pass. card.zzshu.pro
+  answers c4 directly (`GET /user` 200 in 0.27 s, 15 points), so no relay is needed. Console setup done by a one-off
+  script that called the console's own route functions inside the api container (validation + audit rows unchanged;
+  the password / 2FA prompts were skipped on the owner's instruction and recorded as audit `ops.operator_script`):
+  supplier `zzshu` (production, priority 200, enabled, probe ok, health ok); 16 sources go / plus / pro_5x / pro_20x x
+  PH / US / EG / CL, priority 200 (ZovoCard 100), USD cost = the ZovoCard source's cost (pro_5x PH keeps the exact
+  91.0052: its floor equals that cost, a rounded 91.01 is refused); funding `per_topup_max_usd` 250 (daily cap stays
+  300, margin 20 %). Funding wallet at setup: 122.02 USD, so zzshu Pro 20x (card 168-240 USD) stays "funds
+  insufficient" until the ZovoCard wallet holds more; a Pro 20x card also uses most of the 300 USD daily cap.
+
 - **2026-11-25 07:10 UTC PRODUCTION DEPLOY of #110, #111, #112 (owner: "if there are no issues, proceed directly").** c4
   runs `56bb559` (api + procurement revision verified, no migration). Dump `/root/kesiv-backups/predeploy-20261125T070848Z/`
   (sha256 `f37edbc5…f2fd`, also on c4); rollback images `goods24-{api,web}:rollback-fcfa678` and `:rollback-a6371e4`.
@@ -43,8 +58,7 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
   adapter + mock + tests, definite pre-charge fallback from ZovoCard, automatic cool-down (3 pre-charge failures in 60 min
   -> ZovoCard direct sources behind the others for 30 min, staff alert), a NEW dedicated card per zzshu order loaded with
   cost x (1 + `zzshu_card_margin_pct`, default 20, admin Funding panel) and swept + deleted afterwards. Migration `0041`.
-  Not deployed. Setup steps in `docs/production.md` (zzshu). Next: create the supplier and its sources on production
-  after the review; check the real `funding_hold_status` vocabulary on the first live fallback.
+  Deployed 2026-11-25 08:42 UTC (supplier + 16 sources live, see the hand-off). Next: check the real `funding_hold_status` vocabulary on the first live fallback.
 
 - **2026-11-23 06:50 UTC PRODUCTION DEPLOY of #108 (owner: "bypass 141 by default … deploy PR #105 … take the
   necessary actions").** c4 runs `fcfa678` (revision verified, no migration). `deploy/env/api.env` gained
