@@ -120,6 +120,7 @@ PLAN_REFUSALS = frozenset(
         "funding_card_invalid",
         "funding_card_exhausted",
         "funding_card_low",
+        "points_exhausted",  # ADR-054: the zzshu account has no point left
     }
 )
 OUTBOX_MAX_ATTEMPTS = 8
@@ -314,7 +315,34 @@ async def candidates(
             n = 0
         k = n % len(rows)
         rows = rows[k:] + rows[:k]
+    if order.delivery_mode == "upstream_direct" and len(rows) > 1:
+        rows = await _demote_cooling(ctx, rows)
     return rows
+
+
+# ADR-054: ZovoCard direct orders that fail DEFINITELY before any charge, repeatedly, put the
+# supplier's direct sources behind the others for a while (never removed: with nothing else
+# usable they are still tried). Fixed window counter in Redis (the procurement ACL allows incr /
+# expire / get / ttl on ``rl:proc:*`` only).
+PRECHARGE_LIMIT = 3  # failures ...
+PRECHARGE_WINDOW_S = 3600  # ... within this window start the cool-down
+COOLDOWN_S = 1800
+
+
+def _cool_key(supplier_id: uuid.UUID) -> str:
+    return f"rl:proc:cool:{supplier_id}"
+
+
+async def _demote_cooling(ctx: HasRedis, rows: list[OfferRow]) -> list[OfferRow]:
+    cooling: dict[uuid.UUID, bool] = {}
+    for r in rows:
+        if r.ref.adapter == "zovocard" and r.supplier_id not in cooling:
+            try:
+                cooling[r.supplier_id] = await ctx.redis.get(_cool_key(r.supplier_id)) is not None
+            except Exception:  # Redis down: the configured order stands
+                cooling[r.supplier_id] = False
+    keep = [r for r in rows if not cooling.get(r.supplier_id)]
+    return keep + [r for r in rows if cooling.get(r.supplier_id)]
 
 
 async def pick_candidates(
@@ -914,7 +942,12 @@ class Lease:
 
 def _offer_params(job: ProcurementJob, offer: OfferRow) -> dict[str, Any]:
     """The offer's parameters, plus (card mode ``auto_existing``) the card the job was assigned.
-    The offer row and the pinned ``request_hash`` never carry it."""
+    The offer row and the pinned ``request_hash`` never carry it. A zzshu source (ADR-054) gets the
+    dedicated card its adapter opened for the job (a retry reuses it)."""
+    if _dedicated(offer):
+        if job.card_id and job.card_id.isdigit():
+            return {**offer.params, dr.PICKED_CARD_KEY: int(job.card_id)}
+        return offer.params
     if _auto_card(offer) and job.card_id and job.card_id.isdigit():
         extra: dict[str, Any] = {dr.PICKED_CARD_KEY: int(job.card_id)}
         if job.fund_amount and job.fund_key:  # ADR-048: the planned top-up and its key
@@ -1029,14 +1062,20 @@ async def _failover(
     actor_id: uuid.UUID | None = None,
     actor_role: str = "system",
     ip: str | None = None,
+    only_adapter: str | None = None,
 ) -> None:
-    if job.maybe_sent or job.upstream_ref:
+    """``only_adapter`` is set ONLY by the definite pre-charge exception (ADR-054,
+    :func:`_precharge_failover`): the job already holds a supplier order that provably charged
+    nothing, and only a source of that adapter may take it."""
+    if (job.maybe_sent or job.upstream_ref) and only_adapter is None:
         # another supplier is only ever tried when the first one is known to have done nothing
         await _needs_manual(db, job, f"maybe_sent:{reason}")
         return
     tried = [*list(job.tried_offer_ids or []), *([job.offer_id] if job.offer_id else [])]
     job.tried_offer_ids = tried
     cands = await pick_candidates(ctx, db, order, tried)
+    if only_adapter is not None:
+        cands = [c for c in cands if c.ref.adapter == only_adapter]
     if not cands:
         await _needs_manual(db, job, f"no_source:{reason}")
         return
@@ -1048,11 +1087,119 @@ async def _failover(
     job.step = "submit"
     job.first_sent_at = None
     job.upstream_ref = None
+    if only_adapter is not None:  # the failed order is over: the job is "never sent" again
+        job.maybe_sent = False
+        job.upstream_status = None
+        job.card_id = job.card_last4 = job.used_card_id = job.used_last4 = None
+        job.card_candidates = job.card_candidates_at = job.card_wait_since = None
+        job.card_attempt = 0
+        job.account_mask = job.preflight_expires_at = None  # the new source reports its own
+        topups.forget(job)
     job.attempts = 0
     job.next_poll_at = utcnow()
     await _transition(
         db, job, "queued", f"failover:{reason}", actor_id=actor_id, actor_role=actor_role, ip=ip
     )
+
+
+async def _note_precharge_failure(
+    ctx: ProcurementContext, db: AsyncSession, job: ProcurementJob
+) -> None:
+    """Count one definite pre-charge failure of a ZovoCard direct order; at
+    :data:`PRECHARGE_LIMIT` within :data:`PRECHARGE_WINDOW_S` start the cool-down of that
+    supplier's direct sources and leave one audit row (the API alerts staff from it)."""
+    if job.supplier_id is None:
+        return
+    try:
+        key = f"rl:proc:pcf:{job.supplier_id}"
+        n = int(await ctx.redis.incr(key))
+        if n == 1:
+            await ctx.redis.expire(key, PRECHARGE_WINDOW_S)
+        if n < PRECHARGE_LIMIT:
+            return
+        cool = int(await ctx.redis.incr(_cool_key(job.supplier_id)))
+        if cool == 1:  # a new cool-down (a running one is not extended or announced again)
+            await ctx.redis.expire(_cool_key(job.supplier_id), COOLDOWN_S)
+        else:
+            return
+    except Exception as exc:  # Redis down: no cool-down, the failover itself still works
+        log.warning("cool-down counter failed error=%s", type(exc).__name__)
+        return
+    await audit(
+        db,
+        tenant_id=job.tenant_id,
+        action="procurement.direct_cooldown",
+        target=f"supplier:{job.supplier_id}",
+        detail={
+            "failures": n,
+            "window_s": PRECHARGE_WINDOW_S,
+            "cooldown_s": COOLDOWN_S,
+            "order_id": str(job.order_id),
+        },
+        severity="critical",
+    )
+
+
+async def _precharge_failover(
+    ctx: ProcurementContext,
+    db: AsyncSession,
+    job: ProcurementJob,
+    order: OrderRow,
+    res: Result,
+    lease: Lease,
+) -> bool:
+    """ADR-054 (owner 2026-11-25): the ONE exception to "a job that holds a supplier order is never
+    moved". A ZovoCard direct order that failed DEFINITELY before any charge (``failed_precharge``
+    with its fee and funding hold released / none, set by the adapter as ``precharge_clean``)
+    goes to the zzshu source of the same variant. Anything that may have charged (declined,
+    cancelled, a held fee, an unread status) stays in ``needs_manual``. The ZovoCard reference is
+    kept in the audit row and the job timeline. Returns True when the job was moved."""
+    if (
+        lease.ref.adapter != "zovocard"
+        or not res.precharge_clean
+        or res.error_code != "order_failed_precharge"
+        or not job.upstream_ref
+    ):
+        return False
+    await _note_precharge_failure(ctx, db, job)
+    tried = [*list(job.tried_offer_ids or []), *([job.offer_id] if job.offer_id else [])]
+    cands = await pick_candidates(ctx, db, order, tried)
+    if not any(c.ref.adapter == "zzshu" for c in cands):
+        return False  # no standby source: the job goes to staff as before
+    before_ref, before_offer = job.upstream_ref, job.offer_id
+    await _failover(ctx, db, job, order, "precharge_failed", only_adapter="zzshu")
+    if job.state != "queued" or job.offer_id == before_offer:  # (cannot happen: checked above)
+        return job.state == "needs_manual"
+    await audit(
+        db,
+        tenant_id=job.tenant_id,
+        action="procurement.precharge_failover",
+        target=f"procurement_job:{job.id}",
+        detail={
+            "order_id": str(job.order_id),
+            "from_ref": clean_detail(before_ref),
+            "from_offer": str(before_offer),
+            "to_offer": str(job.offer_id),
+            "vendor": clean_detail(res.detail or "failed_precharge"),
+        },
+        severity="warning",
+    )
+    _record_progress(
+        job,
+        {
+            "events": [
+                {
+                    "tid": f"failover-{before_ref}"[:64],
+                    "cat": "failover",
+                    "code": "precharge_failover",
+                    "msg": "ZovoCard order failed before any charge; sent to the standby source",
+                }
+            ]
+        },
+        "engine",
+        utcnow(),
+    )
+    return True
 
 
 BALANCE_BACKOFF = timedelta(seconds=60)
@@ -1377,7 +1524,11 @@ async def _lease(ctx: ProcurementContext, job_id: uuid.UUID, tenant_id: uuid.UUI
                 job.step = "sent"  # from here on a crash means "maybe sent": reconcile
                 job.maybe_sent = True
                 job.first_sent_at = now
-            elif job.kind == "direct" and await _card_busy(ctx, db, job, offer):
+            elif (
+                job.kind == "direct"
+                and not _dedicated(offer)
+                and await _card_busy(ctx, db, job, offer)
+            ):
                 # another order is at the vendor on the SAME funding card: wait, never fail over
                 job.error_code = "card_busy"
                 job.next_poll_at = now + BALANCE_BACKOFF
@@ -1413,7 +1564,11 @@ async def _lease(ctx: ProcurementContext, job_id: uuid.UUID, tenant_id: uuid.UUI
             await topups.mark_sent(db, job)  # committed with the lease, before any HTTP call
         policy = (
             await topups.policy(db, job.tenant_id, offer.supplier_id, now, exclude_job=job.id)
-            if job.kind == "direct" and _auto_card(offer) and mode == "precheck"
+            if job.kind == "direct"
+            and (
+                (_auto_card(offer) and mode == "precheck")
+                or (_dedicated(offer) and mode in ("precheck", "submit"))
+            )
             else None
         )
         spec = _spec(
@@ -1497,12 +1652,20 @@ async def _direct_gate(
         return problem
     if ctx.settings.env == "prod" and offer.ref.env == "sandbox":
         return "sandbox_in_prod"  # a real buyer's session never goes to the sandbox (S-L1)
+    if _dedicated(offer):
+        return None
     if _auto_card(offer):
         return None  # the picked card is checked against the same rule when it is assigned
     card = offer.params.get("card_id")
     if await funding_card_clash(db, job.tenant_id, offer.supplier_id, card):
         return "funding_card_invalid"  # a card bought for a buyer is never a funding card (H1)
     return None
+
+
+def _dedicated(offer: OfferRow) -> bool:
+    """A zzshu source (ADR-054): its adapter opens a NEW card per order, so there is no funding
+    card to pick, check or serialise."""
+    return offer.ref.adapter == "zzshu"
 
 
 def _auto_card(offer: OfferRow) -> bool:
@@ -2451,6 +2614,8 @@ async def _apply(ctx: ProcurementContext, lease: Lease, res: Result) -> None:
             await _card_mismatch(db, job, other)
             await db.commit()
             return
+        if lease.ref.adapter == "zzshu" and job.kind == "direct":
+            await _zzshu_card(db, job, res, lease.mode, now)
         if problem := await _reported_card_problem(db, job, res, lease):
             await _card_discrepancy(db, job, problem, res.card_id)
             await db.commit()
@@ -2597,6 +2762,13 @@ async def _apply(ctx: ProcurementContext, lease: Lease, res: Result) -> None:
             else:  # reconcile found nothing: resubmit under the SAME key
                 job.step = "submit"
                 job.next_poll_at = now
+        elif (
+            o is Outcome.FATAL
+            and job.kind == "direct"
+            and lease.mode in ("submit", "query", "verify")
+            and await _precharge_failover(ctx, db, job, order, res, lease)
+        ):
+            pass  # ADR-054: moved to the standby source, nothing was charged
         else:  # FATAL: a deterministic refusal, nothing was executed for this key
             if res.error_code != "IDEMPOTENCY_CONFLICT" and not (
                 job.kind == "direct" and lease.prior_send
@@ -2607,6 +2779,64 @@ async def _apply(ctx: ProcurementContext, lease: Lease, res: Result) -> None:
                 await _direct_fatal(db, job, res, ctx.settings.direct_decline_limit)
         await _alert_if_stuck(db, job, now)
         await db.commit()
+
+
+async def _zzshu_card(
+    db: AsyncSession, job: ProcurementJob, res: Result, mode: str, now: datetime
+) -> None:
+    """ADR-054: what staff and support see of a zzshu order's dedicated card: its id and last four
+    (never a number), what was loaded and what went back to the wallet, in the job record, the
+    audit log and the job timeline. A card that is left with money after the order is over gets a
+    warning row (the API alerts staff)."""
+    if res.card_id and res.card_id.isdigit() and len(res.card_id) <= 13 and not job.card_id:
+        job.card_id = res.card_id
+    if res.card_last4 and res.card_last4.isdigit() and len(res.card_last4) == 4:
+        job.card_last4 = job.card_last4 or res.card_last4
+    if res.card_opened is not None and mode == "submit":
+        await topups.record_open(db, job, *res.card_opened)  # counts against the daily cap
+    cid = clean_detail(res.card_id or job.card_id or "", 20)
+    events: list[dict[str, str]] = []
+    if res.card_loaded is not None:
+        events.append(
+            {"tid": f"zzcard-open-{cid}", "cat": "zzshu", "code": "card_opened",
+             "msg": f"Dedicated card {job.card_last4 or '-'} opened and loaded "
+             f"{res.card_loaded:.2f} USD"}
+        )  # fmt: skip
+    if res.card_swept:
+        events.append(
+            {"tid": f"zzcard-swept-{cid}", "cat": "zzshu", "code": "card_swept",
+             "msg": f"Dedicated card {job.card_last4 or '-'} returned "
+             f"{(res.card_leftover or Decimal(0)):.2f} USD to the wallet and was deleted"}
+        )  # fmt: skip
+    if res.card_loaded is not None or res.card_swept:
+        await audit(
+            db,
+            tenant_id=job.tenant_id,
+            action="procurement.zzshu_card",
+            target=f"procurement_job:{job.id}",
+            detail={
+                "order_id": str(job.order_id),
+                "card_id": cid,
+                "last4": job.card_last4,
+                "loaded": str(res.card_loaded) if res.card_loaded is not None else None,
+                "leftover": str(res.card_leftover) if res.card_leftover is not None else None,
+                "swept": res.card_swept,
+                "currency": "USD",
+            },
+            severity="info",
+        )
+    if events:
+        _record_progress(job, {"events": events}, "engine", now)
+    over = res.outcome in (Outcome.OK, Outcome.FATAL, Outcome.UNAVAILABLE)
+    if over and res.card_id and not res.card_swept:
+        await audit(
+            db,
+            tenant_id=job.tenant_id,
+            action="procurement.zzshu_card_unswept",
+            target=f"procurement_job:{job.id}",
+            detail={"order_id": str(job.order_id), "card_id": cid, "last4": job.card_last4},
+            severity="warning",
+        )
 
 
 async def _publish_progress(

@@ -13,7 +13,7 @@ from datetime import datetime
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import ProcurementJob, SupplierOffer
+from app.models import ProcurementJob, SupplierAccount, SupplierOffer
 
 IN_FLIGHT_STATES = ("submitting", "accepted_pending")
 
@@ -22,7 +22,8 @@ async def funding_card_clash(
     db: AsyncSession, tenant_id: uuid.UUID, supplier_id: uuid.UUID, card_id: int | str
 ) -> bool:
     """True when ``card_id`` is the vendor card of ANY ``vcc`` job of this supplier (any state: a
-    voided card id is never reused as a funding card either)."""
+    voided card id is never reused as a funding card either), or the dedicated card of a zzshu
+    order."""
     n = await db.scalar(
         select(func.count(ProcurementJob.id)).where(
             ProcurementJob.tenant_id == tenant_id,
@@ -32,7 +33,21 @@ async def funding_card_clash(
             ProcurementJob.upstream_ref == str(card_id),
         )
     )
-    return bool(n)
+    if n:
+        return True
+    # ADR-054: the dedicated card of a zzshu order (a job of a ``zzshu`` supplier) is never a
+    # funding card of another order, whatever its state
+    dedicated = await db.scalar(
+        select(func.count(ProcurementJob.id))
+        .join(SupplierAccount, SupplierAccount.id == ProcurementJob.supplier_id)
+        .where(
+            ProcurementJob.tenant_id == tenant_id,
+            ProcurementJob.kind == "direct",
+            ProcurementJob.card_id == str(card_id),
+            SupplierAccount.adapter == "zzshu",
+        )
+    )
+    return bool(dedicated)
 
 
 async def funding_mask_clash(db: AsyncSession, tenant_id: uuid.UUID, mask: str | None) -> bool:

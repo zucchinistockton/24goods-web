@@ -26,6 +26,8 @@ LIMITS: dict[str, tuple[Decimal, Decimal, Decimal]] = {
     "daily_cap_usd": (Decimal(300), Decimal(0), Decimal(10000)),
     "per_topup_max_usd": (Decimal(200), Decimal(0), Decimal(5000)),
     "wallet_alert_usd": (Decimal(60), Decimal(0), Decimal(100000)),
+    # ADR-054: a zzshu order's dedicated card is loaded with the plan cost x (1 + this / 100)
+    "zzshu_card_margin_pct": (Decimal(20), Decimal(0), Decimal(100)),
 }
 # switch -> default (ADR-049: the two card switches act only under ``auto_recharge``)
 BOOLS: dict[str, bool] = {
