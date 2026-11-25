@@ -15,7 +15,8 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
   `POST /api/v1/webhooks/vmcardio` (hint only, signature verified when `APP_VMCARDIO_WEBHOOK_PUBLIC_KEY` is set;
   without it production refuses with 401, dev / test store it unverified), the issuer asked is persisted on the job
   before the call, mock vendor, migration `0042_vmcardio_adapter` (also `card_open_seq`, `card_open_issuer`). Setup: `docs/production.md`. Open: the webhook
-  public key (owner is asking vmcardio support; production refuses the webhook until it is set); not deployed; the
+  public key (owner is asking vmcardio support; production refuses the webhook until it is set); deployed 2026-11-25
+  13:13 UTC (see the deploy entry below); the
   vendor returns no label, so after a lost answer staff find the card by label in the vendor console (security review
   of #119: no adoption by amount / time).
 - **2026-11-25 zzshu points in the console and limit alerts (`feat/zzshu-points-limit-alerts`, owner request).**
@@ -40,6 +41,22 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
   in V2; sandbox is a separate account); snpay `api.php?act=query` works (merchant active). snpay V1 is the EPay
   protocol: it can be added as one more EPay gateway in the console (Alipay) without code. vmcardio needs an adapter
   (decision pending: dedicated cards for zzshu orders first). Credentials in `/root/.secrets/{vmcardio,snpay}.env`.
+
+- **2026-11-25 13:13 UTC PRODUCTION DEPLOY of #118 + #119 (snpay cashier link, vmcardio second issuer, ADR-055;
+  owner: "I'm explicitly authorizing you to perform this operation ... Deploy to production").** c4 runs `a6986aa`
+  (api + web revision verified), migration `0042_vmcardio_adapter`. Dump `/root/kesiv-backups/predeploy-20261125T131204Z/`
+  (sha256 `3692c874…`, also on c4, 54 tables); rollback images `goods24-{api,web}:rollback-f6a6659` and
+  `:rollback-431f5d5`. `env/procurement.env` gained `VMCARDIO_APP_ID`, `VMCARDIO_APP_SECRET`, `VMCARDIO_BASE_URL` and the
+  cardholder / billing address values, `ZZSHU_FUNDING_SUPPLIER=zovocard,vmcardio` (backup
+  `procurement.env.bak-20261125T131250Z`). Smoke all pass; `POST /api/v1/webhooks/vmcardio` answers 401 (no public key
+  yet, as designed). Supplier `vmcardio` (production, enabled, priority 300, no sources) created by a one-off operator
+  script (audit `ops.operator_script`, password prompt skipped); probe ok: token, balance 66.87 USD, 23 card products.
+  snpay: ¥1.00 console test payment `T46682DB0784F9503` paid by the owner (confirmed 13:20:45 UTC by server re-query;
+  two earlier re-queries timed out, snpay answers in 1-3 s), then the snpay gateway was enabled at priority 20, the
+  backup behind Xiaodou (priority 10, routing mode priority).
+  OpsDev (mywebtools #16, deployed earlier): Gmail SMTP (same account as the shop) and the production API token added to
+  `/etc/mwtops/secrets.env` for subscription reminders; SMTP login and `GET /admin/orders` verified.
+  Open: vmcardio webhook public key (owner asks support), ZovoCard wallet top-up by the owner.
 
 - **2026-11-25 08:42 UTC PRODUCTION DEPLOY of #113 (zzshu standby provider, ADR-054; owner: "Deploying the zzshu
   provider ... Pro 20x to use the backup provider. The maximum limit per top-up transaction is $250").** c4 runs
