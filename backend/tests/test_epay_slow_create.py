@@ -71,7 +71,8 @@ async def _unknown(env, monkeypatch, *, age_s=60):
 def _stub_query(monkeypatch, answer):
     asked: list[str] = []
 
-    async def query(self, no):
+    async def query(self, no, *, recovery=False):
+        assert recovery is True  # the recovery path asks for the lenient not-found reading
         asked.append(no)
         if isinstance(answer, Exception):
             raise answer
@@ -225,15 +226,25 @@ async def test_gateway_test_without_relay_is_direct(env, monkeypatch):
 
 
 @pytest.mark.parametrize("msg", ["订单不存在", "订单号不存在", "order not found"])
-def test_not_found_wordings_of_xiaodou_and_snpay(msg: str) -> None:
+def test_not_found_wordings_in_recovery(msg: str) -> None:
     from app.payments.zpay import parse_query_response
 
-    q = parse_query_response({"code": -1, "msg": msg})
+    q = parse_query_response({"code": -1, "msg": msg}, recovery=True)
     assert q.found is False and q.paid is False
 
 
-def test_other_refusals_are_not_read_as_not_found() -> None:
+def test_snpay_not_found_still_fails_closed_outside_recovery() -> None:
+    """Cancel / close / reconcile keep treating snpay's wording as unknown (audit of #121, M1)."""
     from app.payments.zpay import ZPayQueryError, parse_query_response
 
     with pytest.raises(ZPayQueryError):
-        parse_query_response({"code": -1, "msg": "签名错误"})
+        parse_query_response({"code": -1, "msg": "订单号不存在"})
+    assert parse_query_response({"code": -1, "msg": "订单不存在"}).found is False
+
+
+@pytest.mark.parametrize("recovery", [False, True])
+def test_other_refusals_are_not_read_as_not_found(recovery: bool) -> None:
+    from app.payments.zpay import ZPayQueryError, parse_query_response
+
+    with pytest.raises(ZPayQueryError):
+        parse_query_response({"code": -1, "msg": "签名错误"}, recovery=recovery)

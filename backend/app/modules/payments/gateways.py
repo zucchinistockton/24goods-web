@@ -272,7 +272,15 @@ async def prepare(
             created = att.created_at
             await db.rollback()  # no network call while holding row locks
             if not _recovered and await _unknown_released(
-                db, res, tid=tid, no=no, att_id=att_id, ref=att_ref, pid=att_pid, created=created
+                db,
+                res,
+                tid=tid,
+                no=no,
+                att_id=att_id,
+                ref=att_ref,
+                pid=att_pid,
+                created=created,
+                ip=ip,
             ):
                 return await prepare(
                     db,
@@ -337,6 +345,7 @@ async def _unknown_released(
     ref: str,
     pid: uuid.UUID | None,
     created: datetime | None,
+    ip: str | None = None,
 ) -> bool:
     """An ``unknown`` attempt never handed its pay URL to the buyer, so the buyer cannot pay it.
     Once it is old enough, ask its own gateway: a definite not-found / unpaid answer supersedes it
@@ -352,7 +361,7 @@ async def _unknown_released(
     try:
         routed, _ = await routed_resources(db, res, tid, ref)
         await db.rollback()
-        q = await routed.zpay.query_order(ref)
+        q = await routed.zpay.query_order(ref, recovery=True)
     except (ZPayQueryError, Unavailable, asyncio.TimeoutError):
         await db.rollback()
         return False
@@ -379,6 +388,9 @@ async def _unknown_released(
         action="payment.attempt_superseded_unknown",
         target="payment_attempt:" + str(att_id),
         severity="warning",
+        before={"status": "unknown"},
+        after={"status": "superseded"},
+        ip=ip,
         detail={"provider_id": str(pid), "gateway_answer": answer},
     )
     await db.commit()

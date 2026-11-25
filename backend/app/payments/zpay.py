@@ -127,15 +127,22 @@ def _as_int(value: Any) -> int | None:
         return None
 
 
-def parse_query_response(data: Any) -> QueryResult:
+# Definite "no such order" answers. 订单不存在 = Xiaodou (trusted everywhere: cancel, close,
+# reconcile). snpay's 订单号不存在 (read-only query 2026-11-25) is trusted ONLY when the caller
+# asks for it: recovering an ``unknown`` attempt whose pay URL never reached the buyer. Cancel /
+# close keep failing closed on it until it is proven on a ready attempt (payment audit of #121).
+_NOT_FOUND = frozenset({"order not found", "not found", "订单不存在"})
+_NOT_FOUND_RECOVERY = _NOT_FOUND | {"订单号不存在"}
+
+
+def parse_query_response(data: Any, *, recovery: bool = False) -> QueryResult:
     """Tolerant parser: ``code``/``status`` may be int or str; money may be str or number."""
     if not isinstance(data, Mapping):
         raise ZPayQueryError("unexpected query response shape")
     code = _as_int(data.get("code"))
     if code != 1:
         message = str(data.get("msg", "")).strip().lower().rstrip(".!！。")
-        # 订单不存在 = Xiaodou; 订单号不存在 = snpay (seen on a read-only query 2026-11-25)
-        if code == -1 and message in {"order not found", "not found", "订单不存在", "订单号不存在"}:
+        if code == -1 and message in (_NOT_FOUND_RECOVERY if recovery else _NOT_FOUND):
             return QueryResult(False, False, None, "", str(data.get("out_trade_no") or ""))
         raise ZPayQueryError("query response did not confirm an order status")
     status = _as_int(_first_key(data, "status", "trade_status"))
@@ -395,7 +402,7 @@ class ZPayClient:
             msg = msg.replace(c.key, "***")
         return {"code": str(data.get("code", ""))[:16], "msg": msg}
 
-    async def query_order(self, order_no: str) -> QueryResult:
+    async def query_order(self, order_no: str, *, recovery: bool = False) -> QueryResult:
         c = self.config
         query = {"act": "order", "pid": c.pid, "key": c.key, "out_trade_no": order_no}
         try:
@@ -410,7 +417,7 @@ class ZPayClient:
         if self.config.instance_id and isinstance(data, dict) and str(data.get("code")) == "1":
             if str(data.get("pid", "")) != self.config.pid or data.get("type") != PAY_TYPE:
                 raise ZPayQueryError("query merchant or method mismatch")
-        parsed = parse_query_response(data)
+        parsed = parse_query_response(data, recovery=recovery)
         if parsed.found and parsed.out_trade_no != order_no:
             raise ZPayQueryError("query order binding mismatch")
         return parsed
