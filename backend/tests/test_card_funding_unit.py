@@ -135,7 +135,10 @@ def test_settings_default_off_and_validate():
     assert st["auto_recharge"] is False and st["bin_priority"] == list(fs.DEFAULT_BINS)
     # ADR-049: the card switches default ON but act only under auto_recharge (the master switch)
     assert st["auto_open_cards"] is True and st["sweep_leftover"] is True
-    assert st["wallet_alert_usd"] == "60"
+    assert st["wallet_alert_usd"] == "60" and st["zzshu_points_alert"] == 3
+    assert fs.validate({"zzshu_points_alert": 0})["zzshu_points_alert"] == 0
+    assert fs.validate({"zzshu_points_alert": "10"})["zzshu_points_alert"] == 10
+    assert fs.normalize({"zzshu_points_alert": 5000})["zzshu_points_alert"] == 3
     new = fs.validate({"auto_recharge": True, "daily_cap_usd": "50", "bin_priority": ["537872"]})
     assert new["auto_recharge"] is True and new["daily_cap_usd"] == "50.00"
     for bad in (
@@ -145,6 +148,10 @@ def test_settings_default_off_and_validate():
         {"bin_priority": ["53787"]},
         {"auto_open_cards": 1},
         {"wallet_alert_usd": "-5"},
+        {"zzshu_points_alert": 1001},
+        {"zzshu_points_alert": -1},
+        {"zzshu_points_alert": 2.5},
+        {"zzshu_points_alert": True},
         {"unknown": 1},
     ):
         with pytest.raises(ValueError):

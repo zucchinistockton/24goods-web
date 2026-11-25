@@ -21,6 +21,9 @@ export interface AdminSupplier {
   last_probe_at: string | null
   last_balance: string | null
   last_balance_at: string | null
+  /** zzshu only: remaining points and when procurement last read them (UTC ISO) */
+  points?: number | null
+  points_at?: string | null
   breaker_open?: boolean
   /** `hard` = the supplier refused us (manual reset); `balance` = low balance (closes by itself) */
   breaker_kind?: 'hard' | 'balance' | null

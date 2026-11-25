@@ -182,7 +182,11 @@ put it first. Setup (production needs the owner's go-ahead; nothing here is done
 5. Make zzshu primary by hand: give its source a smaller priority than ZovoCard's (or disable the ZovoCard source);
    back again the same way. Automatic: 3 definite pre-charge ZovoCard failures within 60 minutes put ZovoCard's direct
    sources behind zzshu for 30 minutes (Telegram alert "ZovoCard direct orders failed before any charge repeatedly").
-6. Watch: `procurement.precharge_failover`, `procurement.zzshu_card` (card id, last four, loaded, leftover) in the job
+6. Points and limit alerts: the supplier row shows "Points: N (checked <time>)" (refreshed with the balance and on
+   "Test connection"). Telegram alerts: points at or below `zzshu points alert` (Card funding, default 3, 0 = off;
+   once per 6 h while low, fresh readings only); daily card funding limit 80 % used and "limit reached" (new
+   top-ups wait until 00:00 UTC), once per UTC day each, only with `auto_recharge` on.
+7. Watch: `procurement.precharge_failover`, `procurement.zzshu_card` (card id, last four, loaded, leftover) in the job
    timeline; `procurement.zzshu_card_unswept` = a card still holds money, look at it by hand; `create_unconfirmed` =
    the zzshu answer was lost, check the zzshu order history before anything else (the order may exist and be paid).
 

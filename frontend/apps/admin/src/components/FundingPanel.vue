@@ -28,6 +28,7 @@ const form = reactive({
   cancel_renewal_before_upgrade: false,
   wallet_alert_usd: '',
   zzshu_card_margin_pct: '',
+  zzshu_points_alert: '',
   daily_cap_usd: '',
   per_topup_max_usd: '',
   bins: '',
@@ -46,6 +47,7 @@ function fill(v: FundingView) {
     cancel_renewal_before_upgrade: v.settings.cancel_renewal_before_upgrade ?? false,
     wallet_alert_usd: v.settings.wallet_alert_usd,
     zzshu_card_margin_pct: v.settings.zzshu_card_margin_pct,
+    zzshu_points_alert: String(v.settings.zzshu_points_alert ?? 3),
     daily_cap_usd: v.settings.daily_cap_usd,
     per_topup_max_usd: v.settings.per_topup_max_usd,
     bins: v.settings.bin_priority.join(' '),
@@ -75,6 +77,8 @@ function validate(): boolean {
   if (!USD_RE.test(form.wallet_alert_usd.trim()) || Number(form.wallet_alert_usd) > 100000) errors.wallet_alert_usd = t('funding.err.alert')
   if (!/^\d{1,3}(\.\d{1,2})?$/.test(form.zzshu_card_margin_pct.trim()) || Number(form.zzshu_card_margin_pct) > 100)
     errors.zzshu_card_margin_pct = t('funding.err.zzshuMargin')
+  if (!/^\d{1,4}$/.test(form.zzshu_points_alert.trim()) || Number(form.zzshu_points_alert) > 1000)
+    errors.zzshu_points_alert = t('funding.err.zzshuPoints')
   if (bins.value.length > 20 || bins.value.some((b) => !BIN_RE.test(b))) errors.bins = t('funding.err.bins')
   return !Object.keys(errors).length
 }
@@ -89,6 +93,7 @@ const changed = computed(() => {
     (s.cancel_renewal_before_upgrade ?? false) !== form.cancel_renewal_before_upgrade ||
     Number(s.wallet_alert_usd) !== Number(form.wallet_alert_usd) ||
     Number(s.zzshu_card_margin_pct) !== Number(form.zzshu_card_margin_pct) ||
+    Number(s.zzshu_points_alert ?? 3) !== Number(form.zzshu_points_alert) ||
     Number(s.daily_cap_usd) !== Number(form.daily_cap_usd) ||
     Number(s.per_topup_max_usd) !== Number(form.per_topup_max_usd) ||
     s.bin_priority.join(' ') !== bins.value.join(' ')
@@ -113,6 +118,7 @@ async function save() {
         cancel_renewal_before_upgrade: form.cancel_renewal_before_upgrade,
         wallet_alert_usd: form.wallet_alert_usd.trim(),
         zzshu_card_margin_pct: form.zzshu_card_margin_pct.trim(),
+        zzshu_points_alert: Number(form.zzshu_points_alert),
         daily_cap_usd: form.daily_cap_usd.trim(),
         per_topup_max_usd: form.per_topup_max_usd.trim(),
         bin_priority: bins.value,
@@ -176,6 +182,10 @@ const when = (iso: string | null) => (iso ? iso.replace('T', ' ').slice(0, 16) +
         <el-form-item :label="t('funding.zzshuMargin')" :error="errors.zzshu_card_margin_pct">
           <el-input v-model="form.zzshu_card_margin_pct" inputmode="decimal" class="alert-input"><template #suffix>%</template></el-input>
           <div class="muted small">{{ t('funding.zzshuMarginHint') }}</div>
+        </el-form-item>
+        <el-form-item :label="t('funding.zzshuPoints')" :error="errors.zzshu_points_alert">
+          <el-input v-model="form.zzshu_points_alert" inputmode="numeric" class="alert-input" />
+          <div class="muted small">{{ t('funding.zzshuPointsHint') }}</div>
         </el-form-item>
         <div class="row">
           <el-form-item :label="t('funding.daily')" :error="errors.daily_cap_usd">

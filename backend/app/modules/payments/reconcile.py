@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import and_, inspect, or_, select
+from sqlalchemy import and_, func, inspect, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import audit
@@ -301,6 +301,8 @@ async def run(res: Resources) -> int:
             await alert_procurement_jobs(res, db, tid, now)
             await alert_supplier_breakers(res, db, tid)
             await alert_wallet_low(res, db, tid, now)
+            await alert_zzshu_points_low(res, db, tid, now)
+            await alert_funding_cap(res, db, tid, now)
             await purge_overdue_sessions(res, db, tid)
             await alert_declining_offers(res, db, tid, now)
             refs = list(
@@ -778,6 +780,123 @@ async def alert_wallet_low(res: Resources, db: AsyncSession, tid: uuid.UUID, now
             ],
             link=notify_tg.admin_link(res, "procurement"),
             once=(f"wallet_low:{sid}:{bucket}", WALLET_ALERT_EVERY_H * 3600),
+        )
+    return n
+
+
+async def alert_zzshu_points_low(
+    res: Resources, db: AsyncSession, tid: uuid.UUID, now: datetime
+) -> int:
+    """Owner 2026-11-25: card.zzshu.pro points at or below ``zzshu_points_alert`` (3 by default,
+    0 = off) raise one staff alert per 6 hours while they stay low. Fresh readings only (2 h)."""
+    from app.core import funding as fs
+    from app.core import notify_tg
+    from app.models import SupplierAccount, Tenant
+
+    raw = await db.scalar(select(Tenant.funding_settings).where(Tenant.id == tid))
+    limit = int(fs.normalize(raw)["zzshu_points_alert"])
+    rows = (
+        []
+        if limit <= 0
+        else list(
+            (
+                await db.execute(
+                    select(SupplierAccount.id, SupplierAccount.settings).where(
+                        SupplierAccount.tenant_id == tid,
+                        SupplierAccount.adapter == "zzshu",
+                        SupplierAccount.env == "production",
+                        SupplierAccount.enabled.is_(True),
+                    )
+                )
+            ).all()
+        )
+    )
+    await db.rollback()
+    n = 0
+    bucket = f"{now:%Y%m%d}{now.hour // WALLET_ALERT_EVERY_H}"
+    for sid, st in rows:
+        pts, at = (st or {}).get("points"), (st or {}).get("points_at")
+        try:
+            seen = datetime.fromisoformat(str(at))
+        except ValueError:
+            continue
+        if isinstance(pts, bool) or not isinstance(pts, int) or now - seen > WALLET_FRESH:
+            continue
+        if pts > limit:
+            continue
+        n += 1
+        notify_tg.notify_bg(
+            res,
+            tid,
+            "payment_review",
+            [
+                notify_tg.T("proc.points_low", points=pts, limit=limit),
+                notify_tg.T("proc.points_low_hint"),
+            ],
+            link=notify_tg.admin_link(res, "procurement"),
+            once=(f"zzshu_points_low:{sid}:{bucket}", WALLET_ALERT_EVERY_H * 3600),
+        )
+    return n
+
+
+async def alert_funding_cap(res: Resources, db: AsyncSession, tid: uuid.UUID, now: datetime) -> int:
+    """Owner 2026-11-25 (only with ``auto_recharge`` on and a cap above 0): one alert per UTC day
+    at 80 % of the daily top-up cap, one when a top-up / dedicated card was refused for the cap."""
+    from app.core import funding as fs
+    from app.core import notify_tg
+    from app.models import ProcurementFunding, ProcurementJob, Tenant
+
+    st = fs.normalize(await db.scalar(select(Tenant.funding_settings).where(Tenant.id == tid)))
+    cap = Decimal(str(st["daily_cap_usd"]))
+    if st["auto_recharge"] is not True or cap <= 0:
+        await db.rollback()
+        return 0
+    day = datetime.combine(now.date(), datetime.min.time(), tzinfo=timezone.utc)
+    spent = Decimal(
+        await db.scalar(
+            select(func.coalesce(func.sum(ProcurementFunding.amount), 0)).where(
+                ProcurementFunding.tenant_id == tid,
+                ProcurementFunding.kind.in_(("recharge", "open")),
+                ProcurementFunding.state.in_(("planned", "sent", "done")),
+                ProcurementFunding.created_at >= day,
+            )
+        )
+        or 0
+    )
+    refused = await db.scalar(
+        select(ProcurementJob.id)
+        .where(
+            ProcurementJob.tenant_id == tid,
+            ProcurementJob.error_code == "funding_cap_reached",
+            ProcurementJob.updated_at >= day,
+        )
+        .limit(1)
+    )
+    await db.rollback()
+    n = 0
+    link = notify_tg.admin_link(res, "procurement")
+    if spent >= cap * Decimal("0.8"):
+        n += 1
+        notify_tg.notify_bg(
+            res,
+            tid,
+            "payment_review",
+            [
+                notify_tg.T("proc.cap_80", spent=f"{spent:.2f}", cap=f"{cap:.2f}"),
+                notify_tg.T("proc.cap_hint"),
+            ],
+            link=link,
+            once=(f"funding_cap80:{now:%Y%m%d}", 86400),
+        )
+    if refused is not None:
+        n += 1
+        notify_tg.notify_bg(
+            res,
+            tid,
+            "payment_review",
+            [notify_tg.T("proc.cap_reached", cap=f"{cap:.2f}"), notify_tg.T("proc.cap_hint")],
+            link=link,
+            once=(f"funding_cap_hit:{now:%Y%m%d}", 86400),
         )
     return n
 

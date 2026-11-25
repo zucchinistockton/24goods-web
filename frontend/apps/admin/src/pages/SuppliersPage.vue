@@ -208,6 +208,9 @@ const permLabel = (k: string) => (['direct', 'cards', 'cdk', 'manual'].includes(
           <template #default="{ row }">
             <span class="num">{{ money(row.last_balance, row.currency) }}</span>
             <div class="muted small">{{ when(row.last_balance_at) }}</div>
+            <div v-if="row.adapter === 'zzshu' && row.points != null" class="muted small">
+              {{ t('suppliers.points', { n: row.points, at: when(row.points_at ?? null) }) }}
+            </div>
           </template>
         </el-table-column>
         <el-table-column :label="t('suppliers.col.threshold')" width="130">
