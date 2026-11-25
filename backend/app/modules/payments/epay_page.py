@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import RedirectResponse
@@ -40,8 +40,8 @@ async def _shop_origin(request: Request, res: Resources, db: AsyncSession, tenan
             )
         )
         if ok is not None:
-            return f"{base.scheme}://{hostname}"
-    return f"{base.scheme}://{base.netloc}"
+            return urlunsplit((base.scheme, hostname, "", "", ""))
+    return urlunsplit((base.scheme, base.netloc, "", "", ""))
 
 
 def _gone(to: str = "/orders") -> RedirectResponse:
