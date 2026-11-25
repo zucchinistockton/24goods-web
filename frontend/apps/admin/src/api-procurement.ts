@@ -630,6 +630,8 @@ export interface FundingSettings {
   wallet_alert_usd: string
   /** ADR-054: a zzshu order's dedicated card is loaded with the plan cost x (1 + this / 100); 0-100 */
   zzshu_card_margin_pct: string
+  /** owner 2026-11-25: Telegram alert when card.zzshu.pro points drop to this (0-1000; 0 = off) */
+  zzshu_points_alert: number
   daily_cap_usd: string
   per_topup_max_usd: string
   bin_priority: string[]

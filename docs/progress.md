@@ -6,6 +6,14 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 **Hand-off 2026-11-18 (after PR #49; the owner's order #29 → #30 → #31 is done on the demo). START HERE.**
 
+- **2026-11-25 zzshu points in the console and limit alerts (`feat/zzshu-points-limit-alerts`, owner request).**
+  Every probe and the periodic balance refresh read the zzshu points and store `points` / `points_at` in
+  `suppliers.settings`; the admin supplier list returns them and the supplier row shows "Points: N (checked ...)".
+  New funding setting `zzshu_points_alert` (0 to 1000, default 3, 0 = off; 2FA write, audited like the others).
+  Telegram (reconcile tick, `once` dedup): points at or below the limit (fresh reading within 2 h, once per 6 h
+  while low); daily top-up cap 80 % used (once per UTC day) and a job refused with `funding_cap_reached` today
+  (once per UTC day), both only with `auto_recharge` on and a cap above 0. Tests: test_card_funding_unit,
+  test_procurement_breaker, test_zzshu. No migration.
 - **2026-11-25 08:42 UTC PRODUCTION DEPLOY of #113 (zzshu standby provider, ADR-054; owner: "Deploying the zzshu
   provider ... Pro 20x to use the backup provider. The maximum limit per top-up transaction is $250").** c4 runs
   `431f5d5` (api + web revision verified), migration `0041_zzshu_adapter`. Dump

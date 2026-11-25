@@ -349,6 +349,7 @@ class ProbeReport:
     card_products: int | None = None
     errors: tuple[str, ...] = ()
     checked_at: datetime | None = None
+    points: int | None = None  # zzshu: remaining activations
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -364,6 +365,7 @@ class ProbeReport:
             "card_products": self.card_products,
             "errors": list(self.errors),
             "checked_at": self.checked_at.isoformat() if self.checked_at else None,
+            "points": self.points,
         }
 
 

@@ -44,9 +44,14 @@ BOOLS: dict[str, bool] = {
 }
 
 
+# owner 2026-11-25: staff get a Telegram alert when card.zzshu.pro points drop to this (0 = off)
+POINTS_ALERT = (3, 0, 1000)
+
+
 def defaults() -> dict[str, Any]:
     return {
         **BOOLS,
+        "zzshu_points_alert": POINTS_ALERT[0],
         **{key: str(lim[0]) for key, lim in LIMITS.items()},
         "bin_priority": list(DEFAULT_BINS),
     }
@@ -63,6 +68,22 @@ def _money(v: Any, key: str) -> Decimal:
     if not d.is_finite() or d < lo or d > hi:
         raise ValueError(key)
     return d.quantize(Decimal("0.01"))
+
+
+def _points_alert(v: Any) -> int:
+    if isinstance(v, bool) or not isinstance(v, int | str | Decimal):
+        raise ValueError("zzshu_points_alert")
+    try:
+        d = Decimal(str(v))
+    except InvalidOperation as exc:
+        raise ValueError("zzshu_points_alert") from exc
+    if (
+        not d.is_finite()
+        or d != d.to_integral_value()
+        or not POINTS_ALERT[1] <= d <= POINTS_ALERT[2]
+    ):
+        raise ValueError("zzshu_points_alert")
+    return int(d)
 
 
 def _bins(v: Any) -> list[str]:
@@ -88,6 +109,8 @@ def validate(patch: Mapping[str, Any], current: Mapping[str, Any] | None = None)
             out[key] = v
         elif key in LIMITS:
             out[key] = str(_money(v, key))
+        elif key == "zzshu_points_alert":
+            out[key] = _points_alert(v)
         elif key == "bin_priority":
             out[key] = _bins(v)
         else:
@@ -108,6 +131,11 @@ def normalize(raw: Mapping[str, Any] | None) -> dict[str, Any]:
             out[key] = str(_money(raw.get(key), key))
         except ValueError:
             pass
+    try:
+        if "zzshu_points_alert" in raw:
+            out["zzshu_points_alert"] = _points_alert(raw["zzshu_points_alert"])
+    except ValueError:
+        pass
     try:
         if "bin_priority" in raw:
             out["bin_priority"] = _bins(raw.get("bin_priority"))

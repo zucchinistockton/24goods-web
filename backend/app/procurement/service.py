@@ -147,6 +147,25 @@ async def record_health(
         await db.commit()
 
 
+async def record_points(ctx: ProcurementContext, ref: SupplierRef, points: int) -> None:
+    """zzshu: keep the last points reading (and its UTC time) in ``suppliers.settings`` so the
+    console shows it and the staff alert can tell a fresh reading from a stale one."""
+    now = datetime.now(timezone.utc)
+    async with tenant_session(ctx.maker, ref.tenant_id) as db:
+        cur = await db.scalar(
+            select(SupplierAccount.settings).where(
+                SupplierAccount.tenant_id == ref.tenant_id, SupplierAccount.id == ref.id
+            )
+        )
+        new = {**(cur or {}), "points": int(points), "points_at": now.isoformat()}
+        await db.execute(
+            update(SupplierAccount)
+            .where(SupplierAccount.tenant_id == ref.tenant_id, SupplierAccount.id == ref.id)
+            .values(settings=new)
+        )
+        await db.commit()
+
+
 async def stamp_balance(ctx: ProcurementContext, ref: SupplierRef) -> None:
     """Mark the balance reading as fresh; called only once the breaker evaluated it."""
     async with tenant_session(ctx.maker, ref.tenant_id) as db:
@@ -165,6 +184,8 @@ async def probe(
     report = await run_probe(ctx, ref)
     health, detail = _health_of(report)
     await record_health(ctx, ref, health, detail, balance=report.balance, probed=True)
+    if report.points is not None:
+        await record_points(ctx, ref, report.points)
     if report.balance is not None:
         # a probe's reading also becomes "fresh", but only through the breaker evaluation (N4)
         await refresh_balance(ctx, replace(ref, health=health))
@@ -221,6 +242,17 @@ async def refresh_balance(ctx: ProcurementContext, ref: SupplierRef) -> Balance 
             await record_health(ctx, ref, health, exc.reason, balance=None, probed=False)
             return None
         await record_health(ctx, ref, "ok", None, balance=bal, probed=False)
+        if ref.adapter == "zzshu":
+            try:
+                pts = await asyncio.wait_for(
+                    supplier.points(fresh=True),  # type: ignore[attr-defined]
+                    ctx.settings.probe_timeout_s,
+                )
+                await record_points(ctx, ref, pts)
+            except Exception as exc:  # points are informational here: never block the refresh
+                log.warning(
+                    "zzshu points read failed supplier=%s error=%s", ref.id, type(exc).__name__
+                )
         from app.procurement.breaker import evaluate  # lazy: breaker -> service import cycle
 
         try:

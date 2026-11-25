@@ -143,9 +143,11 @@ class ZzshuSupplier:
         now = datetime.now(timezone.utc)
         errors: list[str] = []
         auth_ok: bool | None = None
+        seen: int | None = None
         try:
             pts = await self.points(fresh=True)
             auth_ok = True
+            seen = pts
             if pts < 1:
                 errors.append("points_exhausted")
         except SupplierError as exc:
@@ -164,6 +166,7 @@ class ZzshuSupplier:
             balance=bal,
             errors=tuple(errors),
             checked_at=now,
+            points=seen,
         )
 
     async def availability_fresh(self, offer: OfferSpec) -> Availability:

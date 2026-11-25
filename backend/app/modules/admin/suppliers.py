@@ -95,6 +95,8 @@ def _view(r: SupplierAccount) -> dict[str, Any]:
         "last_probe_at": _iso(r.last_probe_at),
         "last_balance": _dec(r.last_balance),
         "last_balance_at": _iso(r.last_balance_at),
+        "points": (r.settings or {}).get("points") if r.adapter == "zzshu" else None,
+        "points_at": (r.settings or {}).get("points_at") if r.adapter == "zzshu" else None,
         "created_at": _iso(r.created_at),
         "updated_at": _iso(r.updated_at),
     }

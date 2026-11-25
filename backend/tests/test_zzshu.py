@@ -408,3 +408,26 @@ async def test_card_number_cvv_and_session_never_leave_the_adapter(env, dup, cap
     assert pan not in cards[0]["code"] and "7319" not in cards[0]["code"]
     rows = await _rows(env, "SELECT count(*) FROM procurement_credentials")
     assert rows[0][0] == 0  # the sealed session is gone at the terminal state
+
+
+async def test_the_points_reading_is_stored_and_shown_to_staff(env, dup):  # noqa: F811
+    """Owner 2026-11-25: a refresh / probe stores ``points`` + ``points_at`` on the zzshu supplier
+    and the admin supplier list shows them (other adapters show none)."""
+    from app.procurement.service import SupplierRef, probe, refresh_balance
+
+    vendor, zz = _vendor(), MockZzshu(points=7)
+    zsid, sid, _oid = await _both(env, dup, vendor, zz)
+    ctx = dup.ctx
+    ref = SupplierRef(sid, env.tenant_id, "zzshu", "zzshu", "sandbox", "unknown")
+    await refresh_balance(ctx, ref)
+    assert await env.scalar("SELECT settings->>'points' FROM suppliers WHERE id = :s", s=sid) == "7"
+    zz.points = 5
+    report = await probe(ctx, env.tenant_id, sid)
+    assert report.points == 5
+    assert await env.scalar("SELECT settings->>'points' FROM suppliers WHERE id = :s", s=sid) == "5"
+    admin, _ = await env.login("admin")
+    items = (await admin.get("/api/v1/admin/suppliers")).json()["items"]
+    row = next(i for i in items if i["id"] == str(sid))
+    assert row["points"] == 5 and row["points_at"]
+    other = next(i for i in items if i["id"] == str(zsid))
+    assert other["points"] is None and other["points_at"] is None

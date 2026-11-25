@@ -269,3 +269,89 @@ async def test_a_low_zovocard_wallet_alerts_staff_every_six_hours(env, up, monke
         s=sid,
     )
     assert await run() == 0  # a stale reading says nothing about now
+
+
+async def test_zzshu_points_and_funding_cap_alerts(env, up, monkeypatch):
+    """Owner 2026-11-25: zzshu points at/below the limit (fresh only, 6 h window, 0 = off) and the
+    daily top-up cap (80 % used / refused) raise Telegram alerts with a stable ``once`` key."""
+    import json
+    from datetime import datetime, timedelta, timezone
+
+    from app.core import notify_tg
+    from app.core.db import tenant_session
+    from app.modules.payments.reconcile import alert_funding_cap, alert_zzshu_points_low
+
+    sid, _ = await up.supplier(MockSupplier("mock_a"))
+    sent: list[dict] = []
+
+    def fake(res, tid, kind, lines, **kw):
+        sent.append({"lines": [notify_tg.render("en", x) for x in lines], "once": kw.get("once")})
+
+    monkeypatch.setattr(notify_tg, "notify_bg", fake)
+    now = datetime.now(timezone.utc)
+    upd = "UPDATE suppliers SET settings = CAST(:j AS jsonb) WHERE id = :s"
+    ten = "UPDATE tenants SET funding_settings = CAST(:j AS jsonb) WHERE id = :t"
+
+    async def points() -> int:
+        async with tenant_session(env.res.maker, env.tenant_id) as db:
+            return await alert_zzshu_points_low(env.res, db, env.tenant_id, now)
+
+    async def cap() -> int:
+        async with tenant_session(env.res.maker, env.tenant_id) as db:
+            return await alert_funding_cap(env.res, db, env.tenant_id, now)
+
+    def pts(n: int, at: datetime) -> str:
+        return json.dumps({"points": n, "points_at": at.isoformat()})
+
+    await _sql(
+        env,
+        "UPDATE suppliers SET code = 'zzshu', adapter = 'zzshu', env = 'production', "
+        "enabled = true WHERE id = :s",
+        s=sid,
+    )
+    await _sql(env, upd, j=pts(4, now), s=sid)
+    assert await points() == 0  # above the default limit of 3
+    await _sql(env, upd, j=pts(3, now), s=sid)
+    assert await points() == 1
+    assert "3 left (alert at 3)" in sent[0]["lines"][0]
+    assert sent[0]["once"][0].startswith(f"zzshu_points_low:{sid}:")
+    assert sent[0]["once"][1] == 6 * 3600
+    await _sql(env, upd, j=pts(0, now - timedelta(hours=3)), s=sid)
+    assert await points() == 0  # a stale reading says nothing about now
+    await _sql(env, upd, j=pts(1, now), s=sid)
+    await _sql(env, ten, j='{"zzshu_points_alert": 0}', t=env.tenant_id)
+    assert await points() == 0  # switched off
+
+    # daily cap: needs auto_recharge on and a cap > 0
+    await _sql(env, ten, j='{"auto_recharge": false, "daily_cap_usd": "100"}', t=env.tenant_id)
+    assert await cap() == 0
+    await _sql(env, ten, j='{"auto_recharge": true, "daily_cap_usd": "0"}', t=env.tenant_id)
+    assert await cap() == 0
+    await _sql(env, ten, j='{"auto_recharge": true, "daily_cap_usd": "100"}', t=env.tenant_id)
+    assert await cap() == 0  # nothing spent yet
+    sent.clear()
+    await _sql(
+        env,
+        "INSERT INTO procurement_fundings (id, tenant_id, supplier_id, kind, card_id, amount, "
+        "currency, state, idem_key, created_at, updated_at) VALUES (gen_random_uuid(), :t, :s, "
+        "'recharge', 'c1', 79.99, 'USD', 'done', 'k-cap-1', :n, :n)",
+        t=env.tenant_id,
+        s=sid,
+        n=now,
+    )
+    assert await cap() == 0  # 79.99 < 80 %
+    await _sql(env, "UPDATE procurement_fundings SET amount = 80 WHERE idem_key = 'k-cap-1'")
+    assert await cap() == 1
+    assert "80 % used: 80.00 of 100.00 USD" in sent[0]["lines"][0]
+    assert sent[0]["once"] == (f"funding_cap80:{now:%Y%m%d}", 86400)
+    # a job refused for the cap today -> its own alert; the 80 % one stays deduped by its key
+    sent.clear()
+    assert await cap() == 1  # still >= 80 %, nothing refused yet
+    await up.paid_order()
+    await up.run()
+    await _sql(
+        env, "UPDATE procurement_jobs SET error_code = 'funding_cap_reached', updated_at = now()"
+    )
+    assert await cap() == 2
+    assert "Daily card funding limit reached (100.00 USD)" in sent[-1]["lines"][0]
+    assert sent[-1]["once"] == (f"funding_cap_hit:{now:%Y%m%d}", 86400)
