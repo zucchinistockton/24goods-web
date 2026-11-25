@@ -51,6 +51,18 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
   protocol: it can be added as one more EPay gateway in the console (Alipay) without code. vmcardio needs an adapter
   (decision pending: dedicated cards for zzshu orders first). Credentials in `/root/.secrets/{vmcardio,snpay}.env`.
 
+- **2026-11-25 14:21 UTC PRODUCTION DEPLOY of #121 (EPay slow create recovery, relay-aware gateway test; owner:
+  "Once the build is complete, deploy it—deploy #121—with Xiaodou as the primary gateway and snpay as the secondary").**
+  Cause (13:31 UTC): snpay answered `/mapi.php` after ~9 s (its log: order created 9 s after our request), our 6 s read
+  gave up, the attempt went `unknown` and every later pay on that order got 503 until it expired; the admin Test button
+  for Xiaodou has failed since 2026-11-23 because it connected directly (blocked) instead of through the relay, while real
+  Xiaodou payments kept working. c4 runs `7dcf5a4` (api + web verified), no migration (still `0042_vmcardio_adapter`).
+  Dump `/root/kesiv-backups/predeploy-20261125T142049Z/` (sha256 `e1ce16ea…`, also on c4, 54 tables); rollback images
+  `goods24-{api,web}:rollback-a6986aa` and `:rollback-f6a6659`. Smoke all pass. Gateway self-tests: Xiaodou ok via
+  `relay`; snpay ok `direct` (one of four runs took >5 s and reported "unexpected response": snpay latency, not a fault).
+  Routing stays "Fixed priority": Xiaodou 10 (primary), snpay 20 (backup). Main CI needed one re-run: the flaky
+  `test_half_price.py::test_required_endpoint_is_rate_limited` (unrelated, passed on the PR and on re-run).
+
 - **2026-11-25 13:13 UTC PRODUCTION DEPLOY of #118 + #119 (snpay cashier link, vmcardio second issuer, ADR-055;
   owner: "I'm explicitly authorizing you to perform this operation ... Deploy to production").** c4 runs `a6986aa`
   (api + web revision verified), migration `0042_vmcardio_adapter`. Dump `/root/kesiv-backups/predeploy-20261125T131204Z/`
