@@ -132,6 +132,7 @@ export default {
     ip_blocked: 'Access denied',
     fee_channel_mismatch: 'Payment fee changed, please retry',
     channel_unavailable: 'This payment method is not available right now. Please pick another.',
+    payment_pending_check: 'The payment provider is slow to answer. Please try again in a minute.',
     channel_unreachable: 'This payment method is unavailable right now. Please choose another method.',
     too_many_unpaid: 'You have too many unpaid orders. Pay or cancel one first, or wait for it to expire.',
     buyer_input_too_long: 'The order information is too long. Please shorten it.',

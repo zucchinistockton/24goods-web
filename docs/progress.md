@@ -6,6 +6,15 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 **Hand-off 2026-11-18 (after PR #49; the owner's order #29 → #30 → #31 is done on the demo). START HERE.**
 
+- **2026-11-25 EPay slow create no longer blocks the order; admin gateway test goes through the relay (`fix/epay-slow-create-recovery`).**
+  Incident: snpay answered `/mapi.php` after about 9 s, our 6 s read gave up, the attempt became `unknown` and every later pay returned 503
+  until the order expired. (A) Creates now get a 15 s read budget (`CREATE_READ_S`, `CREATE_TIMEOUT_S` 16 s; connect budget and queries unchanged;
+  two gateways in a row stay under Caddy's 45 s). (B) `gateways.prepare`: an `unknown` attempt at least 20 s old is queried at its own gateway; a
+  definite not found / unpaid answer marks it `superseded` (audit `payment.attempt_superseded_unknown`, detail provider_id + gateway_answer) and a
+  fresh attempt (new `gateway_ref`) is created; superseded stays in reconcile's open set so a late payment still settles. A paid answer, a failing
+  query or a younger attempt keep the 503, now with code `payment_pending_check` (buyer text en + zh-CN). (C) `test_gateway` tests the relay address
+  when the host has a relay (relay-only: no direct check; otherwise either route passes) and returns `route: relay | direct`, shown in the admin test result.
+  Tests: `backend/tests/test_epay_slow_create.py`. Not deployed.
 - **2026-11-25 vmcardio as the second issuer of the zzshu dedicated card (`feat/vmcardio-issuer`, ADR-055, owner decision).**
   ZovoCard stays first; vmcardio opens the card only after a definite "nothing opened" (wallet low, no product / slot,
   vendor refusal before any card exists). New adapter `vmcardio` (V2 client, token cache, request id

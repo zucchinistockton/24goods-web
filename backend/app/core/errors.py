@@ -141,6 +141,12 @@ class ChannelUnreachable(Unavailable):
     code = "channel_unreachable"
 
 
+class PaymentPendingCheck(Unavailable):
+    """The payment provider is slow to answer. Please try again in a minute."""
+
+    code = "payment_pending_check"
+
+
 class ChannelUnavailable(Unavailable):
     """The requested payment channel is not enabled"""
 

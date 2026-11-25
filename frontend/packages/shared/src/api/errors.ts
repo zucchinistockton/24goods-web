@@ -27,6 +27,7 @@ export const API_ERROR_CODES = [
   'too_many_unpaid',
   'channel_unavailable',
   'channel_unreachable',
+  'payment_pending_check',
   'buyer_input_too_long',
   'pay_via_checkout',
   'already_paid',

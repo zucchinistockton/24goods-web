@@ -15,7 +15,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import secretbox
 from app.core.audit import audit
-from app.core.errors import ChannelUnreachable, InvalidState, Unavailable, Validation
+from app.core.errors import (
+    ChannelUnreachable,
+    InvalidState,
+    PaymentPendingCheck,
+    Unavailable,
+    Validation,
+)
 from app.core.money import to_decimal
 from app.core.resources import Resources
 from app.models import Checkout, LegacyPayUrl, Order, PaymentAttempt, PaymentGateway, Tenant
@@ -213,6 +219,7 @@ async def prepare(
     amount_minor: int,
     currency: str,
     ip: str | None,
+    _recovered: bool = False,
 ) -> str | None:
     """Caller released order locks. A transaction advisory lock serializes reservations only.
 
@@ -260,7 +267,34 @@ async def prepare(
         raise InvalidState("Order changed before payment reservation")
     target_version = str(target.updated_at)
     if att is not None:
-        if att.status in ("unknown", "preparing"):
+        if att.status == "unknown":
+            att_id, att_ref, att_pid = att.id, att.gateway_ref, att.provider_id
+            created = att.created_at
+            await db.rollback()  # no network call while holding row locks
+            if not _recovered and await _unknown_released(
+                db,
+                res,
+                tid=tid,
+                no=no,
+                att_id=att_id,
+                ref=att_ref,
+                pid=att_pid,
+                created=created,
+                ip=ip,
+            ):
+                return await prepare(
+                    db,
+                    res,
+                    tid=tid,
+                    no=no,
+                    title=title,
+                    amount_minor=amount_minor,
+                    currency=currency,
+                    ip=ip,
+                    _recovered=True,
+                )
+            raise PaymentPendingCheck("Payment outcome is unknown; reconciliation is required")
+        if att.status == "preparing":
             await db.rollback()
             raise Unavailable("Payment outcome is unknown; reconciliation is required")
         if (
@@ -296,6 +330,71 @@ async def prepare(
         if outcome in ("ok", "taken"):
             return "/pay/epay/" + no
     raise ChannelUnreachable()
+
+
+UNKNOWN_RECOVER_AFTER = timedelta(seconds=20)
+
+
+async def _unknown_released(
+    db: AsyncSession,
+    res: Resources,
+    *,
+    tid: uuid.UUID,
+    no: str,
+    att_id: uuid.UUID,
+    ref: str,
+    pid: uuid.UUID | None,
+    created: datetime | None,
+    ip: str | None = None,
+) -> bool:
+    """An ``unknown`` attempt never handed its pay URL to the buyer, so the buyer cannot pay it.
+    Once it is old enough, ask its own gateway: a definite not-found / unpaid answer supersedes it
+    (still polled by reconcile, so a late payment on the old reference settles normally) and the
+    caller creates a fresh attempt. A paid answer is left to reconcile; any failure keeps the
+    block. Nothing here marks anything paid (AGENTS.md section 1.2)."""
+    if created is None:
+        return False
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    if datetime.now(timezone.utc) - created < UNKNOWN_RECOVER_AFTER:
+        return False
+    try:
+        routed, _ = await routed_resources(db, res, tid, ref)
+        await db.rollback()
+        q = await routed.zpay.query_order(ref, recovery=True)
+    except (ZPayQueryError, Unavailable, asyncio.TimeoutError):
+        await db.rollback()
+        return False
+    if q.found and q.paid:
+        return False  # settled by reconcile / the notify path with the full checks
+    answer = "unpaid" if q.found else "not_found"
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": str(tid) + ":epay:" + no},
+    )
+    current = await db.scalar(
+        select(PaymentAttempt)
+        .where(PaymentAttempt.id == att_id, PaymentAttempt.tenant_id == tid)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if current is None or current.status != "unknown":
+        await db.rollback()
+        return False  # changed while we asked (staff release / reconcile): start over safely
+    current.status = "superseded"
+    await audit(
+        db,
+        tenant_id=tid,
+        action="payment.attempt_superseded_unknown",
+        target="payment_attempt:" + str(att_id),
+        severity="warning",
+        before={"status": "unknown"},
+        after={"status": "superseded"},
+        ip=ip,
+        detail={"provider_id": str(pid), "gateway_answer": answer},
+    )
+    await db.commit()
+    return True
 
 
 async def _try_gateway(

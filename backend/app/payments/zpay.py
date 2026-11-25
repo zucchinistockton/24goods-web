@@ -127,14 +127,22 @@ def _as_int(value: Any) -> int | None:
         return None
 
 
-def parse_query_response(data: Any) -> QueryResult:
+# Definite "no such order" answers. 订单不存在 = Xiaodou (trusted everywhere: cancel, close,
+# reconcile). snpay's 订单号不存在 (read-only query 2026-11-25) is trusted ONLY when the caller
+# asks for it: recovering an ``unknown`` attempt whose pay URL never reached the buyer. Cancel /
+# close keep failing closed on it until it is proven on a ready attempt (payment audit of #121).
+_NOT_FOUND = frozenset({"order not found", "not found", "订单不存在"})
+_NOT_FOUND_RECOVERY = _NOT_FOUND | {"订单号不存在"}
+
+
+def parse_query_response(data: Any, *, recovery: bool = False) -> QueryResult:
     """Tolerant parser: ``code``/``status`` may be int or str; money may be str or number."""
     if not isinstance(data, Mapping):
         raise ZPayQueryError("unexpected query response shape")
     code = _as_int(data.get("code"))
     if code != 1:
         message = str(data.get("msg", "")).strip().lower().rstrip(".!！。")
-        if code == -1 and message in {"order not found", "not found", "订单不存在"}:
+        if code == -1 and message in (_NOT_FOUND_RECOVERY if recovery else _NOT_FOUND):
             return QueryResult(False, False, None, "", str(data.get("out_trade_no") or ""))
         raise ZPayQueryError("query response did not confirm an order status")
     status = _as_int(_first_key(data, "status", "trade_status"))
@@ -167,8 +175,13 @@ QUERY_TIMEOUT_S = 6.0
 # for TLS, but the relay's handshake (it dials Guangzhou first) takes about 0.5 s: every status
 # query failed ("relay path not reachable") although creating payments through the relay worked.
 QUERY_CONNECT_S = 4.0
-CREATE_TIMEOUT_S = 7.0
+# 2026-11-25: snpay answered /mapi.php after ~9 s; a 6 s read gave up, left an "unknown" attempt
+# and blocked the order. Creates get a longer READ budget (queries stay at 6 s). Callers: the
+# failover loop may try two gateways in a row (2 x 16 s) which stays under Caddy's 45 s
+# response_header_timeout; the buyer app sets no request timeout.
+CREATE_TIMEOUT_S = 16.0
 CREATE_CONNECT_S = 4.5
+CREATE_READ_S = 15.0
 # Xiaodou answers an unknown out_trade_no with HTTP 404 + {"code":-1,"msg":"订单不存在"}
 # and a bad signature with 400 + JSON. Parse those bodies (parse_query_response / create_payment
 # decide what they mean; nothing here can mark a payment paid) instead of treating them as
@@ -230,6 +243,7 @@ class ZPayClient:
         post: bool = False,
         connect_s: float = 1.8,
         body_statuses: frozenset[int] = _JSON_ERROR_STATUSES,
+        read_s: float = QUERY_TIMEOUT_S,
     ) -> Any:
         """Bounded transport. Database-configured gateways use DNS-pinned public HTTPS only."""
         from app.core import safefetch
@@ -249,9 +263,13 @@ class ZPayClient:
                     return (await safefetch.vet_url(url)).ip  # resolves + vets (public IP only)
 
                 async def exchange(pinned: str, connect: float | None) -> Any:
-                    timeout = _TIMEOUT
+                    timeout = (
+                        _TIMEOUT
+                        if read_s == QUERY_TIMEOUT_S
+                        else httpx.Timeout(read_s, connect=QUERY_TIMEOUT_S * 0.7)
+                    )
                     if connect is not None:
-                        timeout = httpx.Timeout(QUERY_TIMEOUT_S, connect=connect)
+                        timeout = httpx.Timeout(read_s, connect=connect)
                     async with httpx.AsyncClient(trust_env=False, follow_redirects=False) as client:
                         async with client.stream(
                             "POST" if post else "GET",
@@ -289,7 +307,9 @@ class ZPayClient:
                 data=params if post else None,
                 params=None if post else params,
                 headers={"Accept-Encoding": "identity"},
-                timeout=_TIMEOUT,
+                timeout=_TIMEOUT
+                if read_s == QUERY_TIMEOUT_S
+                else httpx.Timeout(read_s, connect=QUERY_TIMEOUT_S * 0.7),
             ) as response:
                 raw = await response_bytes(response, 256 * 1024, body_statuses=body_statuses)
                 return _error_status_guard(
@@ -320,6 +340,7 @@ class ZPayClient:
                 post=True,
                 connect_s=CREATE_CONNECT_S,
                 body_statuses=_CREATE_ERROR_STATUSES,
+                read_s=CREATE_READ_S,
             ),
             CREATE_TIMEOUT_S,
         )
@@ -381,7 +402,7 @@ class ZPayClient:
             msg = msg.replace(c.key, "***")
         return {"code": str(data.get("code", ""))[:16], "msg": msg}
 
-    async def query_order(self, order_no: str) -> QueryResult:
+    async def query_order(self, order_no: str, *, recovery: bool = False) -> QueryResult:
         c = self.config
         query = {"act": "order", "pid": c.pid, "key": c.key, "out_trade_no": order_no}
         try:
@@ -396,7 +417,7 @@ class ZPayClient:
         if self.config.instance_id and isinstance(data, dict) and str(data.get("code")) == "1":
             if str(data.get("pid", "")) != self.config.pid or data.get("type") != PAY_TYPE:
                 raise ZPayQueryError("query merchant or method mismatch")
-        parsed = parse_query_response(data)
+        parsed = parse_query_response(data, recovery=recovery)
         if parsed.found and parsed.out_trade_no != order_no:
             raise ZPayQueryError("query order binding mismatch")
         return parsed
