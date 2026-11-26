@@ -6,6 +6,14 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 **Hand-off 2026-11-18 (after PR #49; the owner's order #29 → #30 → #31 is done on the demo). START HERE.**
 
+- **2026-11-26 15:02 UTC PRODUCTION DEPLOY of #125 (alerts + EPay deposit guard; owner: "deploy").** c4 runs `02859f7`
+  (api + web verified), migration `0043_gateway_deposit` applied. Dump `/root/kesiv-backups/predeploy-20261126T150159Z/`
+  (sha256 `bf757efa…`, also on c4, 54 tables); rollback images `goods24-{api,web}:rollback-91324a2` and `:rollback-7dcf5a4`.
+  Smoke all pass; 8 x 502 only during the 3 s restart (15:02:50-53 UTC), no errors since. Xiaodou: the owner paid the full
+  deposit (CNY 449.48 = max(50, 661 x 68 %)); before the deploy a 0.01 CNY test create (unpaid) was accepted with a QR (it
+  refused creates 13:09-13:41 UTC). Entered on the gateway (audited `payment.gateway_updated`): deposit 449.48, 68 %,
+  floor 50 -> due 449.48, single-payment cap 661.00 (larger payments go to snpay first). Gateway order unchanged (Xiaodou 10,
+  snpay 20, fixed priority). Telegram toggles `event_direct_verify` / `event_gateway_down` / `event_large_payment` default on.
 - **2026-11-26 Alerts for Stripe verification, gateway refusals and large payments; per-gateway deposit guard (`feat/payment-alerts-deposit-guard`,
   owner request, ADR-056).** Triggered by two silent incidents on 2026-11-26: Xiaodou refused creates ("merchant deposit unpaid", failover to snpay
   worked but nobody knew) and a ZovoCard direct order waited 180 s for the operator's Stripe check. (A) The ZovoCard webhook keeps
