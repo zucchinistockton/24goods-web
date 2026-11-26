@@ -27,6 +27,7 @@ from app.core.resources import Resources
 from app.models import Checkout, LegacyPayUrl, Order, PaymentAttempt, PaymentGateway, Tenant
 from app.modules.content.site import tenant_settings
 from app.modules.operations.service import record_event
+from app.modules.payments import alerts
 from app.payments.zpay import (
     ZPayClient,
     ZPayConfig,
@@ -309,10 +310,11 @@ async def prepare(
         att.status = "superseded"
         await db.flush()
     # plain values: every attempt commits, which expires the ORM rows
-    plan = [(c.id, client_for(res, c), c.mode) for c in cands]
-    for index, (pid, client, mode) in enumerate(plan):
+    plan = [(c.id, client_for(res, c), c.mode, c.label) for c in cands]
+    for index, (pid, client, mode, label) in enumerate(plan):
         outcome = await _try_gateway(
             db,
+            res,
             tid=tid,
             no=no,
             title=title,
@@ -320,6 +322,7 @@ async def prepare(
             currency=currency,
             ip=ip,
             pid=pid,
+            label=label,
             client=client,
             mode=mode,
             model=model,
@@ -329,6 +332,7 @@ async def prepare(
         )
         if outcome in ("ok", "taken"):
             return "/pay/epay/" + no
+    alerts.no_gateway_left(res, tid)  # every gateway failed: buyers cannot pay now
     raise ChannelUnreachable()
 
 
@@ -399,6 +403,7 @@ async def _unknown_released(
 
 async def _try_gateway(
     db: AsyncSession,
+    res: Resources,
     *,
     tid: uuid.UUID,
     no: str,
@@ -407,6 +412,7 @@ async def _try_gateway(
     currency: str,
     ip: str | None,
     pid: uuid.UUID,
+    label: str,
     client: ZPayClient,
     mode: str,
     model: Any,
@@ -510,6 +516,14 @@ async def _try_gateway(
                 ip=ip,
             )
             await db.commit()
+            alerts.gateway_failed(
+                res,
+                tid,
+                pid,
+                label,
+                reason,
+                exc.gateway_message if isinstance(exc, ZPayRefused) else "",
+            )
         return "failover"
     except (ZPayQueryError, asyncio.TimeoutError):
         current = await db.scalar(
