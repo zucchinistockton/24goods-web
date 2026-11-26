@@ -29,7 +29,8 @@ depends_on = None
 def upgrade() -> None:
     op.execute(
         "ALTER TABLE payment_gateways "
-        "ADD COLUMN deposit_minor bigint CHECK (deposit_minor >= 0 AND deposit_minor <= 1000000000), "
+        "ADD COLUMN deposit_minor bigint "
+        "CHECK (deposit_minor >= 0 AND deposit_minor <= 1000000000), "
         "ADD COLUMN deposit_pct smallint CHECK (deposit_pct BETWEEN 1 AND 100), "
         "ADD COLUMN deposit_floor_minor bigint "
         "CHECK (deposit_floor_minor >= 0 AND deposit_floor_minor <= 1000000000)"

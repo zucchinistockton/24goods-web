@@ -309,11 +309,13 @@ async def prepare(
             return "/pay/epay/" + no
         att.status = "superseded"
         await db.flush()
-    # deposit guard: a gateway whose paid deposit does not cover this payment is skipped (it would
-    # raise the deposit due and, 48 h later, get us refused); with no other choice it is tried
-    # anyway. Plain values below: every attempt commits, which expires the ORM rows.
+    # deposit guard: a gateway whose paid deposit does not cover this payment goes LAST (it would
+    # raise the deposit due and, 48 h later, get us refused); it is still tried when every gateway
+    # within its cap failed, because a payment beats none. Plain values below: every attempt
+    # commits, which expires the ORM rows.
     usable = deposit.within_cap(cands, amount_minor)
-    plan = [(c.id, client_for(res, c), c.mode, c.label) for c in usable]
+    ordered = usable + [c for c in cands if all(c is not u for u in usable)]
+    plan = [(c.id, client_for(res, c), c.mode, c.label) for c in ordered]
     for index, (pid, client, mode, label) in enumerate(plan):
         outcome = await _try_gateway(
             db,

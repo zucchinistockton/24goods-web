@@ -13,7 +13,7 @@ from app.core import notify_tg
 from app.models import AuditLog, PaymentGateway
 from app.modules.payments import deposit
 from app.payments import epay
-from app.payments.zpay import QueryResult, ZPayClient
+from app.payments.zpay import QueryResult, ZPayClient, ZPayRefused
 from tests.helpers import buy
 from tests.test_gateway_routing_v10 import GW, NOTIFY, PAY, _attempts, _setup
 from tests.test_telegram_v52 import Telegram, _enable
@@ -79,6 +79,18 @@ async def test_gateway_is_skipped_for_a_payment_above_its_deposit_cap(env, monke
     await _set_deposit(admin, a[0], deposit_cny=None, deposit_pct=None, deposit_floor_cny=None)
     await _pay(buyer, await _buy(env, buyer, 30000))
     assert calls == ["gwb", "gwa", "gwa"]
+
+
+async def test_an_over_cap_gateway_is_the_last_resort_when_the_others_fail(env, monkeypatch):
+    # audit M1: the in-cap gateway refuses; the over-cap one must still be tried, not dropped
+    admin, buyer, a, _b, calls = await _setup(
+        env, monkeypatch, {"gwa": None, "gwb": ZPayRefused("merchant disabled")}
+    )
+    await _set_deposit(admin, a[0], deposit_cny="100", deposit_pct=68)
+    await _pay(buyer, await _buy(env, buyer, 30000))  # ¥300 > gwa cap ¥147.05
+    assert calls == ["gwb", "gwa"]
+    statuses = sorted(att.status for att in await _attempts(env))
+    assert statuses == ["failed", "ready"]
 
 
 async def test_if_every_gateway_is_over_its_cap_the_first_is_still_tried(env, monkeypatch):

@@ -79,8 +79,9 @@ async def max30_minor(
 ) -> int:
     """Largest single payment (minor) received through gateway ``pid`` in the last 30 days.
 
-    Counts attempts the reconciler marked ``settled`` plus attempts still ``ready`` whose payable
-    has a succeeded payment: the notify path settles the order without touching the attempt row.
+    Counts attempts the reconciler marked ``settled`` plus attempts still ``ready`` / ``superseded``
+    / ``unknown`` whose payable has a succeeded payment: the notify path settles the order without
+    touching the attempt row. (An over-count only makes the cap stricter and an alert noisier.)
     ``exclude_ref`` leaves one attempt (by gateway reference) out, to compare a payment that has
     just settled with what came before it."""
     since = (now or datetime.now(timezone.utc)) - WINDOW
@@ -91,8 +92,9 @@ async def max30_minor(
         PaymentAttempt.tenant_id == tid,
         PaymentAttempt.provider_id == pid,
         PaymentAttempt.created_at >= since,
-        (PaymentAttempt.status == "settled") | ((PaymentAttempt.status == "ready") & paid),
+        (PaymentAttempt.status == "settled")
+        | (PaymentAttempt.status.in_(("ready", "superseded", "unknown")) & paid),
     )
     if exclude_ref is not None:
-        stmt = stmt.where(PaymentAttempt.gateway_ref != exclude_ref)
+        stmt = stmt.where(PaymentAttempt.gateway_ref.is_distinct_from(exclude_ref))
     return int(await db.scalar(stmt) or 0)

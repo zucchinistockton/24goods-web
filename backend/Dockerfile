@@ -29,7 +29,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     APP_UPLOAD_DIR=/data/uploads \
     APP_HEALTH_PORT=8000
 
-# CI passes the ISO week: a cached upgrade layer is refreshed at least weekly.
+# CI passes the UTC date: a cached upgrade layer is refreshed at least daily.
 ARG OS_PATCH_EPOCH=none
 RUN echo "os patches: $OS_PATCH_EPOCH" && apt-get update \
     && apt-get upgrade -y --no-install-recommends \
