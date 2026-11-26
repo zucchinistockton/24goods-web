@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from decimal import Decimal
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Request
@@ -18,6 +19,7 @@ from app.core.ratelimit import enforce
 from app.core.resources import Resources
 from app.core.security import verify_password
 from app.models import PaymentAttempt, PaymentGateway, PaymentTest, User
+from app.modules.payments import deposit
 from app.modules.payments.gateways import (
     active_gateway,
     candidates,
@@ -49,6 +51,26 @@ def _iso(v: Any) -> str | None:
     return v.isoformat() if v is not None else None
 
 
+async def _deposit_view(db: AsyncSession, tid: uuid.UUID, r: PaymentGateway) -> dict[str, Any]:
+    """Deposit settings plus the numbers derived from the last 30 days (None while unconfigured)."""
+    max30 = await deposit.max30_minor(db, tid, r.id)
+    guarded = deposit.guarded(r)
+    return {
+        "deposit_minor": r.deposit_minor,
+        "deposit_pct": r.deposit_pct,
+        "deposit_floor_minor": r.deposit_floor_minor,
+        "max30_minor": max30,
+        "required_minor": deposit.required_minor(
+            max30, r.deposit_pct or 100, r.deposit_floor_minor or 0
+        )
+        if r.deposit_pct is not None
+        else None,
+        "cap_minor": deposit.cap_minor(r.deposit_minor or 0, r.deposit_pct or 100)
+        if guarded
+        else None,
+    }
+
+
 @router.get("")
 async def list_gateways(
     admin: User = Depends(session_admin), db: AsyncSession = Depends(get_db)
@@ -64,6 +86,7 @@ async def list_gateways(
         )
     )
     order = [c.id for c in await candidates(db, tid)]
+    deposits = {r.id: await _deposit_view(db, tid, r) for r in rows}
     return {
         "routing_mode": await routing_mode(db, tid),
         "candidates": [str(i) for i in order],
@@ -83,6 +106,7 @@ async def list_gateways(
                 "last_fail_at": _iso(r.last_fail_at),
                 "last_fail_reason": r.last_fail_reason,
                 "created_at": r.created_at.isoformat(),
+                **deposits[r.id],
             }
             for r in rows
         ],
@@ -185,9 +209,37 @@ async def activate_gateway(
     return {"active": str(ref)}
 
 
+MAX_DEPOSIT_CNY = Decimal("10000000")  # 10^9 minor units
+
+
 class GatewayPatch(BaseModel):
     enabled: bool | None = None
     priority: int | None = Field(default=None, ge=-1000, le=100000)
+    # deposit guard (CNY decimals in, minor units stored); an explicit null clears the setting
+    deposit_cny: Decimal | None = Field(
+        default=None, ge=0, le=MAX_DEPOSIT_CNY, max_digits=10, decimal_places=2
+    )
+    deposit_pct: int | None = Field(default=None, ge=1, le=100)
+    deposit_floor_cny: Decimal | None = Field(
+        default=None, ge=0, le=MAX_DEPOSIT_CNY, max_digits=10, decimal_places=2
+    )
+
+
+def _minor(v: Decimal | None) -> int | None:
+    return None if v is None else int(v * 100)
+
+
+def _deposit_values(body: GatewayPatch) -> dict[str, int | None]:
+    """The deposit columns the request names (a null value clears the column)."""
+    sent = body.model_fields_set
+    out: dict[str, int | None] = {}
+    if "deposit_cny" in sent:
+        out["deposit_minor"] = _minor(body.deposit_cny)
+    if "deposit_pct" in sent:
+        out["deposit_pct"] = body.deposit_pct
+    if "deposit_floor_cny" in sent:
+        out["deposit_floor_minor"] = _minor(body.deposit_floor_cny)
+    return out
 
 
 async def _own(db: AsyncSession, tid: uuid.UUID, ref: uuid.UUID) -> PaymentGateway:
@@ -275,11 +327,16 @@ async def patch_gateway(
     res: Resources = Depends(get_res),
 ) -> dict:
     await enforce(res.redis, "gateway:routing", str(admin.id), 60, 3600)
-    if body.enabled is None and body.priority is None:
+    dep = _deposit_values(body)
+    if body.enabled is None and body.priority is None and not dep:
         raise Validation("Nothing to change")
     row = await _own(db, admin.tenant_id, ref)
-    before = {"enabled": row.enabled, "priority": row.priority}
-    values = body.model_dump(exclude_none=True)
+    before: dict[str, Any] = {"enabled": row.enabled, "priority": row.priority}
+    before.update({k: getattr(row, k) for k in dep})
+    values: dict[str, Any] = {
+        **body.model_dump(exclude_none=True, include={"enabled", "priority"}),
+        **dep,
+    }
     await db.execute(
         update(PaymentGateway)
         .where(PaymentGateway.id == ref, PaymentGateway.tenant_id == admin.tenant_id)

@@ -37,7 +37,7 @@ RUN /usr/bin/caddy build-info | grep -qE 'go-jose/go-jose/v4[[:space:]]+v4\.1\.6
  && go version /usr/bin/caddy | grep -qE 'go1\.27\.4( |$)'
 
 FROM caddy:2.11-alpine@sha256:78bd35025c7ba85961dd149ae670315129954e77abe2383ac47c89106b35ade9
-# CI passes the ISO week: a cached `apk upgrade` layer is refreshed at least weekly.
+# CI passes the UTC date: a cached `apk upgrade` layer is refreshed at least daily.
 ARG OS_PATCH_EPOCH=none
 RUN echo "os patches: $OS_PATCH_EPOCH" && apk upgrade --no-cache
 COPY --from=caddy /usr/bin/caddy /usr/bin/caddy

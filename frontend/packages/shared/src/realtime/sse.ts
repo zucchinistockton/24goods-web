@@ -4,6 +4,7 @@ import type {
   CardOtpEvent,
   Conversation,
   Order,
+  AttentionEvent,
   OrderProgressEvent,
   StreamMessageEvent,
   TypingEvent,
@@ -35,6 +36,8 @@ export interface RealtimeHandlers {
   card_otp?: (e: CardOtpEvent) => void
   /** issue #30: a direct order's progress step changed (coarse; refetch the direct info). */
   order_progress?: (e: OrderProgressEvent) => void
+  /** staff stream: something needs a human right now (see AttentionEvent). */
+  attention?: (e: AttentionEvent) => void
   /** Called every `pollIntervalMs` while SSE is unavailable (fallback), first call immediately. */
   poll?: () => void | Promise<void>
   /** Called when SSE (re)opens after a disconnect: catch up anything missed (e.g. messages?after_id). */
@@ -57,7 +60,7 @@ export interface RealtimeOptions {
   random?: () => number
 }
 
-const EVENTS = ['message', 'conversation', 'order', 'agent_status', 'after_sales', 'typing', 'card_otp', 'order_progress', 'read'] as const
+const EVENTS = ['message', 'conversation', 'order', 'agent_status', 'after_sales', 'typing', 'card_otp', 'order_progress', 'attention', 'read'] as const
 
 function defaultFactory(): EventSourceFactory | null {
   const ES = (globalThis as { EventSource?: typeof EventSource }).EventSource
@@ -200,6 +203,9 @@ export class RealtimeClient {
         break
       case 'order_progress':
         h.order_progress?.(data as OrderProgressEvent)
+        break
+      case 'attention':
+        h.attention?.(data as AttentionEvent)
         break
       case 'read':
         h.read?.(data as ReadEvent)

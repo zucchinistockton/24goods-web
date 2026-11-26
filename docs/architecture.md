@@ -726,6 +726,34 @@ fixed, not sliding. Open: the real vendor's `funding_hold_status` values are unk
 refunded / none blocks the fallback, safe); zzshu's `is_subscription_cancelled = 0` after success is delivered anyway and
 recorded as `completed:renew_unconfirmed` for staff; a card left over after a lost create must be reviewed by hand.
 
+### ADR-056: Alerts for human-only steps and gateway trouble; per-gateway deposit guard (owner request 2026-11-26)
+
+**Context.** On 2026-11-26 Xiaodou began refusing `/mapi.php` creates ("merchant deposit unpaid"); our failover paid the orders
+through snpay but nobody was told. The same day a ZovoCard direct order stopped at `native_captcha`: the vendor gives the operator 180 s
+(max two tries) to finish a Stripe check by hand on zovocard.com/direct, and nobody was alerted. Xiaodou's rule (the gateway's, not ours):
+deposit due = max(50 CNY, largest single payment of the last 30 days x 68 %); a payment that raises it starts a 48 h grace, then new orders
+are refused until it is paid in full.
+
+**Decision.**
+- Alerts are Telegram events that follow the existing machinery (`notify_tg.notify_bg`, per-event toggles default ON, once/throttle keys in
+  Redis, texts en + zh-CN): `direct_verify` (urgent; webhook, after commit, best effort, only for NEW `gpt_direct.*` events that need the
+  check; `solving` and terminal statuses are silent), `gateway_down` (refusal 6 h / unreachable 1 h per gateway, all gateways failed 15 min per
+  tenant) and `large_payment`. Gateway text is control-stripped, capped at 120 and HTML-escaped. A failing alert never changes the webhook reply,
+  a payment attempt or a settlement.
+- `direct_verify` also publishes a staff SSE `attention` event; the admin console shows an urgent browser notification and beep regardless of
+  focus, throttle or the per-agent toggles. We still do NOT implement buyer-side Stripe.js (AGENTS section 1.8): the operator completes the check.
+- Deposit guard: nullable per-gateway `deposit_minor`, `deposit_pct`, `deposit_floor_minor` (all NULL = off). `required = max(floor,
+  ceil(max30 x pct / 100))`, `cap = floor(deposit x 100 / pct)`, integers only. `gateways.prepare` skips a guarded gateway for a payment above its
+  cap; if that would leave no gateway the old behaviour is kept (a payment that may raise a deposit beats no payment). `max30` counts the
+  gateway's attempts that are `settled` or `ready` with a succeeded payment on the payable (the notify path settles the order without touching the
+  attempt row) in the last 30 days by attempt creation time. The large-payment check runs after the settlement committed (notify path and the
+  EPay reconciler), spawned, and de-duplicated per gateway reference.
+
+**Consequences.** Staff learn within seconds of a refused gateway, a pending Stripe check or a deposit shortfall. The guard only protects
+against the 48 h suspension if staff keep `deposit_minor` current (it is a manual figure: the gateway has no API for it here). `max30` is an
+estimate by attempt time, not the gateway's own ledger. Alerts have no retry: a missed Telegram send is not redelivered (the once key is
+claimed only when a send actually follows).
+
 ### ADR-055: vmcardio as the second issuer of the zzshu dedicated card (owner 2026-11-25)
 
 **Context.** Every card.zzshu.pro order is paid with a NEW dedicated card (ADR-054), opened at ZovoCard. When ZovoCard

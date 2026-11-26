@@ -199,6 +199,9 @@ class NotificationsIn(BaseModel):
     event_payment_review: bool | None = None
     event_reseller_application: bool | None = None
     event_low_stock: bool | None = None
+    event_direct_verify: bool | None = None
+    event_gateway_down: bool | None = None
+    event_large_payment: bool | None = None
     buyer_sound: bool | None = None
     buyer_desktop: bool | None = None
 

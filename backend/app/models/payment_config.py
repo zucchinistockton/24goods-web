@@ -6,7 +6,16 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import BigInteger, Boolean, ForeignKey, Integer, LargeBinary, String, true
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    ForeignKey,
+    Integer,
+    LargeBinary,
+    SmallInteger,
+    String,
+    true,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, created_at, updated_at, uuid_pk
@@ -30,6 +39,11 @@ class PaymentGateway(Base):
     last_ok_at: Mapped[datetime | None]
     last_fail_at: Mapped[datetime | None]
     last_fail_reason: Mapped[str | None] = mapped_column(String(32))
+    # 0043 deposit guard (all NULL = off): CNY minor units paid at the gateway, its percentage of
+    # the largest single payment, and its minimum deposit
+    deposit_minor: Mapped[int | None] = mapped_column(BigInteger)
+    deposit_pct: Mapped[int | None] = mapped_column(SmallInteger)
+    deposit_floor_minor: Mapped[int | None] = mapped_column(BigInteger)
 
 
 class PaymentTest(Base):

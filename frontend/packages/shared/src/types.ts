@@ -966,6 +966,16 @@ export interface PaymentGatewayAdmin {
   last_fail_at: string | null
   last_fail_reason: string | null
   created_at: string
+  /** deposit guard (CNY minor units); null = not configured */
+  deposit_minor: number | null
+  deposit_pct: number | null
+  deposit_floor_minor: number | null
+  /** largest payment through this gateway in the last 30 days */
+  max30_minor: number
+  /** deposit the gateway wants now (null without a percentage) */
+  required_minor: number | null
+  /** largest single payment the paid deposit covers (null while the guard is off) */
+  cap_minor: number | null
 }
 export interface PaymentGatewayList {
   routing_mode: GatewayRoutingMode
@@ -1052,6 +1062,14 @@ export interface DirectProgress {
   reason: string | null
   steps: DirectProgressStep[]
   completed_at: string | number | null
+}
+/** Staff SSE `attention`: something needs a human now (a direct order waits for the Stripe check). */
+export interface AttentionEvent {
+  kind: 'direct_verify'
+  order_no: string | null
+  vendor_order_id: string
+  /** RFC 3339 UTC deadline of the vendor's verification window */
+  expires_at: string
 }
 /** SSE `order_progress`: the buyer's page refetches the direct info on it. */
 export interface OrderProgressEvent {

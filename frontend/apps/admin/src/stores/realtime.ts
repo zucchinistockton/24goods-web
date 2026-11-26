@@ -4,6 +4,7 @@ import {
   RealtimeClient,
   createEmitter,
   type AgentStatus,
+  type AttentionEvent,
   type Conversation,
   type Order,
   type OrderProgressEvent,
@@ -25,6 +26,8 @@ type Events = {
   after_sales: AfterSalesTicket
   /** a direct order's step changed (coarse keys only): open views refetch what they show */
   order_progress: OrderProgressEvent
+  /** something needs a human now (a direct order waits for the Stripe verification) */
+  attention: AttentionEvent
   sync: void
 }
 
@@ -47,6 +50,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
         read: (e) => bus.emit('read', e),
         after_sales: (t) => bus.emit('after_sales', t as unknown as AfterSalesTicket),
         order_progress: (e) => bus.emit('order_progress', e),
+        attention: (e) => bus.emit('attention', e),
         poll: () => bus.emit('sync', undefined),
         resync: () => bus.emit('sync', undefined),
         state: (s) => (state.value = s),

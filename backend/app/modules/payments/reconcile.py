@@ -86,6 +86,22 @@ async def emit_outcome(res: Resources, db: AsyncSession, outcome: NotifyOutcome)
     return touched
 
 
+def _large_payment_check(
+    res: Resources, tid: uuid.UUID, routed: Resources, ref: str, money: Any
+) -> None:
+    """After a reconciled EPay payment committed: the same large-payment check as the notify path
+    (best effort; the ``once`` key makes a payment alert at most once across both paths)."""
+    try:
+        from app.core.money import parse_amount
+        from app.modules.payments import alerts
+
+        alerts.payment_settled(
+            res, tid, uuid.UUID(routed.zpay.config.instance_id or ""), parse_amount(money), ref
+        )
+    except Exception as exc:  # legacy env-key gateway (no id) or a bad amount: nothing to watch
+        log.debug("large payment check not scheduled (%s)", type(exc).__name__)
+
+
 async def _mark_settled(
     db: AsyncSession, tid: uuid.UUID, where: Any, trade_no: str | None = None
 ) -> None:
@@ -192,6 +208,7 @@ async def requery_attempts(
                 # mark; re-mark from a fresh row so that path behaves exactly as it always did.
                 await _mark_settled(db, tid, where, q.trade_no)
                 await db.commit()
+                _large_payment_check(res, tid, routed, ref, q.money)
     except Exception as exc:
         carried = await _carrying(db, tid, exc, outcomes)
         if carried is exc:
