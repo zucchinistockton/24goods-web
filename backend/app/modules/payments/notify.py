@@ -20,7 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import audit
-from app.core.money import to_decimal
+from app.core.money import parse_amount, to_decimal
 from app.core.resources import Resources
 from app.models import Checkout, Order
 from app.modules.payments.settle import (
@@ -266,6 +266,22 @@ async def _gateway_paid(db: AsyncSession, res: Resources) -> None:
     await db.commit()
 
 
+def _gateway_settled(res: Resources, tid: uuid.UUID, params: dict[str, str], paid: Decimal) -> None:
+    """After the settlement committed: let the large-payment check look at it (best effort)."""
+    try:
+        from app.modules.payments import alerts
+
+        alerts.payment_settled(
+            res,
+            tid,
+            uuid.UUID(res.zpay.config.instance_id or ""),
+            parse_amount(paid),
+            params.get("out_trade_no", ""),
+        )
+    except Exception as exc:  # legacy env-key gateway (no id) or a bad amount: nothing to watch
+        log.debug("large payment check not scheduled (%s)", type(exc).__name__)
+
+
 async def _settle(
     db: AsyncSession,
     res: Resources,
@@ -283,7 +299,11 @@ async def _settle(
         return await to_manual_review(db, order_id, "requery_mismatch", ip, bad)
     recorded = epay.gateway_trade_key(res.zpay.config.instance_id, trade_no)
     await _gateway_paid(db, res)
-    return await apply_order_payment(db, res.settings, order_id, recorded, paid_amount, params, ip)
+    outcome = await apply_order_payment(
+        db, res.settings, order_id, recorded, paid_amount, params, ip
+    )
+    _gateway_settled(res, db.info["tenant_id"], params, paid_amount)
+    return outcome
 
 
 async def _settle_checkout(
@@ -302,7 +322,7 @@ async def _settle_checkout(
     if bad is not None:
         return await checkout_to_manual_review(db, checkout_id, "requery_mismatch", ip, bad)
     await _gateway_paid(db, res)
-    return await apply_checkout_payment(
+    outcome = await apply_checkout_payment(
         db,
         res.settings,
         checkout_id,
@@ -311,3 +331,5 @@ async def _settle_checkout(
         params,
         ip,
     )
+    _gateway_settled(res, db.info["tenant_id"], params, paid_amount)
+    return outcome

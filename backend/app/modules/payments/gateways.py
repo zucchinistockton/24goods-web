@@ -27,7 +27,7 @@ from app.core.resources import Resources
 from app.models import Checkout, LegacyPayUrl, Order, PaymentAttempt, PaymentGateway, Tenant
 from app.modules.content.site import tenant_settings
 from app.modules.operations.service import record_event
-from app.modules.payments import alerts
+from app.modules.payments import alerts, deposit
 from app.payments.zpay import (
     ZPayClient,
     ZPayConfig,
@@ -309,8 +309,11 @@ async def prepare(
             return "/pay/epay/" + no
         att.status = "superseded"
         await db.flush()
-    # plain values: every attempt commits, which expires the ORM rows
-    plan = [(c.id, client_for(res, c), c.mode, c.label) for c in cands]
+    # deposit guard: a gateway whose paid deposit does not cover this payment is skipped (it would
+    # raise the deposit due and, 48 h later, get us refused); with no other choice it is tried
+    # anyway. Plain values below: every attempt commits, which expires the ORM rows.
+    usable = deposit.within_cap(cands, amount_minor)
+    plan = [(c.id, client_for(res, c), c.mode, c.label) for c in usable]
     for index, (pid, client, mode, label) in enumerate(plan):
         outcome = await _try_gateway(
             db,

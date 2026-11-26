@@ -5,6 +5,7 @@ import { byPriority, formatCountdown, moveId, shouldPoll, testPhase, tryOrder, v
 const gw = (id: string, priority: number, created = '2026-01-01'): PaymentGatewayAdmin => ({
   id, label: id, gateway: 'https://x.example', merchant_id: '1', mode: 'qr', active: false, enabled: true,
   priority, in_use: false, last_ok_at: null, last_fail_at: null, last_fail_reason: null, created_at: created,
+  deposit_minor: null, deposit_pct: null, deposit_floor_minor: null, max30_minor: 0, required_minor: null, cap_minor: null,
 })
 
 describe('gateway priority list (v10 §B)', () => {

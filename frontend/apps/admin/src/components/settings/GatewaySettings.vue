@@ -5,11 +5,12 @@ import { client } from '../../api'
 import { useSave } from '../../composables/useSave'
 import { useRead } from '../../composables/useRead'
 import { toastError } from '../../ui'
-import type { GatewayRoutingMode, PaymentGatewayAdmin, PaymentGatewayList, TestPaymentView } from '@24goods/shared'
+import { formatMoney, type GatewayRoutingMode, type PaymentGatewayAdmin, type PaymentGatewayList, type TestPaymentView } from '@24goods/shared'
+import { minorToYuan, yuanToMinor } from '../../lib/money'
 import { byPriority, moveId, tryOrder } from '../../lib/gatewayRouting'
 import GatewayTestDialog from './GatewayTestDialog.vue'
 type Gateway = PaymentGatewayAdmin
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const { saving, run } = useSave()
 const reader=useRead()
 const items = ref<Gateway[]>([])
@@ -62,6 +63,37 @@ async function move(row: Gateway, dir: -1 | 1) {
 async function remove(row: Gateway) {
   if (!window.confirm(t('gwRouting.deleteConfirm', { label: row.label }))) return
   try { await client.delete(`/admin/payment-gateways/${row.id}`); await load() } catch (e) { toastError(e) }
+}
+const cny = (minor: number | null) => (minor === null ? t('gwDeposit.none') : formatMoney(minorToYuan(minor), 'CNY', locale.value))
+const depositFor = ref<Gateway | null>(null)
+const dep = reactive({ paid: '', pct: '', floor: '' })
+const depErr = reactive({ paid: '', pct: '', floor: '' })
+function openDeposit(row: Gateway) {
+  depositFor.value = row
+  dep.paid = row.deposit_minor === null ? '' : minorToYuan(row.deposit_minor)
+  dep.pct = row.deposit_pct === null ? '' : String(row.deposit_pct)
+  dep.floor = row.deposit_floor_minor === null ? '' : minorToYuan(row.deposit_floor_minor)
+  depErr.paid = depErr.pct = depErr.floor = ''
+}
+function shortBy(row: Gateway): number {
+  return row.required_minor !== null && row.deposit_minor !== null && row.required_minor > row.deposit_minor ? row.required_minor - row.deposit_minor : 0
+}
+async function saveDeposit() {
+  const row = depositFor.value
+  if (!row) return
+  const money = (s: string) => (s.trim() === '' ? null : yuanToMinor(s))
+  const pctRaw = dep.pct.trim()
+  const pct = pctRaw === '' ? null : /^\d{1,3}$/.test(pctRaw) ? Number(pctRaw) : NaN
+  depErr.paid = money(dep.paid) === null && dep.paid.trim() !== '' ? t('gwDeposit.invalidMoney') : ''
+  depErr.floor = money(dep.floor) === null && dep.floor.trim() !== '' ? t('gwDeposit.invalidMoney') : ''
+  depErr.pct = pct !== null && !(pct >= 1 && pct <= 100) ? t('gwDeposit.invalidPct') : ''
+  if (depErr.paid || depErr.floor || depErr.pct) return
+  const r = await run(() => client.patch(`/admin/payment-gateways/${row.id}`, {
+    deposit_cny: dep.paid.trim() === '' ? null : dep.paid.trim(),
+    deposit_pct: pct,
+    deposit_floor_cny: dep.floor.trim() === '' ? null : dep.floor.trim(),
+  }))
+  if (r) { depositFor.value = null; await load() }
 }
 function when(iso: string | null) { return iso ? new Date(iso).toLocaleString() : t('gwRouting.never') }
 onMounted(load)
@@ -123,6 +155,11 @@ function close() { form.secret = ''; form.current_password = ''; editing.value =
         <div class="small">{{ when(row.last_ok_at) }}</div>
         <div v-if="row.last_fail_at" class="small fail">{{ t('gwRouting.lastFail') }}: {{ when(row.last_fail_at) }} <span v-if="row.last_fail_reason">({{ t(`gwRouting.reasons.${row.last_fail_reason}`) }})</span></div>
       </template></el-table-column>
+      <el-table-column :label="t('gwDeposit.button')" min-width="230"><template #default="{ row }">
+        <div class="small">{{ row.required_minor === null ? t('gwDeposit.summaryNoDue', { max: cny(row.max30_minor) }) : t('gwDeposit.summary', { max: cny(row.max30_minor), due: cny(row.required_minor), cap: cny(row.cap_minor) }) }}</div>
+        <el-tag v-if="shortBy(row as Gateway) > 0" size="small" type="warning" effect="plain">{{ t('gwDeposit.short', { short: cny(shortBy(row as Gateway)) }) }}</el-tag>
+        <el-button size="small" :disabled="saving" @click="openDeposit(row as Gateway)">{{ t('gwDeposit.button') }}</el-button>
+      </template></el-table-column>
       <el-table-column :label="t('gateways.health.title')" min-width="140"><template #default="{ row }">
         <el-tag :type="health[row.id]?.status === 'healthy' ? 'success' : health[row.id]?.status === 'degraded' ? 'warning' : health[row.id]?.status === 'unreachable' ? 'danger' : 'info'" effect="plain">{{ t(`gateways.health.${health[row.id]?.status ?? 'unknown'}`) }}</el-tag>
         <div v-if="testMsg[row.id]" class="muted small">{{ testMsg[row.id] }}</div>
@@ -160,6 +197,15 @@ function close() { form.secret = ''; form.current_password = ''; editing.value =
         <el-form-item :label="t('gateways.mode')"><el-select v-model="form.mode"><el-option value="qr" :label="t('gateways.qr')" /><el-option value="redirect" :label="t('gateways.redirect')" /></el-select></el-form-item>
         <el-form-item :label="t('gateways.password')" required><el-input v-model="form.current_password" type="password" autocomplete="current-password" /></el-form-item>
         <p>{{ t('gateways.rotation') }}</p>
+        <el-button type="primary" native-type="submit" :loading="saving">{{ t('common.save') }}</el-button>
+      </el-form>
+    </el-dialog>
+    <el-dialog :model-value="!!depositFor" :title="t('gwDeposit.title', { label: depositFor?.label ?? '' })" width="min(92vw, 520px)" @close="depositFor = null">
+      <el-form label-position="top" @submit.prevent="saveDeposit">
+        <p class="muted small">{{ t('gwDeposit.note') }}</p>
+        <el-form-item :label="t('gwDeposit.paid')" :error="depErr.paid"><el-input v-model="dep.paid" inputmode="decimal" maxlength="12" /></el-form-item>
+        <el-form-item :label="t('gwDeposit.pct')" :error="depErr.pct"><el-input v-model="dep.pct" inputmode="numeric" maxlength="3" /></el-form-item>
+        <el-form-item :label="t('gwDeposit.floor')" :error="depErr.floor"><el-input v-model="dep.floor" inputmode="decimal" maxlength="12" /></el-form-item>
         <el-button type="primary" native-type="submit" :loading="saving">{{ t('common.save') }}</el-button>
       </el-form>
     </el-dialog>

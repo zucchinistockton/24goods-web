@@ -160,6 +160,19 @@ The ZPay client therefore has a fallback path (`backend/app/payments/egress.py`)
 - Check: Admin -> Settings -> Payment -> Test now (expects `-1 订单不存在` for the random probe).
 - Removal: clear `APP_ZPAY_RELAYS`, redeploy the api, stop the relay service.
 
+### EPay merchant deposit (Xiaodou, since 2026-11-26)
+
+Xiaodou refuses new `/mapi.php` creates (`code=-1`, "该商户保证金未缴清，暂不可收款，请联系平台补缴") when the merchant deposit is short.
+The gateway's rule: **due = max(50 CNY, largest single payment of the last 30 days x 68 %)**; a payment that raises the due amount gives a
+**48 h grace period**, after which new orders are refused until the deposit is paid in full (ADR-056).
+
+- Enter the deposit in Admin -> Settings -> Payment -> the gateway's **Deposit** button: paid deposit (CNY), 68 (percent), minimum 50 (CNY).
+  The row then shows the 30-day largest payment, the deposit due and the single-payment cap. Leave all empty to turn the guard off.
+- With the paid deposit and the percentage set, a payment above the cap (`deposit x 100 / 68`) is routed to the next gateway. If every gateway is
+  over its cap the first one is still tried. Update the paid deposit whenever you top it up at the gateway; the figure is manual.
+- Telegram (Settings -> Notifications): `gateway_down` (a gateway refuses / is unreachable / none is left) and `large_payment` (a payment above the
+  previous 30-day largest, with the deposit due / paid / short: pay the short amount within 48 h).
+
 ## zzshu standby provider (ADR-054)
 
 card.zzshu.pro takes ChatGPT direct orders when ZovoCard fails before any charge, or first when staff / the cool-down

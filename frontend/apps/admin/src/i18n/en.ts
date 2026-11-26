@@ -41,6 +41,16 @@ export default {
     endPicker: 'Adjusted expiry (your local time)',
     optional: 'optional',
   },
+  gwDeposit: {
+    button: 'Deposit', title: 'Deposit guard: {label}',
+    note: 'Some gateways demand a merchant deposit of the larger of a minimum and a percentage of the largest single payment of the last 30 days; a payment that raises it must be covered within 48 h or new orders are refused. With the paid deposit and the percentage set, a payment above the single-payment cap goes to another gateway. Leave all three empty to turn the guard off.',
+    paid: 'Deposit paid (CNY)', pct: 'Deposit % of the largest payment', floor: 'Minimum deposit (CNY)',
+    summary: '30-day largest payment {max} · deposit due {due} · single-payment cap {cap}',
+    summaryNoDue: '30-day largest payment {max}', none: 'not set',
+    short: 'Deposit short by {short}', ok: 'Deposit covers it',
+    invalidMoney: 'Enter an amount in CNY with at most 2 decimals', invalidPct: 'Enter a whole number from 1 to 100',
+    saved: 'Deposit settings saved',
+  },
   gwRouting: {
     mode: "Routing", sticky: "Sticky (recommended)", fixed: "Fixed priority",
     stickyHint: "The next payment first tries the gateway that worked last time; the others follow in priority order. If a gateway cannot be reached or refuses, the next one is tried automatically.",

@@ -6,6 +6,20 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 **Hand-off 2026-11-18 (after PR #49; the owner's order #29 → #30 → #31 is done on the demo). START HERE.**
 
+- **2026-11-26 Alerts for Stripe verification, gateway refusals and large payments; per-gateway deposit guard (`feat/payment-alerts-deposit-guard`,
+  owner request, ADR-056).** Triggered by two silent incidents on 2026-11-26: Xiaodou refused creates ("merchant deposit unpaid", failover to snpay
+  worked but nobody knew) and a ZovoCard direct order waited 180 s for the operator's Stripe check. (A) The ZovoCard webhook keeps
+  `captcha_kind` / `captcha_state` / `captcha_expires_at`; a NEW `gpt_direct.*` event with `stage native_captcha` or `captcha_kind stripe_3ds` (not
+  `solving`, not terminal) sends an URGENT Telegram (event `direct_verify`, once per vendor order + expiry per 15 min; names our order, the
+  deadline in UTC and "zovocard.com/direct") and a staff SSE `attention` event; the console beeps and shows an urgent notification even when focused
+  (click opens https://zovocard.com/direct, `noopener,noreferrer`). The buyer view never carried the vendor sentence (test added). (B) Telegram event
+  `gateway_down`: gateway refusal (6 h per gateway), unreachable (1 h), every gateway failed (urgent, 15 min). (C) Migration `0043` adds nullable
+  `deposit_minor` / `deposit_pct` / `deposit_floor_minor` to `payment_gateways`; routing skips a guarded gateway for a payment above
+  `floor(deposit * 100 / pct)` (kept as a last resort when nothing else is left); event `large_payment` alerts when a settled payment exceeds the
+  gateway's previous 30-day largest, with the deposit due / paid / short; admin gateway list shows the 30-day largest, due and cap and the Gateway
+  settings page edits the three values. New events default ON in `notifications` settings. Tests: `test_direct_verify_alert.py`,
+  `test_epay_gateway_alerts.py`, `test_gateway_deposit.py`, admin vitest. Not deployed. Owner to do: enter Xiaodou's paid deposit (+ 68 % / 50 CNY floor)
+  in Settings -> Payment -> Deposit.
 - **2026-11-25 EPay pay page shows only a QR code, never the upstream gateway host (`feat/epay-qr-only-pay-page`, owner request).**
   New unauthenticated `GET /api/v1/pay/epay/go/{attempt_id}` (tenant-scoped, rate limited, `no-store`, `Referrer-Policy: no-referrer`):
   302 to the attempt's stored, already vetted redirect payload only while the attempt is `ready`, unexpired, has a provider and the order /

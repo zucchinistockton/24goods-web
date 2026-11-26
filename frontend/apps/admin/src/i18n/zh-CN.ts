@@ -42,6 +42,16 @@ const zhCN: AdminMessages = {
     endPicker: '调整到期时间（本地时间）',
     optional: '可选',
   },
+  gwDeposit: {
+    button: '保证金', title: '保证金守护：{label}',
+    note: '部分网关要求商户保证金不低于「最低保证金」与「近 30 天单笔最大付款 × 比例」中的较大者；付款抬高应缴额后，须在 48 小时内补足，否则新订单会被拒绝。设置已缴保证金和比例后，超过单笔上限的付款会改走其他网关。三项都留空则关闭守护。',
+    paid: '已缴保证金（CNY）', pct: '保证金占单笔最大付款的比例（%）', floor: '最低保证金（CNY）',
+    summary: '近 30 天单笔最大付款 {max} · 应缴保证金 {due} · 单笔上限 {cap}',
+    summaryNoDue: '近 30 天单笔最大付款 {max}', none: '未设置',
+    short: '保证金差额 {short}', ok: '保证金充足',
+    invalidMoney: '请输入人民币金额，最多两位小数', invalidPct: '请输入 1 到 100 的整数',
+    saved: '保证金设置已保存',
+  },
   gwRouting: {
     mode: "路由方式", sticky: "粘性（推荐）", fixed: "固定优先级",
     stickyHint: "下一笔支付优先使用上次成功的网关，其余按优先级排序。网关无法连接或拒绝创建时，自动尝试下一个。",

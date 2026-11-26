@@ -966,6 +966,16 @@ export interface PaymentGatewayAdmin {
   last_fail_at: string | null
   last_fail_reason: string | null
   created_at: string
+  /** deposit guard (CNY minor units); null = not configured */
+  deposit_minor: number | null
+  deposit_pct: number | null
+  deposit_floor_minor: number | null
+  /** largest payment through this gateway in the last 30 days */
+  max30_minor: number
+  /** deposit the gateway wants now (null without a percentage) */
+  required_minor: number | null
+  /** largest single payment the paid deposit covers (null while the guard is off) */
+  cap_minor: number | null
 }
 export interface PaymentGatewayList {
   routing_mode: GatewayRoutingMode
