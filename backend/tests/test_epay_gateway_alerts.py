@@ -28,7 +28,7 @@ async def _pay(env, buyer, order) -> int:
 
 
 def test_clean_text_strips_controls_and_caps():
-    assert clean_text("a\x00b‮c\nd  e", 120) == "a b c d e"
+    assert clean_text("a\x00b\u202ec\nd  e", 120) == "a b c d e"
     assert len(clean_text("x" * 500, 120)) == 120
     assert clean_text(None, 120) == ""
 

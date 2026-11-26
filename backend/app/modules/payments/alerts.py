@@ -28,7 +28,7 @@ NO_GATEWAY_TTL_S = 15 * 60
 LARGE_TTL_S = 7 * 86400
 MESSAGE_CAP = 120
 LABEL_CAP = 80
-_CTRL = re.compile("[\x00-\x1f\x7f-\x9f​-‏ -‮⁦-⁩﻿]")
+_CTRL = re.compile("[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff]")
 
 
 def clean_text(value: object, cap: int) -> str:
