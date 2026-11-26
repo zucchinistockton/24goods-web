@@ -578,6 +578,8 @@ const zhCN: AdminMessages = {
     unsupported: '此浏览器不支持桌面通知。',
     newMessage: '{name} 发来新消息',
     urgentPaid: '紧急：手动订单 #{no} 已付款，请立即发货 · {amount}',
+    directVerifyTitle: '需要 Stripe 验证',
+    directVerifyBody: '{order}：请在 {n} 秒内到 ZovoCard 完成验证',
     urgentExpedite: '紧急：买家催促发货，订单 #{no}',
     paidManual: '订单 {no} 已付款，待发货',
     newTicket: '新售后工单 · {no}',

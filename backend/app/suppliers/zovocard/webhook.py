@@ -36,7 +36,7 @@ _CDK_FIELDS = (
     "client_request_id", "service_fee_minor", "service_fee_status", "final_amount_minor",
     "currency", "card_last_four", "funding_hold_status",
     "payment_state", "funding_state", "timeline_event_id", "category", "step", "public_code",
-    "payment_fact",
+    "payment_fact", "captcha_kind", "captcha_state", "captcha_expires_at",
 )  # fmt: skip
 _FIELDS: dict[str, tuple[str, ...]] = {
     "balance_change": (
@@ -54,7 +54,7 @@ _FIELDS: dict[str, tuple[str, ...]] = {
 # progress fields (issue #30): machine tokens only, character-restricted and length-capped
 _CODE_CAPS = {
     "timeline_event_id": 64, "category": 32, "step": 48, "public_code": 48, "payment_fact": 32,
-    "payment_state": 32, "funding_state": 32,
+    "payment_state": 32, "funding_state": 32, "captcha_kind": 32, "captcha_state": 32,
 }  # fmt: skip
 _AMOUNTS = frozenset({"amount", "balance_before", "balance_after", "settle_amount", "auth_amount"})
 

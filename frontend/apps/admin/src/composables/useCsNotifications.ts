@@ -3,7 +3,7 @@ import { useRoute, useRouter, type RouteLocationRaw } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { formatMoney, messagePreview } from '@24goods/shared'
 import { beep, desktopNotify, registerNotifyWorker, unlockAudioOnFirstGesture } from '../notify'
-import { createSeenSet, createThrottle, isExpediteMessage, isRelevant, isUrgentPaid, orderAlertKind, titleWithCount, type NotifyEvent } from '../lib/notifyPolicy'
+import { DIRECT_VERIFY_URL, createSeenSet, createThrottle, isExpediteMessage, isRelevant, isUrgentPaid, orderAlertKind, titleWithCount, verifySecondsLeft, type NotifyEvent } from '../lib/notifyPolicy'
 import { useDeskStore } from '../stores/desk'
 import { usePrefsStore } from '../stores/prefs'
 import { useRealtimeStore } from '../stores/realtime'
@@ -25,6 +25,7 @@ export function useCsNotifications() {
   const orderSeen = createSeenSet()
   const ticketSeen = createSeenSet()
   const expediteSeen = createSeenSet()
+  const verifySeen = createSeenSet()
 
   // v11: notifications through a service worker keep working while the browser is minimised
   void registerNotifyWorker((url) => {
@@ -63,7 +64,28 @@ export function useCsNotifications() {
     }
   }
 
+  // A direct order waits for the Stripe check (180 s): always loud, never throttled or toggled
+  // away, shown even while this tab is focused; the click opens ZovoCard (external, no opener).
+  function directVerify(e: { order_no: string | null; vendor_order_id: string; expires_at: string }) {
+    if (!verifySeen.first(`${e.vendor_order_id}:${e.expires_at}`)) return
+    const title = t('notify.directVerifyTitle')
+    const body = t('notify.directVerifyBody', {
+      order: e.order_no ? `#${e.order_no}` : `ZovoCard #${e.vendor_order_id}`,
+      n: verifySecondsLeft(e.expires_at),
+    })
+    const open = () => void window.open(DIRECT_VERIFY_URL, '_blank', 'noopener,noreferrer')
+    if (isHidden()) desk.unread++
+    beep()
+    desktopNotify(title, body, `direct_verify:${e.vendor_order_id}`, open, { url: DIRECT_VERIFY_URL, urgent: true })
+    if (!isHidden()) {
+      const n = ElNotification({ title, message: body, type: 'error', duration: 0, position: 'bottom-right', onClick: () => { n.close(); open() } })
+    }
+  }
+
   const offs = [
+    rt.on('attention', (e) => {
+      if (e.kind === 'direct_verify') directVerify(e)
+    }),
     rt.on('message', (e) => {
       if (isExpediteMessage(e.message) && expediteSeen.first(String(e.message.id))) {
         fire(

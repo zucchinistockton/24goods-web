@@ -80,6 +80,17 @@ export function isExpediteMessage(m: { type?: string; payload?: unknown }): bool
   return m.type === 'system' && !!m.payload && (m.payload as { event?: unknown }).event === 'delivery_expedite'
 }
 
+// ---- direct-order verification (always urgent: the vendor gives the operator 180 s) ----
+export const DIRECT_VERIFY_URL = 'https://zovocard.com/direct'
+export const DIRECT_VERIFY_WINDOW_S = 180
+
+/** Whole seconds left until `expiresAt` (RFC 3339); the vendor window when absent or invalid; never negative. */
+export function verifySecondsLeft(expiresAt: string | null | undefined, now: number = Date.now()): number {
+  const t = expiresAt ? Date.parse(expiresAt) : NaN
+  if (!Number.isFinite(t)) return DIRECT_VERIFY_WINDOW_S
+  return Math.max(0, Math.round((t - now) / 1000))
+}
+
 // ---- order lifecycle alerts (review-v8b §4) ----
 export type OrderAlertKind = 'created' | 'paid' | 'cancelled' | 'expired'
 export type OrderAlertPrefs = Record<OrderAlertKind, boolean>

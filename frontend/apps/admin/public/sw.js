@@ -6,6 +6,11 @@ self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim(
 self.addEventListener('notificationclick', (event) => {
   event.notification.close()
   const data = event.notification.data || {}
+  // the one external target: the vendor page where the operator completes the Stripe check
+  if (data.url === 'https://zovocard.com/direct') {
+    event.waitUntil(self.clients.openWindow(data.url))
+    return
+  }
   const url = typeof data.url === 'string' && data.url.startsWith('/admin/') ? data.url : '/admin/'
   event.waitUntil(
     (async () => {

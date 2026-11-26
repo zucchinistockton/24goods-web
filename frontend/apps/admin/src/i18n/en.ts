@@ -581,6 +581,8 @@ export default {
     paidManual: 'Paid order {no} needs delivery',
     urgentPaid: 'URGENT: manual order #{no} is paid, ship now · {amount}',
     urgentExpedite: 'URGENT: the buyer asks to ship order #{no}',
+    directVerifyTitle: 'Stripe verification needed',
+    directVerifyBody: '{order}: complete it on ZovoCard within {n} s',
     newTicket: 'New after-sales ticket · {no}',
     orders: 'Order alerts',
     orderKind: { created: 'New order', paid: 'Payment received', cancelled: 'Order cancelled', expired: 'Order expired (off by default)' },

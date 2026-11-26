@@ -13,6 +13,9 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from collections.abc import Mapping
+from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse
@@ -20,11 +23,13 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import notify_tg
 from app.core.audit import audit
 from app.core.deps import client_ip, get_db, get_res
 from app.core.ratelimit import hit
 from app.core.resources import Resources
-from app.models import Outbox, SupplierAccount, SupplierWebhookEvent, Tenant
+from app.models import Order, Outbox, ProcurementJob, SupplierAccount, SupplierWebhookEvent, Tenant
+from app.modules.realtime.publish import publish, staff_channel
 from app.suppliers.base import WebhookRejected
 from app.suppliers.vmcardio import webhook as vm_hook
 from app.suppliers.zovocard.webhook import MAX_BODY, normalise, verify_signature
@@ -36,6 +41,108 @@ ZOVOCARD_PATH = "/api/v1/webhooks/zovocard"
 VMCARDIO_PATH = "/api/v1/webhooks/vmcardio"
 PER_IP_PER_MIN = 300
 GLOBAL_PER_MIN = 600  # vmcardio: every address together
+
+# ZovoCard direct order waiting for the operator's Stripe verification (vendor §6.21: 180 s,
+# at most two tries). Terminal vendor statuses never alert (nothing left to complete).
+VERIFY_WINDOW_S = 180
+VERIFY_DEDUP_S = 900
+_VERIFY_TERMINAL = frozenset(
+    {"completed", "failed", "failed_precharge", "cancelled", "declined", "expired", "rejected"}
+)
+
+
+def needs_verification(kind: str, payload: Mapping[str, Any]) -> bool:
+    """A NEW ``gpt_direct.*`` event that asks a human to finish the Stripe check now."""
+    if not kind.startswith("gpt_direct."):
+        return False
+    if payload.get("stage") != "native_captcha" and payload.get("captcha_kind") != "stripe_3ds":
+        return False
+    if payload.get("captcha_state") == "solving":
+        return False
+    return str(payload.get("status") or "").lower() not in _VERIFY_TERMINAL
+
+
+def verify_deadline(expires_at: Any, now: datetime | None = None) -> tuple[int, datetime]:
+    """(seconds left, deadline) from the vendor's RFC 3339 time; ``now + 180 s`` when absent or
+    unparseable; never negative."""
+    now = now or datetime.now(timezone.utc)
+    deadline = now + timedelta(seconds=VERIFY_WINDOW_S)
+    if isinstance(expires_at, str) and expires_at:
+        try:
+            parsed = datetime.fromisoformat(expires_at.strip().replace("Z", "+00:00"))
+            deadline = parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
+    deadline = deadline.astimezone(timezone.utc)
+    return max(0, int((deadline - now).total_seconds())), deadline
+
+
+async def _our_order_no(
+    db: AsyncSession, tenant_id: uuid.UUID, vendor_order_id: str, client_request_id: str | None
+) -> str | None:
+    """The order number of OUR job for this vendor order, tenant-filtered (None: not ours)."""
+    conds = [ProcurementJob.upstream_ref == vendor_order_id]
+    if client_request_id:
+        conds.append(ProcurementJob.client_request_id == client_request_id)
+    for cond in conds:
+        no = await db.scalar(
+            select(Order.order_no)
+            .join(ProcurementJob, ProcurementJob.order_id == Order.id)
+            .where(
+                ProcurementJob.tenant_id == tenant_id,
+                Order.tenant_id == tenant_id,
+                cond,
+            )
+            .limit(1)
+        )
+        if no:
+            return str(no)
+    return None
+
+
+async def alert_direct_verify(
+    db: AsyncSession, res: Resources, tenant_id: uuid.UUID, payload: Mapping[str, Any]
+) -> None:
+    """Telegram + staff realtime alert for one verification event. Best effort: never raises."""
+    try:
+        vendor_id = str(payload.get("order_id") or payload.get("cdk_id") or "")[:64]
+        expires = payload.get("captcha_expires_at")
+        crid = payload.get("client_request_id")
+        order_no = await _our_order_no(
+            db, tenant_id, vendor_id, crid if isinstance(crid, str) and crid else None
+        )
+        secs, deadline = verify_deadline(expires)
+        who: notify_tg.Line = (
+            notify_tg.T("order.no", no=order_no)
+            if order_no
+            else notify_tg.T("verify.vendor_order", id=vendor_id or "?")
+        )
+        notify_tg.notify_bg(
+            res,
+            tenant_id,
+            "direct_verify",
+            [
+                who,
+                notify_tg.T("verify.deadline", secs=secs, time=deadline.strftime("%H:%M:%S")),
+                notify_tg.T("verify.action"),
+            ],
+            link=notify_tg.admin_link(res, "orders"),
+            once=(f"direct_verify:{vendor_id}:{expires or ''}", VERIFY_DEDUP_S),
+            label=notify_tg.T("label.urgent_direct_verify"),
+        )
+        await publish(
+            res.redis,
+            staff_channel(tenant_id),
+            "attention",
+            {
+                "kind": "direct_verify",
+                "order_no": order_no,
+                "vendor_order_id": vendor_id,
+                "expires_at": deadline.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            },
+        )
+    except Exception as exc:  # an alert must never fail the webhook reply
+        log.warning("direct verify alert skipped (%s)", type(exc).__name__)
 
 
 @router.post("/zovocard", response_model=None)
@@ -97,6 +204,7 @@ async def zovocard_webhook(
         log.warning("zovocard webhook: no %s supplier account on this tenant", env)
         return Response(status_code=200)
     new = 0
+    verify: list[Mapping[str, Any]] = []
     # 3-D Secure one-time codes are no longer forwarded to buyers (owner decision 2026-11-17):
     # the raw code is not even read; the event is stored with its whitelisted, OTP-free payload
     for ev in events:
@@ -117,6 +225,8 @@ async def zovocard_webhook(
         if inserted is None:
             continue  # duplicate delivery (at-least-once): already queued once
         new += 1
+        if needs_verification(ev.kind, ev.payload):
+            verify.append(dict(ev.payload))
         db.add(
             Outbox(
                 tenant_id=tenant,
@@ -134,6 +244,8 @@ async def zovocard_webhook(
             detail={"events": new, "kinds": sorted({e.kind for e in events})[:10]},
         )
     await db.commit()
+    for payload in verify[:5]:  # a flood of events cannot become a flood of alerts
+        await alert_direct_verify(db, res, tenant, payload)
     return Response(status_code=200)
 
 
