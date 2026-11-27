@@ -24,6 +24,7 @@ const now = ref(Date.now())
 const busy = ref(false)
 const code = ref('')
 const revealedPhone = ref('')
+const revealFailed = ref(false)
 let revealing = false
 let pollTimer: ReturnType<typeof setInterval> | undefined
 let tickTimer: ReturnType<typeof setInterval> | undefined
@@ -54,12 +55,15 @@ async function load() {
 async function showCode() {
   if (code.value || revealing) return
   revealing = true
+  revealFailed.value = false
   try {
     const r = await api.orders.reveal(props.orderId)
     const p = splitSmsReveal(r.cards[0]?.code)
     code.value = p.code
     revealedPhone.value = formatPhone(p.phone)
+    if (!p.code) revealFailed.value = true
   } catch (e) {
+    revealFailed.value = true
     toastError(e)
   } finally {
     revealing = false
@@ -90,7 +94,9 @@ function restart() {
   }, POLL_MS)
 }
 function onVisible() {
-  if (document.visibilityState === 'visible' && shouldPoll(view.value, true)) void load()
+  if (document.visibilityState !== 'visible') return
+  if (shouldPoll(view.value, true)) void load()
+  else if (phase.value === 'delivered' && !code.value) void showCode()
 }
 onMounted(() => {
   void load()
@@ -106,12 +112,14 @@ onBeforeUnmount(() => {
 watch(() => props.orderId, () => {
   view.value = null
   code.value = ''
+  revealedPhone.value = ''
+  revealFailed.value = false
   void load()
 })
 </script>
 
 <template>
-  <div class="sms" data-test="sms-panel" :data-phase="phase">
+  <div class="sms" data-test="sms-panel" :data-phase="phase" aria-live="polite" aria-atomic="false">
     <template v-if="phase === 'ready'">
       <p class="sms-line">{{ t('sms.readyLine') }}</p>
       <van-button block round type="primary" size="large" class="tap" :loading="busy" @click="getNumber">{{ t('sms.getNumber') }}</van-button>
@@ -131,8 +139,9 @@ watch(() => props.orderId, () => {
     </template>
 
     <template v-else-if="phase === 'delivered'">
-      <div class="sms-big sms-code" data-test="sms-code">{{ code || '…' }}</div>
+      <div class="sms-big sms-code" data-test="sms-code" :aria-label="code ? t('sms.codeIs', { code: code.split('').join(' ') }) : undefined">{{ code || '…' }}</div>
       <van-button v-if="code" block round type="primary" class="tap" @click="copy(code)">{{ t('sms.copyCode') }}</van-button>
+      <van-button v-else-if="revealFailed" block round plain type="primary" class="tap" data-test="sms-reveal-retry" @click="showCode">{{ t('sms.showCodeAgain') }}</van-button>
       <p v-if="revealedPhone" class="muted small sms-left">{{ revealedPhone }}</p>
     </template>
 

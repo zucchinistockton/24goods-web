@@ -916,6 +916,15 @@ const zhCN: AdminMessages = {
     },
   },
   sms: {
+    reason: {
+      disabled: '已关闭',
+      no_supplier: '未选择 HeroSMS 供应商',
+      supplier_off: '供应商已停用或暂停',
+      daily_cap: '已达每日订单上限',
+      no_route: '当前所有线路都没有号码',
+      low_balance: 'HeroSMS 余额不足',
+      not_configured: '采购服务缺少供应商密钥',
+    },
     mode: '短信验证码',
     modeHint: '买家获得一个租用的手机号，其短信验证码将自动送达。请先保存商品，再打开“短信设置”。',
     saveFirst: '请先保存商品，再配置短信设置。',

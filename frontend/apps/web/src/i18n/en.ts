@@ -283,6 +283,8 @@ export default {
     },
   },
   sms: {
+    codeIs: 'Your code is {code}',
+    showCodeAgain: 'Show the code',
     promise: 'One code, or a full refund',
     readyLine: 'Open the sign-up page, then tap Get number',
     getNumber: 'Get number',

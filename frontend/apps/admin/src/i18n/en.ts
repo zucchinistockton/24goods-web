@@ -917,6 +917,15 @@ export default {
     },
   },
   sms: {
+    reason: {
+      disabled: 'Turned off',
+      no_supplier: 'No HeroSMS supplier chosen',
+      supplier_off: 'Supplier disabled or paused',
+      daily_cap: 'Daily order cap reached',
+      no_route: 'No route has numbers right now',
+      low_balance: 'HeroSMS balance too low',
+      not_configured: 'Supplier key missing in procurement',
+    },
     mode: 'SMS code',
     modeHint: 'The buyer gets a rented phone number, and its one-time SMS code is delivered automatically. Save the product, then open SMS settings.',
     saveFirst: 'Save the product first, then configure SMS settings.',

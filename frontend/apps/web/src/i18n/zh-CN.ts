@@ -283,6 +283,8 @@ const zhCN: WebMessages = {
     },
   },
   sms: {
+    codeIs: '你的验证码是 {code}',
+    showCodeAgain: '显示验证码',
     promise: '一条验证码，收不到全额退款',
     readyLine: '打开注册页面，然后点“获取号码”',
     getNumber: '获取号码',
