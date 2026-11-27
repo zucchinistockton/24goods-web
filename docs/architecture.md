@@ -820,3 +820,36 @@ counts against the cap; a ZovoCard "request_failed" on open is AMBIGUOUS (not a 
 after a "duplicate" the job needs staff (find the card by label in the vendor console, then retry: the retry starts a
 new request id); the webhook key is still to be found in the vendor console (production refuses the webhook until it is
 set).
+
+### ADR-057: SMS verification codes (`upstream_sms`) (owner 2026-11-27)
+
+**Context.** The owner wants to sell "receive one SMS verification code" (first OpenAI, Japan first) from HeroSMS. A
+number gets a code only with some probability (HeroSMS 24 h rate JP 56.8 %, our own 5/5), listed stock is not buyable
+stock (`NO_NUMBERS` on FR / TH with large listed counts), a number without a code is refunded upstream on cancel (not in
+the first 2 minutes), the shop has no balance and refunds by hand. Spec and data: [sms-upstream-2026-11-27.md](research/sms-upstream-2026-11-27.md).
+
+**Decision.**
+- New delivery mode `upstream_sms` (qty 1). The buyer pays a fixed server price (owner: ¥8 total), then presses "Get
+  number" on the order page when ready; the number is bought at that moment, not at payment. Promise: one code or a full
+  refund; failures go to `manual_review` and staff refund by hand (owner).
+- The procurement process owns it (it alone holds `HEROSMS_APP_SECRET`): `procure.requested` creates an
+  `sms_sessions` row (`ready`); the API forwards "Get number" to `/internal/sms/next`; an SMS loop polls open numbers
+  every 3 s. A code is sealed at once into `card_stock` (sold to the order, cardvault public key) and `procure.fulfilled`
+  lets delivery deliver it on the existing path, so the code is never stored in plaintext and the buyer reads it through
+  reveal. Attempts used up, window over or not started in time -> session `failed` + `procure.failed`; delivery's
+  failed handler accepts an SMS order whose session failed (no procurement job exists for SMS orders).
+- Routing without buyer choice: an ordered route list `{country, max_price}` per product (JP first, then TH, US), every
+  buy capped by `maxPrice`; a route that answered `NO_NUMBERS` or gave 3 no-code numbers in a row (all orders) cools
+  down in Redis (`rl:proc:sms:cool:*`); a session prefers a route it has not failed `tries_per_route` times.
+- Stock: in stock only while enabled, a route is live, the daily cap is not reached and the HeroSMS balance covers the
+  highest live cap for every open session plus one (`sms_products.last_check_ok`, rechecked each health pass and after
+  every buy / cool event). Abuse: pay first, qty 1, per-buyer daily limit at checkout, max attempts, min swap 120 s,
+  window 30 min, start window 72 h; existing PoW / rate limits unchanged.
+- HeroSMS is a `suppliers` row (adapter `herosms`): enable switch, breaker, balance and probe come from the existing
+  supplier machinery; its `submit/query/void` answer FATAL (the job engine never runs SMS orders).
+
+**Consequences.** Failed numbers cost time, not money; the loss case is an order whose every number failed (manual
+refund). Codes follow the card-secret rules for free. The measured code rate per route (admin stats) replaces the
+provider's "best" claim. Polling (no webhook) costs one `GET /activations` per 3 s only while a number waits. The
+HeroSMS account is shared with OpsDev (its daily cap does not see shop spend); open: a second code on the same number,
+buyer-chosen services, voucher codes for resellers.

@@ -69,6 +69,7 @@ from app.modules.common.views import REVEALABLE, order_card_payload
 from app.modules.content.site import tenant_settings
 from app.modules.orders import direct as direct_svc
 from app.modules.orders import halfcheck
+from app.modules.orders import sms as sms_svc
 from app.modules.orders.events import add_event, snapshot
 from app.modules.payments import usdt as usdt_svc
 from app.modules.payments.channels import (
@@ -389,6 +390,9 @@ async def create_order(
     ):
         # nor without the account pre-check before payment (review-v12 §24)
         raise Validation("The account check is required", code="preflight_required")
+    if product_id is not None and delivery_mode == "upstream_sms" and kind == "goods":
+        # ADR-057: one code per order, in stock, the buyer's daily limit (every creation path)
+        await sms_svc.checkout_guard(db, buyer, product_id, qty)
     pre: dict[str, Any] | None = None
     if product_id is not None and delivery_mode == "manual" and kind == "goods":
         # pre-order (U10): the buyer confirmed the window before paying (buy-now and cart send

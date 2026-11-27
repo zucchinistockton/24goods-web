@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 import httpx
 
 from app.suppliers.base import SUPPLIER_CODE_RE, SUPPLIER_ENVS, Supplier, supplier_code_problem
+from app.suppliers.herosms import PRODUCTION_BASE_URL as HEROSMS_BASE_URL
+from app.suppliers.herosms import HeroSmsClient, HeroSmsConfig, HeroSmsSupplier
 from app.suppliers.issuers import CardIssuers
 from app.suppliers.manual import ManualSupplier
 from app.suppliers.mock import MockSupplier
@@ -37,7 +39,7 @@ from app.suppliers.zovocard import (
 from app.suppliers.zzshu import PRODUCTION_BASE_URL as ZZSHU_BASE_URL
 from app.suppliers.zzshu import ZzshuClient, ZzshuConfig, ZzshuSupplier
 
-ADAPTERS: tuple[str, ...] = ("zovocard", "zzshu", "vmcardio", "mock", "manual")
+ADAPTERS: tuple[str, ...] = ("zovocard", "zzshu", "vmcardio", "herosms", "mock", "manual")
 # the card issuers (supplier codes, comma separated, in order) whose wallets fund the dedicated
 # cards of a zzshu order; the env variable ZZSHU_FUNDING_SUPPLIER overrides it (ADR-055:
 # ``zovocard,vmcardio``)
@@ -126,6 +128,8 @@ def build_supplier(
         if key not in _MOCKS:
             _MOCKS[key] = MockSupplier(code, env=env)
         return _MOCKS[key]
+    if adapter == "herosms":
+        return _build_herosms(code, env, environ, app_env, allow_production_writes, http=http)
     if adapter == "vmcardio":
         return _build_vmcardio(code, env, environ, app_env, allow_production_writes, http=http)
     if adapter == "zzshu":
@@ -144,6 +148,29 @@ def build_supplier(
         allow_production_writes=allow_production_writes,
     )
     return ZovoCardSupplier(code, ZovoClient(cfg, http=http))
+
+
+def _build_herosms(
+    code: str,
+    env: str,
+    environ: Mapping[str, str],
+    app_env: str,
+    allow_production_writes: bool,
+    *,
+    http: httpx.AsyncClient | None,
+) -> Supplier:
+    """``HEROSMS_APP_SECRET`` (the API key) / ``HEROSMS_BASE_URL`` (ADR-057). HeroSMS has no
+    sandbox: a sandbox row only works against a dev simulator URL."""
+    sec = load_secrets(code, env, environ, default_base=HEROSMS_BASE_URL)
+    if not sec.base_url.startswith("https://") and app_env not in DEV_ENVS:
+        raise SupplierConfigError("supplier base URL must be https:// outside dev/test")
+    cfg = HeroSmsConfig(
+        base_url=sec.base_url,
+        api_key=sec.app_secret,
+        env=env,
+        allow_production_writes=allow_production_writes,
+    )
+    return HeroSmsSupplier(code, HeroSmsClient(cfg, http=http))
 
 
 def _build_vmcardio(

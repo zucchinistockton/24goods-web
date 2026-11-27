@@ -715,6 +715,13 @@ async def _void_fulfilled(
 async def handle_requested(ctx: ProcurementContext, db: AsyncSession, payload: dict) -> None:
     """One job per order unit, committed by the caller BEFORE any supplier call."""
     order = await load_order(db, uuid.UUID(str(payload["order_id"])))
+    if order is not None and order.status == "paid" and order.delivery_mode == "upstream_sms":
+        # ADR-057: an SMS order gets a session; numbers are bought when the buyer asks
+        from app.procurement import sms  # lazy: sms imports service, which engine imports
+
+        if order.product_id is not None:
+            await sms.on_requested(ctx, db, order)
+        return
     if order is None or order.status != "paid" or order.delivery_mode not in UPSTREAM_MODES:
         log.info("procure.requested ignored (order missing, not paid or not upstream)")
         return

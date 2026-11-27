@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.errors import OutOfStock, Validation
 from app.models import SupplierAccount, SupplierOffer
 from app.modules.common.modes import MAX_UPSTREAM_QTY
+from app.modules.orders.sms import stock as sms_stock
 
 
 def _usable():  # type: ignore[no-untyped-def]
@@ -36,13 +37,16 @@ def _base():  # type: ignore[no-untyped-def]
 
 
 async def product_stock(db: AsyncSession, product_ids: Iterable[uuid.UUID]) -> dict[uuid.UUID, int]:
-    """Product level: available when any variant (or the variant-less target) is."""
+    """Product level: available when any variant (or the variant-less target) is. An SMS product
+    (ADR-057) shows the stock procurement computed for it."""
     ids = list(product_ids)
     if not ids:
         return {}
     rows = await db.execute(_base().where(SupplierOffer.product_id.in_(ids), *_usable()))
     ok = {pid for pid, _ in rows.all()}
-    return {pid: (MAX_UPSTREAM_QTY if pid in ok else 0) for pid in ids}
+    out = {pid: (MAX_UPSTREAM_QTY if pid in ok else 0) for pid in ids}
+    out.update(await sms_stock(db, ids))
+    return out
 
 
 async def variant_stock(db: AsyncSession, variant_ids: Iterable[uuid.UUID]) -> dict[uuid.UUID, int]:
@@ -57,6 +61,9 @@ async def variant_stock(db: AsyncSession, variant_ids: Iterable[uuid.UUID]) -> d
 async def target_available(
     db: AsyncSession, product_id: uuid.UUID, variant_id: uuid.UUID | None
 ) -> bool:
+    sms = await sms_stock(db, [product_id])
+    if product_id in sms:
+        return variant_id is None and sms[product_id] > 0
     match = (
         SupplierOffer.variant_id == variant_id
         if variant_id is not None

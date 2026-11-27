@@ -408,6 +408,8 @@ async def create_checkout(
         raise ChannelUnavailable("Payment channel is not available")  # never a silent re-price
     if not cfg.enabled:
         raise Unavailable("Payment channel is not available")
+    if any(products[i.product_id].delivery_mode == "upstream_sms" for i in items):
+        raise Validation("Verification codes are bought on their own page", code="sms_buy_now_only")
     if any(products[i.product_id].delivery_mode == "upstream_direct" for i in items):
         raise Validation(
             "This product is bought on its own page (it needs your account session)",
