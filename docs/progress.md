@@ -6,6 +6,19 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 **Hand-off 2026-11-18 (after PR #49; the owner's order #29 → #30 → #31 is done on the demo). START HERE.**
 
+- **2026-11-27 18:48 UTC PRODUCTION DEPLOY of #127 (SMS verification codes, ADR-057; owner: "proceed with development
+  and deploy to the production environment").** c4 runs `1d3325c` (api / web / delivery / procurement healthy), migration
+  `0044_sms_sessions` applied (FORCE RLS on `sms_products` / `sms_sessions` / `sms_attempts`), 105 orders before and after,
+  `prod.sh smoke` all pass. Dump `/root/kesiv-backups/predeploy-20261127T183358Z/goods24.dump` (sha256 verified, also on
+  c4 with `procurement.env.bak`, 54 tables); rollback images `goods24-{api,web}:rollback-02859f7` and `:rollback-91324a2`
+  (`:rollback-7dcf5a4` removed for disk; c4 root 92 %). `env/procurement.env` gained `HEROSMS_APP_SECRET` (same key as
+  OpsDev). One-off operator script (audit `ops.operator_script`): supplier `herosms` (production, enabled, priority 400,
+  id `6b1be78e…`), product "OpenAI (ChatGPT) SMS verification code" (`01ee26f9…`, category `chatgpt`, ¥7.61 + 5 % Alipay
+  fee = ¥8.00; USDT ¥7.61), SMS settings = spec defaults, enabled. First availability check 18:50:13 UTC: in stock, stock
+  12 (HeroSMS USD 10.73 / 0.85 cap). The GHCR token in `/root/.secrets/ghcr_token` is refused (`denied`); pulls still
+  work. **Owner next:** one real purchase to walk the buyer flow (pay ¥8, Get number on the order page, enter it on
+  OpenAI, code appears), then mark the result; keep the HeroSMS balance topped up (shared with OpsDev).
+
 - **2026-11-27 SMS verification codes, `upstream_sms` (`feat/upstream-sms`, ADR-057, owner request).** Spec + data:
   [`docs/research/sms-upstream-2026-11-27.md`](research/sms-upstream-2026-11-27.md) (OpsDev: 5/5 OpenAI JP codes, median
   29 s; HeroSMS 24 h rate JP 56.8 %; listed stock is not buyable stock). One code per order, no buyer choices, "one code or
