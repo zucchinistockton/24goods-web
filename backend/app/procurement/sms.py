@@ -45,6 +45,8 @@ MODE = "upstream_sms"
 TOPIC_FULFILLED = "procure.fulfilled"
 TOPIC_FAILED = "procure.failed"
 FAST_POLL_S = 3.0
+ROUTE_BUDGET_S = 50.0  # stay under the API's 75 s wait for /internal/sms/next
+LOST_AFTER_S = 1800  # a number unreadable this long after its wait is given up
 IDLE_POLL_S = 20.0
 REFRESH_S = 60.0
 STOCK_MAX = 99
@@ -133,7 +135,9 @@ async def _create_session(db: AsyncSession, order: Any) -> SmsSession:
     return sess
 
 
-async def _fail(db: AsyncSession, sess: SmsSession, reason: str, now: datetime) -> None:
+async def _fail(
+    db: AsyncSession, sess: SmsSession, reason: str, now: datetime, *, emit: bool = True
+) -> None:
     before = sess.state
     sess.state = "failed"
     sess.fail_reason = reason[:32]
@@ -149,6 +153,8 @@ async def _fail(db: AsyncSession, sess: SmsSession, reason: str, now: datetime) 
         detail={"reason": reason, "attempts": sess.attempts_used},
         severity="warning",
     )
+    if not emit:  # the order was refunded / cancelled meanwhile: nothing to hold
+        return
     _emit(
         db,
         sess.tenant_id,
@@ -313,10 +319,13 @@ async def next_number(ctx: ProcurementContext, tenant_id: uuid.UUID, order_id: u
                 try:
                     codes = await sup.client.codes(current.upstream_id)
                 except SmsError:
-                    codes = ()
+                    # unknown: never throw away a number that may hold the buyer's code
+                    raise SmsRefused("sms_busy") from None
                 if codes:
-                    await _deliver(ctx, db, sess, current, codes[0], now)
+                    ok = await _deliver(ctx, db, sess, current, codes[0], now)
                     del codes
+                    if not ok:
+                        raise SmsRefused("sms_busy")
                     await db.commit()
                     await _finish_upstream(ctx, sup, tenant_id, current.id)
                     raise SmsRefused("sms_delivered")
@@ -348,7 +357,11 @@ async def next_number(ctx: ProcurementContext, tenant_id: uuid.UUID, order_id: u
             bought: Activation | None = None
             route: dict | None = None
             last_error = "no_route"
+            ambiguous = False
+            started = time.monotonic()
             for r in routes:
+                if time.monotonic() - started > ROUTE_BUDGET_S:
+                    break
                 try:
                     bought = await sup.client.buy(
                         service=params["service"],
@@ -369,7 +382,9 @@ async def next_number(ctx: ProcurementContext, tenant_id: uuid.UUID, order_id: u
                     )
                     if exc.outcome is Outcome.AMBIGUOUS:
                         # a number may exist upstream; it is never adopted (the account is shared
-                        # with the owner's console). Unused numbers are refunded by HeroSMS.
+                        # with the owner's console) and unused numbers are refunded by HeroSMS.
+                        # It still counts as an attempt, so repeats stay bounded by max_attempts.
+                        ambiguous = True
                         break
                     if exc.error_code == "NO_NUMBERS":
                         await _cool(
@@ -382,6 +397,9 @@ async def next_number(ctx: ProcurementContext, tenant_id: uuid.UUID, order_id: u
                         break
                     continue  # another refusal for this route: the next route may work
             if bought is None or route is None:
+                if ambiguous:
+                    sess.attempts_used += 1
+                    sess.version += 1
                 await db.commit()  # keep the closed old number and the audit rows
                 raise SmsRefused("sms_unavailable", reason=clean_detail(last_error))
             seq = sess.attempts_used + 1
@@ -582,14 +600,15 @@ async def poll_once(ctx: ProcurementContext) -> int:
             continue
         try:
             try:
-                open_now = {a.upstream_id: a for a in await sup.client.open_activations()}
+                listed, complete = await sup.client.open_activations()
+                open_now = {a.upstream_id: a for a in listed}
             except SmsError as exc:
                 log.warning("sms open list failed: %s", clean_detail(exc.reason))
                 still += len(items)
                 continue
             for w in items:
                 try:
-                    if await _check_attempt(ctx, sup, w, open_now):
+                    if await _check_attempt(ctx, sup, w, open_now, complete):
                         still += 1
                 except Exception as exc:  # one number must not stop the others
                     log.error("sms attempt check failed id=%s error=%s", w.id, type(exc).__name__)
@@ -601,9 +620,14 @@ async def poll_once(ctx: ProcurementContext) -> int:
 
 
 async def _check_attempt(
-    ctx: ProcurementContext, sup: HeroSmsSupplier, w: _Waiting, open_now: dict[str, Activation]
+    ctx: ProcurementContext,
+    sup: HeroSmsSupplier,
+    w: _Waiting,
+    open_now: dict[str, Activation],
+    complete: bool = True,
 ) -> bool:
-    """True = the number still waits."""
+    """True = the number still waits. ``complete`` = the open list was read to its end (absence
+    from a truncated list proves nothing)."""
     finish: uuid.UUID | None = None
     async with tenant_session(ctx.maker, w.tenant_id) as db:
         att = await db.scalar(
@@ -622,6 +646,21 @@ async def _check_attempt(
             return True
         now = utcnow()
         params = P.normalize(sess.params)
+        age = (now - att.bought_at).total_seconds()
+        status = await db.scalar(
+            select(Order.status).where(Order.tenant_id == w.tenant_id, Order.id == att.order_id)
+        )
+        if status != "paid":
+            # refunded / cancelled meanwhile: release the number, never deliver into it
+            try:
+                await sup.client.cancel(att.upstream_id)
+            except SmsError as exc:
+                if exc.outcome in (Outcome.RETRYABLE, Outcome.AMBIGUOUS):
+                    return True
+            att.state, att.closed_at, att.upstream_closed = "cancelled", now, True
+            await _fail(db, sess, "order_closed", now, emit=False)
+            await db.commit()
+            return False
         a = open_now.get(att.upstream_id)
         codes = a.codes if a is not None else ()
         if a is None or (a.otp_total and not codes):
@@ -630,17 +669,24 @@ async def _check_attempt(
             try:
                 codes = await sup.client.codes(att.upstream_id)
             except SmsError:
+                # unknown: keep waiting (a blip must not lose a paid code); give up only long
+                # after the number's wait
+                if age < params["number_wait_s"] + LOST_AFTER_S:
+                    return True
                 codes = ()
         if codes and sess.state == "active":
             if await _deliver(ctx, db, sess, att, codes[0], now):
                 finish = att.id
-            codes = ()
-            await db.commit()
-        elif a is None:
+                codes = ()
+                await db.commit()
+            else:
+                codes = ()
+                return True
+        elif a is None and complete:
             await _close_attempt(ctx, db, sess, att, "no_code", now, params)
             await db.commit()
             return False
-        elif (now - att.bought_at).total_seconds() >= params["number_wait_s"]:
+        elif age >= params["number_wait_s"]:
             try:
                 await sup.client.cancel(att.upstream_id)
             except SmsError as exc:
@@ -683,6 +729,15 @@ async def expire_sessions(ctx: ProcurementContext) -> int:
                 continue
             params = P.normalize(sess.params)
             reason = None
+            status = await db.scalar(
+                select(Order.status).where(Order.tenant_id == tid, Order.id == sess.order_id)
+            )
+            if status != "paid" and sess.state == "ready":
+                # refunded / cancelled before any number: close quietly (nothing to hold)
+                await _fail(db, sess, "order_closed", now, emit=False)
+                await db.commit()
+                n += 1
+                continue
             if sess.state == "ready":
                 if now > sess.start_deadline:
                     reason = "not_started"

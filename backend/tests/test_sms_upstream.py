@@ -28,6 +28,8 @@ class FakeHero:
         self.balance = Decimal("10")
         self.no_numbers: set[int] = set()
         self.early = False
+        self.otp_down = False
+        self.buy_500 = False
         self.open: dict[str, dict] = {}
         self.codes: dict[str, list[str]] = {}
         self.calls: list[str] = []
@@ -51,6 +53,8 @@ class FakeHero:
         if path == "/api/v1/activations" and req.method == "POST":
             body = json.loads(req.content)
             c = body["country"]
+            if self.buy_500:
+                return httpx.Response(500, json={"title": "SERVER_ERROR"})
             if c in self.no_numbers:
                 return httpx.Response(400, json={"title": "NO_NUMBERS", "details": "none"})
             price = self.prices[c]
@@ -78,6 +82,8 @@ class FakeHero:
         m = re.fullmatch(r"/api/v1/activations/(\d+)(/otp|/finish)?", path)
         if m:
             ext, tail = m.group(1), m.group(2)
+            if tail == "/otp" and self.otp_down:
+                return httpx.Response(502, json={"title": "BAD_GATEWAY"})
             if tail == "/otp":
                 return httpx.Response(
                     200, json={"data": [{"smsCode": c} for c in self.codes.get(ext, [])]}
@@ -385,3 +391,47 @@ async def test_params_normalizer():
     assert p["max_attempts"] == 1 and p["service"] == "dr"
     assert P.normalize(None)["routes"][0]["country"] == 182
     assert P.max_cap(P.defaults()) == Decimal("0.85")
+
+
+async def test_review_fixes_blip_refund_ambiguous(env, sms_env):
+    """Security review of #127: a provider blip never loses a number, a refunded order releases
+    its number quietly, an ambiguous buy counts as an attempt."""
+    from app.procurement import sms
+
+    s = sms_env
+    buyer, order = await s.paid()
+    assert (await buyer.post(f"/api/v1/orders/{order['id']}/sms/number")).status_code == 200
+    ext = next(iter(s.fake.open))
+    # the number vanished from the open list and its codes cannot be read: keep waiting
+    item = s.fake.open.pop(ext)
+    s.fake.otp_down = True
+    assert await sms.poll_once(s.ctx) == 1
+    assert await env.scalar("SELECT state FROM sms_attempts") == "waiting"
+    # ... the swap is refused as busy instead of cancelling the number
+    await s.age_numbers(130)
+    r = await buyer.post(f"/api/v1/orders/{order['id']}/sms/number")
+    assert r.status_code == 409 and r.json()["error"]["code"] == "sms_busy"
+    s.fake.otp_down = False
+    s.fake.open[ext] = item
+    # staff refund the order meanwhile: the number is released, nothing is held
+    async with env.owner_session() as db:
+        await db.execute(
+            text("UPDATE orders SET status = 'refunded' WHERE id = :o"), {"o": order["id"]}
+        )
+        await db.commit()
+    assert await sms.poll_once(s.ctx) == 0
+    assert await env.scalar("SELECT state FROM sms_attempts") == "cancelled"
+    assert await env.scalar("SELECT fail_reason FROM sms_sessions") == "order_closed"
+    assert ext not in s.fake.open
+    assert await env.scalar("SELECT count(*) FROM outbox WHERE topic = 'procure.failed'") == 0
+    # an ambiguous buy (5xx after send) counts against the attempts
+    buyer2, order2 = await s.paid()
+    s.fake.buy_500 = True
+    r = await buyer2.post(f"/api/v1/orders/{order2['id']}/sms/number")
+    assert r.status_code == 409 and r.json()["error"]["code"] == "sms_unavailable"
+    assert (
+        await env.scalar(
+            "SELECT attempts_used FROM sms_sessions WHERE order_id = :o", o=order2["id"]
+        )
+        == 1
+    )

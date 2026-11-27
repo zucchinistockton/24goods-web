@@ -241,9 +241,11 @@ class HeroSmsClient:
             out[int(cid)] = (price, max(0, count))
         return out
 
-    async def open_activations(self) -> list[Activation]:
-        """Every activation the provider still has open (with its codes)."""
+    async def open_activations(self) -> tuple[list[Activation], bool]:
+        """The activations the provider still has open (with their codes), and whether the list
+        was read to its end (False = more than 8 pages: absence proves nothing)."""
         out: list[Activation] = []
+        complete = False
         for page in range(1, 9):
             j = await self._rest("GET", "/activations", params={"size": PAGE, "page": page})
             if not isinstance(j, dict):
@@ -254,8 +256,9 @@ class HeroSmsClient:
                     if a is not None:
                         out.append(a)
             if not (j.get("meta") or {}).get("hasMore"):
+                complete = True
                 break
-        return out
+        return out, complete
 
     async def codes(self, upstream_id: str) -> tuple[str, ...]:
         """The codes of one activation (also after it left the open list)."""

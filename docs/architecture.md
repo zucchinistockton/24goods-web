@@ -853,3 +853,9 @@ refund). Codes follow the card-secret rules for free. The measured code rate per
 provider's "best" claim. Polling (no webhook) costs one `GET /activations` per 3 s only while a number waits. The
 HeroSMS account is shared with OpsDev (its daily cap does not see shop spend); open: a second code on the same number,
 buyer-chosen services, voucher codes for resellers.
+Security review of #127 (2026-11-27, no blocker; fixed in the PR): an unreadable number keeps waiting (never closed on a
+provider blip or on a truncated open list), a swap is refused while the old number's codes cannot be read, a refunded /
+cancelled order releases its number without a hold, an ambiguous buy counts as an attempt, the buy runs shielded with a
+50 s route budget. Known limit: checkout trusts the 60 s stock hint without a lock, so parallel orders can exceed the
+daily cap a little (bounded by max attempts x route cap; failures go to manual refund). `sms_attempts.phone` holds the
+rented number (not buyer data), readable by `app_api` / `app_procurement` only, never in audit rows or logs.

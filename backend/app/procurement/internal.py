@@ -8,6 +8,7 @@ calls it for the admin "Test connection" button, so the API never holds supplier
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import hmac
@@ -248,7 +249,10 @@ def create_procurement_app(ctx: ProcurementContext) -> Starlette:
         if not allowed:
             return _err(429, "rate_limited", "Too many requests", {"Retry-After": str(reset)})
         try:
-            out = await sms.next_number(ctx, tenant_id, order_id)
+            # shielded: a client disconnect must not cut a buy off before its row is committed
+            out = await asyncio.shield(
+                asyncio.ensure_future(sms.next_number(ctx, tenant_id, order_id))
+            )
         except sms.SmsRefused as exc:
             return JSONResponse(
                 {"refused": exc.code, **{k: v for k, v in exc.extra.items() if k == "seconds"}},
