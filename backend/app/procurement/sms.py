@@ -624,7 +624,9 @@ async def _check_attempt(
         params = P.normalize(sess.params)
         a = open_now.get(att.upstream_id)
         codes = a.codes if a is not None else ()
-        if a is None:  # left the open list: finished / cancelled / expired upstream
+        if a is None or (a.otp_total and not codes):
+            # left the open list (finished / cancelled / expired upstream), or the list counted a
+            # code it did not include: ask for the codes of this one number
             try:
                 codes = await sup.client.codes(att.upstream_id)
             except SmsError:

@@ -72,6 +72,7 @@ class Activation:
     status: int | None
     expires_at: datetime | None
     codes: tuple[str, ...] = field(default=(), repr=False)
+    otp_total: int = 0  # codes the provider counted (the list may carry fewer than it counted)
 
     @property
     def finished(self) -> bool:
@@ -91,6 +92,10 @@ def parse_activation(item: dict[str, Any]) -> Activation | None:
                 codes.append(code[:64])
     country = item.get("country")
     status = item.get("status")
+    try:
+        otp_total = max(len(codes), int(item.get("otpTotalCount") or 0))
+    except (TypeError, ValueError):
+        otp_total = len(codes)
     return Activation(
         upstream_id=str(ext)[:64],
         phone=phone[:20],
@@ -100,6 +105,7 @@ def parse_activation(item: dict[str, Any]) -> Activation | None:
         status=status if isinstance(status, int) else None,
         expires_at=_ts(item.get("expiredAt")),
         codes=tuple(codes),
+        otp_total=otp_total,
     )
 
 
