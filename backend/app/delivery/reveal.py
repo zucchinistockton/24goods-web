@@ -25,7 +25,9 @@ log = logging.getLogger("app.delivery.reveal")
 
 REVEALABLE = frozenset({"delivered", "completed"})
 # modes whose deliveries are sealed codes (local pool or bought upstream, review-v12)
-CODE_MODES = frozenset({"auto_card", "upstream_cdk", "upstream_vcc", "upstream_direct"})
+CODE_MODES = frozenset(
+    {"auto_card", "upstream_cdk", "upstream_vcc", "upstream_direct", "upstream_sms"}
+)
 
 
 MAX_BODY = 4096

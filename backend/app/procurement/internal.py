@@ -8,6 +8,7 @@ calls it for the admin "Test connection" button, so the API never holds supplier
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import hmac
@@ -30,6 +31,7 @@ from app.procurement import (
     preflight,
     redeem_admin,
     service,
+    sms,
     support_session,
 )
 from app.procurement.context import ProcurementContext
@@ -229,6 +231,36 @@ def create_procurement_app(ctx: ProcurementContext) -> Starlette:
             return _err(404, "not_found", "Job not found")
         return JSONResponse(out, headers=NO_STORE)
 
+    async def sms_next(request: Request) -> JSONResponse:
+        """ADR-057: the buyer's "Get number" / "Another number". The API has already checked that
+        the caller owns the order; this route re-checks the order state itself."""
+        if not _token_ok(request):
+            return _err(401, "unauthorized", "Bad internal token")
+        body = await request.body()
+        if len(body) > MAX_BODY:
+            return _err(422, "validation", "body too large")
+        try:
+            data = json.loads(body)
+            tenant_id = uuid.UUID(str(data["tenant_id"]))
+            order_id = uuid.UUID(str(data["order_id"]))
+        except (ValueError, KeyError, TypeError):
+            return _err(422, "validation", "tenant_id and order_id (UUID) are required")
+        allowed, reset = await hit(ctx.redis, "proc:sms-next", str(order_id), 12, 600)
+        if not allowed:
+            return _err(429, "rate_limited", "Too many requests", {"Retry-After": str(reset)})
+        try:
+            # shielded: a client disconnect must not cut a buy off before its row is committed
+            out = await asyncio.shield(
+                asyncio.ensure_future(sms.next_number(ctx, tenant_id, order_id))
+            )
+        except sms.SmsRefused as exc:
+            return JSONResponse(
+                {"refused": exc.code, **{k: v for k, v in exc.extra.items() if k == "seconds"}},
+                status_code=409,
+                headers=NO_STORE,
+            )
+        return JSONResponse(out, headers=NO_STORE)
+
     async def charge_check(request: Request) -> JSONResponse:
         """Read-only charge evidence of a job (supplier order, top-ups, card spends): ADR-048."""
         if not _token_ok(request):
@@ -415,6 +447,7 @@ def create_procurement_app(ctx: ProcurementContext) -> Starlette:
             Route("/internal/cards/reset-failed", cards_reset_failed, methods=["POST"]),
             Route("/internal/direct-order", direct_order, methods=["POST"]),
             Route("/internal/charge-check", charge_check, methods=["POST"]),
+            Route("/internal/sms/next", sms_next, methods=["POST"]),
             Route("/internal/regions", regions, methods=["POST"]),
             Route("/internal/half-check", half_check, methods=["POST"]),
             Route("/internal/direct-preflight", direct_preflight, methods=["POST"]),

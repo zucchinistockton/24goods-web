@@ -9,6 +9,7 @@ export const API_ERROR_CODES = [
   'rate_limited',
   'conflict',
   'out_of_stock',
+  'sms_qty_one', 'sms_daily_limit', 'sms_buy_now_only', 'sms_too_early', 'sms_attempts_exhausted', 'sms_window_over', 'sms_unavailable', 'sms_busy', 'sms_not_ready', 'sms_delivered', 'sms_failed', 'sms_bad_params', 'sms_wrong_mode', 'sms_bad_supplier',
   'variant_required',
   'variant_archived',
   'invalid_state',

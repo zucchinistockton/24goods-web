@@ -31,6 +31,7 @@ from app.models.procurement import (
     SupplierWebhookEvent,
     SupportSession,
 )
+from app.models.sms import SmsAttempt, SmsProduct, SmsSession
 from app.models.system import AuditLog, Outbox
 from app.models.tenancy import CustomDomain, Tenant
 from app.models.users import AgentStatus, User, UserTotp
@@ -81,6 +82,9 @@ __all__ = [
     "ServiceEntitlement",
     "ServiceReminder",
     "ServiceRenewal",
+    "SmsAttempt",
+    "SmsProduct",
+    "SmsSession",
     "SupplierAccount",
     "SupplierLedgerEntry",
     "SupplierOffer",

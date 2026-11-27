@@ -17,17 +17,29 @@ Framework-free: shared by the API and the delivery worker.
                    ``<plan>----<masked account>----<supplier order>`` sealed into card_stock like
                    a code, so the existing reveal path shows it.
                    Quantity is 1 (one account per order).
+* ``upstream_sms`` one SMS verification code (ADR-057): after payment the buyer asks for a number
+                   on the order page; procurement rents it, seals the first code (+ the number)
+                   into card_stock like a code and delivery delivers it. Quantity is 1.
 """
 
 from __future__ import annotations
 
-DELIVERY_MODES = ("auto_card", "manual", "upstream_cdk", "upstream_vcc", "upstream_direct")
-UPSTREAM_MODES = ("upstream_cdk", "upstream_vcc", "upstream_direct")
+DELIVERY_MODES = (
+    "auto_card",
+    "manual",
+    "upstream_cdk",
+    "upstream_vcc",
+    "upstream_direct",
+    "upstream_sms",
+)
+UPSTREAM_MODES = ("upstream_cdk", "upstream_vcc", "upstream_direct", "upstream_sms")
 # deliveries are sealed card_stock rows the buyer reveals through delivery
-CODE_MODES = ("auto_card", "upstream_cdk", "upstream_vcc", "upstream_direct")
+CODE_MODES = ("auto_card", "upstream_cdk", "upstream_vcc", "upstream_direct", "upstream_sms")
 # the storefront shows a numeric stock (cards in the pool / supplier availability cap)
-STOCKED_MODES = ("auto_card", "upstream_cdk", "upstream_vcc", "upstream_direct")
+STOCKED_MODES = ("auto_card", "upstream_cdk", "upstream_vcc", "upstream_direct", "upstream_sms")
 # one supplier job per unit; small cap so a single order cannot drain the supplier balance
 MAX_UPSTREAM_QTY = 5
 # upstream_direct: one account per order
 MAX_DIRECT_QTY = 1
+# upstream_sms: one code per order (ADR-057)
+MAX_SMS_QTY = 1

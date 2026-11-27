@@ -69,6 +69,7 @@ import type {
   I18nText,
   CardOtp,
   DirectOrderInfo,
+  SmsView,
   TwoFactorChallenge,
   TwoFactorSetup,
   TwoFactorStatus,
@@ -294,6 +295,10 @@ export function createBuyerApi(c: ApiClient) {
       cardOtp: (id: string) => c.get<{ items: CardOtp[] }>(`/orders/${seg(id)}/card-otp`),
       /** v12 M3: masked account, plan and state of a direct order (owner only). */
       direct: (id: string) => c.get<DirectOrderInfo>(`/orders/${seg(id)}/direct`),
+      /** ADR-057: state of an SMS-code order (owner only). */
+      sms: (id: string) => c.get<SmsView>(`/orders/${seg(id)}/sms`),
+      /** ADR-057: start the first number or swap to another one. */
+      smsNumber: (id: string) => c.post<SmsView>(`/orders/${seg(id)}/sms/number`),
       /** v12 M3: supply a fresh session for a paid direct order whose first one expired or was refused. */
       directSession: (id: string, session: string, share_session = false) =>
         c.post<unknown>(`/orders/${seg(id)}/direct-session`, share_session ? { session, share_session: true } : { session }),

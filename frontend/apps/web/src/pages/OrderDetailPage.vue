@@ -37,6 +37,7 @@ import { cancelPending, payCheckout, payOrder } from '../lib/orderActions'
 import { dropAccessCode, readAccessCode } from '../lib/attribution'
 import { openSupport as support } from '../lib/support'
 import DirectOrderPanel from '../components/DirectOrderPanel.vue'
+import SmsCodePanel from '../components/SmsCodePanel.vue'
 import { useRealtimeStore } from '../stores/realtime'
 import { useSiteStore } from '../stores/site'
 import { confirm, showImagePreview, showSuccessToast, showToast, toastError } from '../ui'
@@ -513,7 +514,11 @@ function gotCode() {
         <DirectOrderPanel :order-id="order.id" :product-id="order.product_id" :version="order.version" :can-resupply="['paid', 'manual_review'].includes(order.status)" />
       </section>
 
-      <section v-if="order.can_reveal || secrets.length || order.manual_delivery || ['delivered', 'completed'].includes(order.status)" class="section card pad">
+      <section v-if="order.delivery_mode === 'upstream_sms' && ['paid', 'manual_review', 'delivered', 'completed'].includes(order.status)" class="section card pad">
+        <SmsCodePanel :order-id="order.id" @changed="fetchOrder(true)" />
+      </section>
+
+      <section v-if="order.delivery_mode !== 'upstream_sms' && (order.can_reveal || secrets.length || order.manual_delivery || ['delivered', 'completed'].includes(order.status))" class="section card pad">
         <DeliveryView
           :info="order.delivery_info"
           :codes="secrets"

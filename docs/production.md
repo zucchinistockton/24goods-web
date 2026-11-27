@@ -239,6 +239,25 @@ the owner's go-ahead):
    with that label in the vendor console before anything else (the vendor API never returns the label, so the system
    does not adopt a card by itself). Delete or use it, then press Retry on the job: that starts a new request id.
 
+## SMS verification codes, HeroSMS (ADR-057)
+
+Product type `upstream_sms`: one code per order, fulfilled from HeroSMS by the procurement process
+([spec](research/sms-upstream-2026-11-27.md)). Setup:
+
+1. `deploy/env/procurement.env`: `HEROSMS_APP_SECRET=<HeroSMS API key>` (the same key OpsDev uses, from
+   `/root/.secrets/herosms.env`; optional `HEROSMS_BASE_URL`, default `https://hero-sms.com`). Restart `procurement`.
+   The shop polls HeroSMS; it does not use the account's webhook (that stays on OpsDev).
+2. Console -> Procurement -> Suppliers: adapter `herosms`, code `herosms`, env `production`, enable, "Test connection"
+   (reads the balance).
+3. Product: delivery mode "SMS code", price = the total you want minus the payment fee (owner: ¥8 total), no variants.
+   Then the product's SMS settings: supplier, routes (default Japan 182 cap 0.60, Thailand 52 cap 0.30, USA 187 cap
+   0.85 USD), limits (5 numbers, 30 min window, 72 h to start, 30 orders / day, 3 per buyer / day), enable.
+4. The storefront shows the product in stock only while a route has numbers, the daily cap is not reached and the
+   HeroSMS balance covers every open order plus one at the highest cap. Top up HeroSMS before it runs low (the shop and
+   OpsDev share the balance; OpsDev's daily cap does not see shop spend).
+5. A failed order (no code after all numbers / the window, or not started within 72 h) lands in "manual review": refund
+   it by hand and record the refund. Admin -> SMS stats shows the measured code rate per route.
+
 ## SEO and Google Search Console (review-v5.2 §6, ADR-024)
 
 - Public pages (`/`, `/p/*`, `/a/*`, `/help`) are rendered by the API into the SPA shell for crawlers;

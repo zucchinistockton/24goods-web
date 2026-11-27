@@ -15,6 +15,7 @@ from app.modules.orders import cancel as cancel_svc
 from app.modules.orders import direct as direct_svc
 from app.modules.orders import expedite as expedite_svc
 from app.modules.orders import service
+from app.modules.orders import sms as sms_svc
 from app.modules.orders.riskctl import guard_order_create
 from app.modules.orders.schemas import BuyerCancelIn, BuyNowIn, DirectSessionIn, InputIn, PayIn
 
@@ -155,6 +156,39 @@ async def card_otp_codes(
     # owner decision 2026-11-17: no 3DS code ever reaches a buyer; the route stays (empty) so old
     # clients do not break
     return JSONResponse({"items": []}, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
+
+
+@router.get("/{ref}/sms", response_model=None)
+async def sms_info(
+    ref: str,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+    res: Resources = Depends(get_res),
+) -> JSONResponse:
+    """The buyer's own SMS-code order (ADR-057): session state and the current number. The code
+    itself is read through reveal once the order is delivered."""
+    await enforce(res.redis, "order:sms-info", str(user.id), 90, 60)
+    order = await service.get_owned(db, ref, user)
+    view = await sms_svc.buyer_view(db, order)
+    await db.commit()
+    return JSONResponse(view, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
+
+
+@router.post("/{ref}/sms/number", response_model=None)
+async def sms_number(
+    ref: str,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+    res: Resources = Depends(get_res),
+) -> JSONResponse:
+    """Get the first number, or another one (owner only; a paid SMS-code order)."""
+    await enforce(res.redis, "order:sms-number", str(user.id), 12, 600)
+    order = await service.get_owned(db, ref, user)
+    await db.commit()  # end the read transaction before the cross-service call
+    await sms_svc.next_number(res.procurement, res.settings.procurement_token, order)
+    view = await sms_svc.buyer_view(db, order)
+    await db.commit()
+    return JSONResponse(view, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
 
 
 @router.get("/{ref}/direct", response_model=None)

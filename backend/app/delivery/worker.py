@@ -34,6 +34,7 @@ from app.models import (
     Outbox,
     ProcurementJob,
     Product,
+    SmsSession,
     Tenant,
     User,
 )
@@ -61,7 +62,7 @@ PROCURE_REQUESTED = "procure.requested"
 PROCURE_FULFILLED = "procure.fulfilled"
 PROCURE_FAILED = "procure.failed"
 TOPICS = (TOPIC, REPLACE_TOPIC, PROCURE_FULFILLED, PROCURE_FAILED)
-UPSTREAM_MODES = ("upstream_cdk", "upstream_vcc", "upstream_direct")
+UPSTREAM_MODES = ("upstream_cdk", "upstream_vcc", "upstream_direct", "upstream_sms")
 MAX_ATTEMPTS = 8
 
 
@@ -302,13 +303,21 @@ async def handle_procure_failed(db: AsyncSession, payload: dict) -> JobResult:
     if order is None or order.delivery_mode not in UPSTREAM_MODES or order.status != "paid":
         return JobResult()
     # a stale event (the job was retried, fulfilled or voided since) must not hold the order
-    unresolved = select(func.count(ProcurementJob.id)).where(
-        ProcurementJob.tenant_id == order.tenant_id,
-        ProcurementJob.order_id == order.id,
-        ProcurementJob.state.in_(("needs_manual", "failed")),
-    )
-    if payload.get("job_id"):
-        unresolved = unresolved.where(ProcurementJob.id == uuid.UUID(str(payload["job_id"])))
+    if order.delivery_mode == "upstream_sms":
+        # ADR-057: no procurement job exists for an SMS order; its session decides
+        unresolved = select(func.count(SmsSession.id)).where(
+            SmsSession.tenant_id == order.tenant_id,
+            SmsSession.order_id == order.id,
+            SmsSession.state == "failed",
+        )
+    else:
+        unresolved = select(func.count(ProcurementJob.id)).where(
+            ProcurementJob.tenant_id == order.tenant_id,
+            ProcurementJob.order_id == order.id,
+            ProcurementJob.state.in_(("needs_manual", "failed")),
+        )
+        if payload.get("job_id"):
+            unresolved = unresolved.where(ProcurementJob.id == uuid.UUID(str(payload["job_id"])))
     if not await db.scalar(unresolved):
         await audit(
             db,

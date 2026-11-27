@@ -25,6 +25,7 @@ import type { AdminProductV5 as AdminProduct, ProductPrefill } from '../api-v5'
 import { marginMinor, marginPct, minorToYuan, yuanToMinor } from '../lib/money'
 import MarkdownEditor from './MarkdownEditor.vue'
 import ProductVariants from './ProductVariants.vue'
+import SmsSettingsDialog from './SmsSettingsDialog.vue'
 import { promptChips, validateBuyerInput } from '../lib/buyerInput'
 import {
   AFTER_SALES_UNITS,
@@ -222,6 +223,7 @@ watch(
 
 const URL_HINT = "https://example.com"
 const isNew = computed(() => !current.value)
+const smsOpen = ref(false)
 const margin = computed(() => marginMinor(isValidAmount(form.price) ? yuanToMinor(form.price) : null, cost.value.trim() ? yuanToMinor(cost.value) : null))
 const marginNeg = computed(() => (margin.value ?? 0) < 0)
 const marginText = computed(() => (margin.value === null ? '' : `¥${minorToYuan(margin.value)}${marginP.value !== null ? ` (${marginP.value}%)` : ''}`))
@@ -465,10 +467,16 @@ async function removeImage(url: string) {
                  identify an existing card product, never offered for a new one -->
             <el-radio-button v-if="!isNew && form.delivery_mode === 'upstream_vcc'" value="upstream_vcc">{{ t('procurement.modeCard') }}</el-radio-button>
             <el-radio-button value="upstream_direct">{{ t('procurement.modeDirect') }}</el-radio-button>
+            <el-radio-button value="upstream_sms">{{ t('sms.mode') }}</el-radio-button>
           </el-radio-group>
           <div v-if="form.delivery_mode === 'upstream_cdk'" class="hint muted">{{ t('procurement.modeHint') }}</div>
           <div v-if="form.delivery_mode === 'upstream_vcc'" class="hint muted">{{ t('procurement.modeCardHint') }}</div>
           <div v-if="form.delivery_mode === 'upstream_direct'" class="hint muted">{{ t('procurement.modeDirectHint') }}</div>
+          <div v-if="form.delivery_mode === 'upstream_sms'" class="hint muted">{{ t('sms.modeHint') }}</div>
+          <div v-if="form.delivery_mode === 'upstream_sms'" class="hint">
+            <el-button v-if="current" size="small" data-test="sms-open" @click="smsOpen = true">{{ t('sms.open') }}</el-button>
+            <span v-else class="muted small">{{ t('sms.saveFirst') }}</span>
+          </div>
         </el-form-item>
         <el-form-item :label="t('products.form.category')" :error="errors.category" required>
           <el-select v-model="form.category" filterable>
@@ -689,6 +697,7 @@ async function removeImage(url: string) {
         </div>
       </el-form-item>
     </el-form>
+    <SmsSettingsDialog v-if="current && form.delivery_mode === 'upstream_sms'" v-model="smsOpen" :product-id="current.id" />
     <template #footer>
       <el-button @click="emit('update:modelValue', false)">{{ t('common.close') }}</el-button>
       <el-button type="primary" :loading="saving" @click="save">{{ t('common.save') }}</el-button>

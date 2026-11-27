@@ -38,6 +38,7 @@ async def _serve(settings: ProcurementSettings) -> None:
     from app.procurement.internal import create_procurement_app
     from app.procurement.keys import SealerConfigError, build_sealer
     from app.procurement.service import run_loop
+    from app.procurement.sms import run_sms_loop
 
     if len(settings.procurement_token) < 32:
         raise SystemExit("APP_PROCUREMENT_TOKEN (>= 32 chars) is required")
@@ -68,6 +69,7 @@ async def _serve(settings: ProcurementSettings) -> None:
     stop = asyncio.Event()
     loop_task = asyncio.create_task(run_loop(ctx, stop), name="supplier-health")
     engine_task = asyncio.create_task(run_engine(ctx, stop), name="procurement-engine")
+    sms_task = asyncio.create_task(run_sms_loop(ctx, stop), name="sms-loop")
     server = uvicorn.Server(
         uvicorn.Config(
             create_procurement_app(ctx),
@@ -131,7 +133,7 @@ async def _serve(settings: ProcurementSettings) -> None:
             with contextlib.suppress(Exception):
                 await redeem_app.state.close()
         stop.set()
-        for task in (loop_task, engine_task):
+        for task in (loop_task, engine_task, sms_task):
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task

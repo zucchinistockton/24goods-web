@@ -26,7 +26,7 @@ IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9._:-]{1,80}$")
 # Supplier codes double as the prefix of their secrets in the procurement env file.
 SUPPLIER_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{1,31}$")
 # adapters whose credentials come from the procurement env file (``<CODE>_[SANDBOX_]APP_SECRET``)
-CREDENTIAL_ADAPTERS: tuple[str, ...] = ("zovocard", "zzshu", "vmcardio")
+CREDENTIAL_ADAPTERS: tuple[str, ...] = ("zovocard", "zzshu", "vmcardio", "herosms")
 
 
 _DETAIL_BAD = re.compile(r"[^A-Za-z0-9_.:-]")

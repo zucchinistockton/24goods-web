@@ -110,7 +110,8 @@ const price = computed(() => (p.value ? priceParts(p.value.price, p.value.curren
 /** A direct product is applied to ONE account: one unit, and the account session comes with the order. */
 const isDirect = computed(() => p.value?.delivery_mode === 'upstream_direct')
 // a direct top-up is one account, a half-price plan one unit per check (issue #54 F5)
-const maxQty = computed(() => (p.value && !isDirect.value && !needsHalf.value ? maxOrderQty(p.value) : 1))
+const isSms = computed(() => p.value?.delivery_mode === 'upstream_sms')
+const maxQty = computed(() => (p.value && !isDirect.value && !isSms.value && !needsHalf.value ? maxOrderQty(p.value) : 1))
 const subtotal = computed(() => (p.value ? (multiplyAmount(p.value.price, qty.value) ?? p.value.price) : '0.00'))
 const discountMinor = computed(() => (promo.value && !promo.value.stale ? promo.value.discount_minor : 0))
 const bd = computed(() => feeBreakdown(subtotal.value, discountMinor.value, site.permille, site.feeWhole))
@@ -332,7 +333,8 @@ async function credsDone() {
         </template>
       </div>
       <p v-if="needsHalf" class="muted small sheet-note">{{ t('halfcheck.sheetNote') }}</p>
-      <div class="sheet-row">
+      <p v-if="isSms" class="sheet-note sms-promise" data-test="sms-promise">{{ t('sms.promise') }}</p>
+      <div v-else class="sheet-row">
         <div>
           <div>{{ t('product.quantity') }}</div>
           <div class="muted small">{{ t('product.maxPerOrder', { n: maxQty }) }}</div>

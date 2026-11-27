@@ -6,6 +6,23 @@ Update this file in every PR. Phases are defined in [review-v2.md §8](review-v2
 
 **Hand-off 2026-11-18 (after PR #49; the owner's order #29 → #30 → #31 is done on the demo). START HERE.**
 
+- **2026-11-27 SMS verification codes, `upstream_sms` (`feat/upstream-sms`, ADR-057, owner request).** Spec + data:
+  [`docs/research/sms-upstream-2026-11-27.md`](research/sms-upstream-2026-11-27.md) (OpsDev: 5/5 OpenAI JP codes, median
+  29 s; HeroSMS 24 h rate JP 56.8 %; listed stock is not buyable stock). One code per order, no buyer choices, "one code or
+  a full refund". After payment the buyer presses "Get number" on the order page; procurement rents a number from HeroSMS
+  (ordered routes JP 182 -> TH 52 -> US 187 with USD caps 0.60 / 0.30 / 0.85, `NO_NUMBERS` and 3-no-code streaks cool a
+  route in Redis), polls every 3 s, seals the first code (`<code>----+<number>`) into `card_stock` and delivery delivers it
+  (reveal); swap after 120 s (old number cancelled = refunded upstream), 5 numbers / 30 min window / 72 h to start; a
+  failed session -> `procure.failed` -> `manual_review` (manual refund, owner). Stock = enabled, live route, daily cap
+  (30), HeroSMS balance covers open sessions + 1 at the highest cap; checkout: qty 1, 3 per buyer per UTC day, not in
+  carts. Adapter `herosms` (suppliers row, key `HEROSMS_APP_SECRET` in procurement.env only), migration `0044_sms_sessions`
+  (`sms_products`, `sms_sessions`, `sms_attempts`; FORCE RLS; no code column). Admin: product SMS settings dialog,
+  order drawer attempts (masked), 7-day stats (code rate per route, cost per code, session success rate). Buyer:
+  `SmsCodePanel` on the order page. Tests: `backend/tests/test_sms_upstream.py` (fake HeroSMS; end to end, fallback +
+  cooling + swap, exhausted / not started -> manual review, checkout guards, admin validation, cross-tenant), web/admin
+  vitest. Setup: `docs/production.md` "SMS verification codes". Open: a second code on the same number, buyer-chosen
+  services, reseller vouchers.
+
 - **2026-11-26 15:02 UTC PRODUCTION DEPLOY of #125 (alerts + EPay deposit guard; owner: "deploy").** c4 runs `02859f7`
   (api + web verified), migration `0043_gateway_deposit` applied. Dump `/root/kesiv-backups/predeploy-20261126T150159Z/`
   (sha256 `bf757efa…`, also on c4, 54 tables); rollback images `goods24-{api,web}:rollback-91324a2` and `:rollback-7dcf5a4`.

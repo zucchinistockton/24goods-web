@@ -159,7 +159,7 @@ def _card_mode_guard(kind: str, p: OfferParams) -> None:
 
 def _valid_params(kind: str, params: dict[str, Any], adapter: str = "zovocard") -> bool:
     spec = OfferSpec(kind=kind, params=params)  # type: ignore[arg-type]
-    if adapter == "vmcardio":  # ADR-055: an issuer of the zzshu dedicated card, sells nothing
+    if adapter in ("vmcardio", "herosms"):  # ADR-055 issuer; ADR-057 SMS (sms_products, not offers)
         return False
     if adapter == "zzshu":  # ADR-054: direct only, plan + region, no card parameters
         return kind == "direct" and zzshu_spec(spec) is not None

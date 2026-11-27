@@ -45,7 +45,8 @@ export interface User {
 /** `upstream_cdk` (review-v12): a code bought from a supplier per order; instant for the buyer. */
 /** `upstream_vcc` (review-v12 M3): a virtual card bought from a supplier per order. */
 /** `upstream_direct` (review-v12 M3): the supplier subscribes the buyer's own account. */
-export type DeliveryMode = 'auto_card' | 'manual' | 'upstream_cdk' | 'upstream_vcc' | 'upstream_direct'
+/** `upstream_sms` (ADR-057): a one-time SMS verification code from a rented number; the buyer starts it on the order page. */
+export type DeliveryMode = 'auto_card' | 'manual' | 'upstream_cdk' | 'upstream_vcc' | 'upstream_direct' | 'upstream_sms'
 /** Code deliveries the buyer reveals at once (local pool or supplier), as opposed to staff delivery. */
 export const isInstantMode = (m: DeliveryMode | undefined | null): boolean => m === 'auto_card' || m === 'upstream_cdk' || m === 'upstream_vcc' || m === 'upstream_direct'
 
@@ -1119,4 +1120,24 @@ export interface RecentPurchase {
   at: string
   /** first character + "***" */
   buyer: string
+}
+
+/** ADR-057: buyer view of an SMS-code order (`GET /orders/{id}/sms`). `phone` is digits only, no `+`. */
+export type SmsState = 'pending' | 'none' | 'ready' | 'active' | 'delivered' | 'failed'
+export interface SmsCurrent {
+  phone: string
+  bought_at: string
+  expires_at: string | null
+  wait_s: number
+}
+export interface SmsView {
+  state: SmsState
+  order_status: string
+  /** absent while the state is `pending` / `none` (no session yet) */
+  attempts_used?: number
+  max_attempts?: number
+  can_swap_in_s?: number
+  window_ends_at?: string | null
+  start_deadline?: string | null
+  current?: SmsCurrent | null
 }
