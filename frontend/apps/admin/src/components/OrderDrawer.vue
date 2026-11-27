@@ -32,6 +32,7 @@ import { marginMinor, minorToYuan, yuanToMinor } from '../lib/money'
 import CloseOrderDialog from './CloseOrderDialog.vue'
 import { buildBuyerTemplate, clockTime, htmlToText } from '../lib/orderText'
 import OrderStatusTag from './OrderStatusTag.vue'
+import SmsOrderInfo from './SmsOrderInfo.vue'
 import DirectJobLive from './DirectJobLive.vue'
 import SupportSessionBox from './SupportSessionBox.vue'
 import { confirmBox, toastError, toastOk } from '../ui'
@@ -531,6 +532,8 @@ defineExpose({ reload: () => props.orderId && load(props.orderId) })
             />
           </el-descriptions-item>
         </el-descriptions>
+
+        <SmsOrderInfo v-if="order.delivery_mode === 'upstream_sms'" :order-id="order.id" :version="order.version" />
 
         <DirectJobLive v-if="order.delivery_mode === 'upstream_direct'" :order-id="order.id" :version="order.version" />
 

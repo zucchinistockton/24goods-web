@@ -97,6 +97,7 @@ const images = computed(() => {
 })
 const price = computed(() => (product.value ? priceParts(product.value.price, product.value.currency, locale.value) : null))
 const isAuto = computed(() => isInstantMode(product.value?.delivery_mode))
+const isSms = computed(() => product.value?.delivery_mode === 'upstream_sms')
 const soldOut = computed(() => (product.value ? isSoldOut(product.value) : false))
 const as = computed(() => afterSalesLabel(product.value?.after_sales_hours, product.value?.after_sales_months))
 const labels = computed(() => formatLabels(product.value?.delivery_format, product.value?.delivery_separator))
@@ -115,7 +116,7 @@ function report() {
 const buyNowOnly = computed(() => {
   const x = product.value
   if (!x) return false
-  if (x.delivery_mode === 'upstream_direct') return true
+  if (x.delivery_mode === 'upstream_direct' || x.delivery_mode === 'upstream_sms') return true
   return variant.value ? variant.value.half_price === true : x.half_price === true
 })
 function addToCart() {
@@ -209,11 +210,11 @@ function back() {
           </template>
         </div>
         <div class="facts">
-          <span v-if="isAuto" class="badge-instant">{{ t(`deliveryMode.${product.delivery_mode}`) }}</span>
+          <span v-if="isAuto || isSms" class="badge-instant">{{ t(`deliveryMode.${product.delivery_mode}`) }}</span>
           <PreorderBadge v-else-if="product.preorder" :window="product.preorder" compact />
           <ManualPromise v-else :eta="product.delivery_eta_hours" compact />
           <span v-if="product.stock !== null && product.stock !== undefined" class="muted">
-            {{ soldOut ? t('product.outOfStock') : isAuto || product.stock >= 10 ? t('product.stock', { n: product.stock }) : t('product.onlyLeft', { n: product.stock }) }}
+            {{ soldOut ? t('product.outOfStock') : isAuto || isSms || product.stock >= 10 ? t('product.stock', { n: product.stock }) : t('product.onlyLeft', { n: product.stock }) }}
           </span>
         </div>
         <div v-if="as" class="facts"><span class="badge-as">{{ t(as.key, { n: as.n }) }}</span></div>
@@ -221,7 +222,8 @@ function back() {
         <p v-if="labels.length" class="fmt">
           <strong>{{ t('product.deliveryFormat') }}</strong> {{ labels.join(' · ') }}
         </p>
-        <p v-if="isAuto" class="hint muted">{{ t('product.instantHint') }}</p>
+        <p v-if="isSms" class="hint" data-test="sms-promise">{{ t('sms.promise') }}</p>
+        <p v-else-if="isAuto" class="hint muted">{{ t('product.instantHint') }}</p>
         <template v-else-if="product.preorder">
           <p class="hint muted">{{ t('preorder.hint', { range: preorderRange(t, product.preorder) }) }}</p>
           <p v-if="product.preorder.note" class="hint muted">{{ product.preorder.note }}</p>
